@@ -1,8 +1,14 @@
 # Data model — feature 019 (proposed)
 
+Corrected 2026-11-24 ([research](research.md#corrections-and-decisions-of-2026-11-24)): detached timeouts are unknown
+outcomes, push requests never written are withdrawn, warm containers have two modes, insights count gated steps, and
+the columns of protocol 1.8 (`lease_capability_generation` and the marks of ADR-0099) are written by that design, not
+by this one.
+
 Every table is tenant-keyed: the primary key starts with `tenant_id`, every foreign key is composite with the
 tenant (and the namespace where the parent has one), and every query filters by both. Migration timestamps are
-allocated at implementation (D1074); slugs below. Grants are to the runtime role `sagat_app` in the same file. The
+allocated at implementation (D1074; the newest migration on `develop` is `20270119000000_batch_purge` at 2026-11-24);
+slugs below. Grants are to the runtime role `sagat_app` in the same file. The
 runtime role takes no row locks; fences are transaction-scoped advisory locks (`pg_advisory_xact_lock[_shared]`)
 or existing `SECURITY DEFINER` functions. Storage classes refer to `crates/infra-postgres/storage-classification.json`
 (`content`, `log`, `protected_system`).
@@ -38,10 +44,16 @@ or existing `SECURITY DEFINER` functions. Storage classes refer to `crates/infra
 READY ──claim (pull)──► LEASED/RUNNING [holder=session]
 READY ──claim (push)──► LEASED/RUNNING [holder=push endpoint]
 LEASED/RUNNING [session] ──Detach──► RUNNING [holder=detached]  (expiry = detached heartbeat timeout)
+LEASED [push] ──request never written──► READY (step.lease_withdrawn, cause NOT_SENT, attempt set back by one)
 RUNNING [push] ──202 (async mode)──► RUNNING [holder=detached]
 RUNNING [detached] ──external complete/fail──► SUCCEEDED | RETRY_WAIT | FAILED (as a worker report)
-RUNNING [detached] ──timeout/max duration──► RETRY_WAIT | FAILED (DETACHED_TIMEOUT, generation+1)
+RUNNING [detached] ──timeout/max duration──► reconciliation or review (DETACHED_TIMEOUT, an unknown outcome)
+RUNNING [push] ──lease lapses──► reconciliation or review (LEASE_EXPIRED, an unknown outcome)
 ```
+
+Corrected 2026-11-24 (D019-004, D019-008): the draft sent a detached timeout to `RETRY_WAIT`, which feature 037 forbids for
+an unknown outcome. Detach is refused on a provisional lease of protocol 1.8, so the `session` holder of the first
+transition above is always an acknowledged or unflagged lease.
 
 ### Push endpoint health
 
@@ -124,8 +136,8 @@ payloads. Grants: SELECT, INSERT, UPDATE, DELETE.
 
 `(tenant_id, run_id, step_id, attempt, generation)` PK; `lease_token_hash` bytea (32 bytes, the SHA-256 already
 stored for the lease), `ended_at`, `ended_by` (closed enum: `report`, `external_report`, `expiry`, `timeout`,
-`cancel`, `reclaim`). Inserted in the transaction that ends a lease that was ever detached or push-held (the only
-leases a task token can name), so a later use of that token is answered `STALE_ATTEMPT` only after its secret
+`cancel`, `reclaim`). Inserted in the transaction that ends a lease that was ever detached or push-held and whose envelope was sent (the only
+leases a task token can name; a push lease withdrawn before its request was written is not retained, D019-008), so a later use of that token is answered `STALE_ATTEMPT` only after its secret
 matches, and every mismatch is `NOT_FOUND` (D1057). At most one row per ended attempt (≤ the step's `maxAttempts`).
 Retention: deleted with the run. Grants: SELECT, INSERT, DELETE.
 
@@ -151,21 +163,26 @@ dispatch-catalog fence).
 
 ### `script_warm_policies`
 
-`(tenant_id, namespace_id, artifact_digest, secret_set_digest)` PK; `revision`, `enabled`, `min_warm`, `max_warm`,
-`max_uses`, `max_idle_ms`, `max_lifetime_ms`, `residue_acknowledged_by`, `residue_acknowledged_at`,
-`acknowledgement_text_version` (the version of the risk statement accepted), `updated_by`, `updated_at`. FK to the
+`(tenant_id, namespace_id, artifact_digest, secret_set_digest)` PK; `revision`, `enabled`, `mode` (`prepared`, the
+default, or `reused`; added 2026-11-24, D019-009), `min_warm`, `max_warm`, `max_uses` (`reused` only; a CHECK keeps it
+null for `prepared`), `max_idle_ms`, `max_lifetime_ms`, `residue_acknowledged_by`, `residue_acknowledged_at`,
+`acknowledgement_text_version` (the version of the risk statement accepted; required by a CHECK when `mode = 'reused'`),
+`updated_by`, `updated_at`. FK to the
 tenant's artifact (`script_artifacts`). `secret_set_digest` is SHA-256 of the sorted declared secret names (empty set
 allowed). Grants: SELECT, INSERT, UPDATE, DELETE.
 
 ### `script_warm_slots`
 
-`(tenant_id, slot_id)` PK; `namespace_id`, `artifact_digest`, `secret_set_digest` (FK to the policy), `runner_subject`,
-`acquired_at`, `expires_at` (database clock, TTL ≤300 s, renewed by the runner). Inserted under the namespace and
+`(tenant_id, slot_id)` PK; `namespace_id`, `artifact_digest`, `secret_set_digest` (FK to the policy), `mode` (the
+policy's mode when the slot was granted), `limits_digest` (SHA-256 of the resource limits the container was created
+with; a run with other limits runs cold), `runner_subject`, `acquired_at`, `expires_at` (database clock, TTL ≤300 s,
+renewed by the runner), `served_runs` (a `prepared` slot is released after its one run). Inserted under the namespace and
 tenant warm advisory locks after counting live slots against `script_warm_containers`,
 `tenant_script_warm_containers` and the policy's `max_warm` (exact across runners, D1066). A runner serves a run in a
 warm container only while that container's slot lease is live. Renewal returns `secret_version_digest`, the
 digest of the current versions of the declared secret set, which every warm-eligible lease also carries; the runner
-evicts a container on a mismatch before starting a process. Grants: SELECT, INSERT, UPDATE, DELETE.
+evicts a reused container on a mismatch before starting a process; a prepared container holds no secret before its
+run, so the digest only matters for the run it serves. Grants: SELECT, INSERT, UPDATE, DELETE.
 
 ### `worker_session_activity`
 
@@ -175,7 +192,8 @@ evicts a container on a mismatch before starting a process. Grants: SELECT, INSE
 ### `namespace_dispatch_insights`
 
 `(tenant_id, namespace_id, subject_kind, subject)` PK; `subject_kind` in (`activity`, `version`, `endpoint`,
-`pool`); `subject` text ≤160 (activity name, version id, endpoint id, advertised pool label); `ready`,
+`pool`); `subject` text ≤160 (activity name, version id, endpoint id, advertised pool label); `ready`, `gated` (steps waiting
+at a gate of feature 022, never counted in `ready`; added 2026-11-24, D019-006),
 `oldest_ready_seconds`, `leased`, `detached`, `pollers`, `last_poll_seconds`, `last_heartbeat_seconds`,
 `pinned_open_runs`, `flags` (closed set: `UNVERSIONED_IDLE`, `NO_POLLERS`, `PUSH_INELIGIBLE_BACKLOG`),
 `sampled_at`. At most 500 rows per namespace (monitor truncates by backlog). Written only by the leased monitor;
@@ -193,8 +211,9 @@ the runtime role writes it with a `DELETE` + `INSERT` per namespace per round. C
   `push_endpoint_id uuid`, `push_revision integer`, `deployment_version_id uuid`, `detached_at timestamptz`,
   `detached_heartbeat_timeout_ms integer`, `detached_deadline timestamptz`.
 - `worker_sessions`: `deployment_id uuid`, `deployment_version_id uuid` (FK, same tenant/namespace).
-- `script_executions`: `warm_slot_id uuid` (null for a cold run) and `temperature text` (`cold`, `warm`), checked
-  against a live matching slot when the runner reports the execution.
+- `script_executions`: `warm_slot_id uuid` (null for a cold run) and `temperature text` (`cold`, `prepared`, `reused`;
+  corrected 2026-11-24, the draft had `cold` and `warm`), checked against a live matching slot when the runner reports
+  the execution.
 - Partial index `steps_detached_idx ON steps (tenant_id, namespace_id) WHERE lease_holder_kind = 'detached'`, built
   concurrently; Detach and the push `202` path count detached attempts through it under the namespace task-token
   advisory lock (exact `task_tokens` quota).
@@ -218,7 +237,10 @@ key stays on the run row, G1049); `run.deployment_pinned {deployment, build_id, 
 {deployment, from, to, actor, reason}`; `step.leased` gains optional `dispatch_mode`, `deployment_build_id`,
 `push_endpoint`, `checkpoint {attempt, digest, size}`; `step.detached {attempt, generation, expires_at, max_until}`;
 ending events (`step.failed`, lease expiry, timeout) gain optional `checkpoint {digest, size}`. Detail keys are
-snake_case. Old readers ignore unknown fields; replay of old journals yields null dispatch attributes and no pins. The
+snake_case. Old readers ignore unknown fields; replay of old journals yields null dispatch attributes and no pins.
+A push request never written appends ADR-0098's existing `step.lease_withdrawn` (cause `NOT_SENT`); this feature adds
+no event type for it. A detached timeout is an ending event with `failure_code = DETACHED_TIMEOUT`, which the reducer
+treats as an unknown outcome (added 2026-11-24). The
 reset rule of each event type (018's registry, coordinator decision C1) is listed in
 [contracts/errors-and-events.md](contracts/errors-and-events.md#journal-events-additive): `run.deployment_pinned`
 and `run.deployment_repinned` are `REMATERIALIZE`, the others `COPY`.
@@ -234,7 +256,7 @@ structure.
 
 Every new time column takes a class of 028's time-class catalog (`specs/028-developer-tooling/data-model.md` §1,
 manifest `crates/infra-postgres/time-classification.json`, coordinator decision C13): `steps.detached_deadline` (the
-maximum detached duration, bounded by the step timeout and run deadline) is `workflow_due`; detached-lease expiry
+maximum detached duration, bounded by the attempt's deadline and the run deadline, D019-007) is `workflow_due`; detached-lease expiry
 (and therefore task-token validity, which ends with the lease), `step_checkpoints.recorded_at`,
 `script_warm_slots.expires_at`, `push_endpoints.breaker_open_until`, `worker_session_activity.*`,
 `namespace_dispatch_insights.sampled_at`, version timestamps and `step_ended_leases.ended_at` are `infrastructure`;

@@ -7,12 +7,12 @@ use crate::{
 use futures_util::{FutureExt as _, future::BoxFuture};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     panic::AssertUnwindSafe,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering},
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -104,6 +104,94 @@ impl ActivityOutput {
 type Handler = dyn Fn(ActivityContext, Value) -> BoxFuture<'static, Result<ActivityOutput, ActivityFailure>>
     + Send
     + Sync;
+/// Called with the number of leases after a poll answer or a stream frame is read and before it is
+/// looked at; `None` except in the tests, which hold the receive loop there while `stop` begins.
+type FrameHook = dyn Fn(usize) + Send + Sync;
+/// The step failure code of a lease the host received and hands back without starting it, from
+/// protocol 1.8 (`sdks/SPEC.md` section 6.2). It is never raised to a caller and is not in the
+/// error catalog.
+const TASK_NOT_STARTED: &str = "TASK_NOT_STARTED";
+/// The first worker protocol minor on which the host hands a lease back: its server reserves
+/// `TASK_NOT_STARTED`, and an older one would record it as an ordinary failure that spends the
+/// attempt (decision D006-080).
+const HAND_BACK_MINOR: u32 = 8;
+/// The newest worker protocol minor this SDK understands: a newer accepted one is refused. The unit
+/// tests also run sessions of 1.8, the first minor on which the host hands a lease back, which no
+/// server of this build negotiates yet.
+#[cfg(not(test))]
+const NEWEST_MINOR: u32 = 6;
+#[cfg(test)]
+const NEWEST_MINOR: u32 = HAND_BACK_MINOR;
+/// Why a lease the host received is not run: it arrived after `stop` began, it is beyond the
+/// credit of the poll or the receive window or beyond the free slots, it is in the rest of a frame
+/// that broke the input budget of the window, or the host could not start it.
+const HAND_BACK_STOPPING: &str = "stopping";
+const HAND_BACK_CREDIT: &str = "credit";
+const HAND_BACK_MALFORMED: &str = "malformed";
+const HAND_BACK_NOT_STARTED: &str = "not_started";
+/// The serialized task inputs a receive window may carry in all (`stream-completion.md`).
+const MAX_STREAM_INPUT_BYTES: usize = 8 << 20;
+/// At most this many hand-backs are on their way at once; the others wait their turn in the order
+/// received (`sdks/SPEC.md` section 6.2, decision D006-026): a server that answers a poll with
+/// thousands of leases does not start thousands of reports.
+const MAX_HAND_BACKS: usize = 8;
+/// The hand-backs of a host: the queue in the order received, how many of the `MAX_HAND_BACKS`
+/// workers drain it, and the keys of the leases on their way, queued ones included. A lease under
+/// one of these keys is a duplicate (decision D006-027), but the keys hold no slot.
+#[derive(Default)]
+struct HandBacks {
+    queue: Mutex<VecDeque<HandBackJob>>,
+    workers: AtomicUsize,
+    keys: Mutex<BTreeSet<TaskKey>>,
+    /// A bound below `MAX_HAND_BACKS` for the tests (zero is the real bound).
+    #[cfg(test)]
+    bound: AtomicUsize,
+    /// The barrier of the tests at the moment a worker leaves: it reports that it found the queue
+    /// empty on the first sender and waits for the second before it gives up its place.
+    #[cfg(test)]
+    leaving: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+}
+struct HandBackJob {
+    session: Session,
+    lease: pb::TaskLease,
+    key: TaskKey,
+}
+impl HandBacks {
+    fn bound(&self) -> usize {
+        #[cfg(test)]
+        if let bound @ 1.. = self.bound.load(Ordering::Acquire) {
+            return bound;
+        }
+        MAX_HAND_BACKS
+    }
+    /// Takes one of the `MAX_HAND_BACKS` places of a worker, if one is free.
+    fn take_worker(&self) -> bool {
+        let bound = self.bound();
+        let mut workers = self.workers.load(Ordering::Acquire);
+        while workers < bound {
+            match self.workers.compare_exchange_weak(
+                workers,
+                workers + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(now) => workers = now,
+            }
+        }
+        false
+    }
+}
+/// A poisoned table or queue is still used: what it holds stays valid, and a lease must never be
+/// lost or taken for a new one because another thread panicked.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 struct Running {
     receive: CancellationToken,
     life: CancellationToken,
@@ -122,18 +210,22 @@ struct Core {
     handlers: Arc<BTreeMap<String, Arc<Handler>>>,
     permits: Arc<Semaphore>,
     tasks: Arc<Mutex<BTreeMap<TaskKey, ActivityContext>>>,
+    hand_backs: Arc<HandBacks>,
     wake: Arc<Notify>,
     protocol: Arc<Mutex<String>>,
     failure: tokio::sync::watch::Sender<Option<SagatError>>,
+    frame_received: Option<Arc<FrameHook>>,
 }
 pub struct WorkerHost {
     options: WorkerOptions,
     handlers: BTreeMap<String, Arc<Handler>>,
     permits: Arc<Semaphore>,
     tasks: Arc<Mutex<BTreeMap<TaskKey, ActivityContext>>>,
+    hand_backs: Arc<HandBacks>,
     protocol: Arc<Mutex<String>>,
     failure: tokio::sync::watch::Sender<Option<SagatError>>,
     running: Option<Running>,
+    frame_received: Option<Arc<FrameHook>>,
 }
 impl std::fmt::Debug for WorkerHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -210,10 +302,17 @@ impl WorkerHost {
             options,
             handlers: BTreeMap::new(),
             tasks: Arc::default(),
+            hand_backs: Arc::default(),
             protocol: Arc::default(),
             failure: tokio::sync::watch::channel(None).0,
             running: None,
+            frame_received: None,
         })
+    }
+    /// Installs the test barrier of the receive loop (`FrameHook`); it takes effect at the next start.
+    #[cfg(test)]
+    pub(crate) fn on_frame_received(&mut self, hook: impl Fn(usize) + Send + Sync + 'static) {
+        self.frame_received = Some(Arc::new(hook));
     }
     pub fn activity<I, O, F, Fut>(&mut self, name: &str, handler: F) -> Result<(), SagatError>
     where
@@ -357,9 +456,11 @@ impl WorkerHost {
             handlers: Arc::new(self.handlers.clone()),
             permits: self.permits.clone(),
             tasks: self.tasks.clone(),
+            hand_backs: self.hand_backs.clone(),
             wake: Arc::default(),
             protocol: self.protocol.clone(),
             failure: self.failure.clone(),
+            frame_received: self.frame_received.clone(),
         };
         let session = register(&core, rpc).await?;
         if core.options.transport == WorkerTransport::Stream && session.minor < 4 {
@@ -465,7 +566,7 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
                     })?;
                 // The canonical 1.6 protocol is the 1.5 ordinary-worker path plus managed database
                 // RPCs restricted to database-runner identities. Unknown future versions are refused.
-                if accepted > 6 {
+                if accepted > NEWEST_MINOR {
                     return Err(SagatError::new(
                         "UNSUPPORTED_PROTOCOL",
                         "the accepted worker protocol is newer than this SDK understands",
@@ -555,6 +656,10 @@ async fn receive_loop(
             && session.minor >= 4
             && !stream_disabled;
         let mut client = session.rpc.client.clone();
+        // Set when the server broke the receive contract (credit or input budget): the window ends
+        // with VALIDATION_FAILED, which is a receive failure to back off from, never the end of
+        // the host.
+        let mut contract_broken = false;
         let fetch = async {
             let request = session.rpc.request(request, "").await?;
             if streaming {
@@ -565,6 +670,8 @@ async fn receive_loop(
                     .into_inner();
                 let mut remaining = credit;
                 let mut delay = 1000;
+                let mut bytes = 0usize;
+                let mut window = BTreeSet::new();
                 let deadline =
                     tokio::time::Instant::now() + core.options.timeout.min(Duration::from_secs(6));
                 loop {
@@ -575,13 +682,50 @@ async fn receive_loop(
                     let Some(frame) = frame else {
                         break;
                     };
-                    delay = frame.retry_after_ms;
-                    for task in frame.tasks.into_iter().take(remaining) {
-                        dispatch(&core, &session, task, &life, &tracker);
-                        remaining -= 1;
+                    if let Some(hook) = &core.frame_received {
+                        hook(frame.tasks.len());
                     }
-                    if remaining == 0 {
+                    delay = frame.retry_after_ms;
+                    // A frame is looked at in the same poll that read it: `stop` drops this future
+                    // only at an await, so a frame is never lost once read. One read after `stop`
+                    // began (another frame was already buffered) is handed back whole (from protocol
+                    // 1.8).
+                    if receive.is_cancelled() {
+                        for task in frame.tasks {
+                            let why = Some(HAND_BACK_STOPPING);
+                            take(&core, &session, &mut window, task, why, &life, &tracker);
+                        }
                         break;
+                    }
+                    // The host runs at most the credit of the window, within its input budget: the
+                    // lease that breaks either and the rest of the frame after it are not run, and
+                    // the window ends. The window is read to its end, so that from protocol 1.8 a
+                    // lease the server sends beyond the credit is handed back, never left to lapse.
+                    let mut why = None;
+                    let mut broken = None;
+                    for task in frame.tasks {
+                        let size = task.input_json.len();
+                        if why.is_none() && remaining == 0 {
+                            why = Some(HAND_BACK_CREDIT);
+                            broken = Some(SagatError::new(
+                                "VALIDATION_FAILED",
+                                "task stream exceeded receive credit",
+                            ));
+                        } else if why.is_none() && size > MAX_STREAM_INPUT_BYTES - bytes {
+                            why = Some(HAND_BACK_MALFORMED);
+                            broken = Some(SagatError::new(
+                                "VALIDATION_FAILED",
+                                "task stream exceeded its input budget",
+                            ));
+                        }
+                        if take(&core, &session, &mut window, task, why, &life, &tracker) {
+                            bytes += size;
+                            remaining -= 1;
+                        }
+                    }
+                    if let Some(error) = broken {
+                        contract_broken = true;
+                        return Err(error);
                     }
                 }
                 Ok((credit - remaining, delay))
@@ -591,9 +735,23 @@ async fn receive_loop(
                     .await
                     .map_err(|e| error_of("PollTasks", e))?
                     .into_inner();
-                let count = response.tasks.len().min(credit);
-                for task in response.tasks.into_iter().take(credit) {
-                    dispatch(&core, &session, task, &life, &tracker);
+                if let Some(hook) = &core.frame_received {
+                    hook(response.tasks.len());
+                }
+                // The host runs at most as many tasks as it asked for, and nothing once `stop`
+                // began: the rest of the answer is not run (`sdks/SPEC.md` section 6.2).
+                let stopping = receive.is_cancelled();
+                let mut answer = BTreeSet::new();
+                let mut count = 0;
+                for task in response.tasks {
+                    let why = if stopping {
+                        Some(HAND_BACK_STOPPING)
+                    } else {
+                        (count >= credit).then_some(HAND_BACK_CREDIT)
+                    };
+                    if take(&core, &session, &mut answer, task, why, &life, &tracker) {
+                        count += 1;
+                    }
                 }
                 Ok((count, response.retry_after_ms))
             }
@@ -652,7 +810,7 @@ async fn receive_loop(
                     }
                 }
             }
-            Err(error) if !error.may_retry() => {
+            Err(error) if !error.may_retry() && !contract_broken => {
                 core.failure.send_replace(Some(error));
                 break;
             }
@@ -690,23 +848,16 @@ fn identity(value: &Option<pb::ExecutionInstanceIdentity>) -> Option<ExecutionIn
             .collect(),
     })
 }
-fn dispatch(
-    core: &Core,
-    session: &Session,
-    lease: pb::TaskLease,
-    life: &CancellationToken,
-    tracker: &TaskTracker,
-) {
-    let Ok(permit) = core.permits.clone().try_acquire_owned() else {
-        return;
-    };
-    let key = TaskKey {
+/// What identifies a task while it runs: the legacy task id is `run/node/generation`, which sibling
+/// iterations of a collection share, so from protocol 1.5 the instance path is part of it.
+fn task_key(lease: &pb::TaskLease, minor: u32) -> TaskKey {
+    TaskKey {
         id: lease.task_id.clone(),
         generation: lease.generation,
         instance_path: lease
             .instance
             .as_ref()
-            .filter(|_| session.minor >= 5)
+            .filter(|_| minor >= 5)
             .map(|identity| {
                 identity
                     .instance_path
@@ -715,6 +866,147 @@ fn dispatch(
                     .collect()
             })
             .unwrap_or_default(),
+    }
+}
+fn warn_duplicate(task: &str) {
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        tracing::warn!(
+            task,
+            "a task that is in flight or was already received was leased again: ignored"
+        )
+    }));
+}
+/// Dispatches a lease of a poll answer or of a stream receive window, or drops it when `why` is set
+/// (handing it back from protocol 1.8), and says whether it took a slot of the credit (it was dispatched, or the host tried to
+/// start it). A lease whose key is in flight, or was already seen in the same answer or window, is a
+/// duplicate: it is ignored and never reported, since its fence may be the one of the running
+/// handler (`sdks/SPEC.md` section 6.2). A poisoned in-flight table is still read for this check;
+/// `dispatch` then cannot record the lease in it and drops it.
+fn take(
+    core: &Core,
+    session: &Session,
+    seen: &mut BTreeSet<TaskKey>,
+    lease: pb::TaskLease,
+    why: Option<&'static str>,
+    life: &CancellationToken,
+    tracker: &TaskTracker,
+) -> bool {
+    let key = task_key(&lease, session.minor);
+    // A poisoned table is still read: a lease of a running task must never be taken for a new one.
+    let in_flight =
+        locked(&core.tasks).contains_key(&key) || locked(&core.hand_backs.keys).contains(&key);
+    if in_flight || !seen.insert(key.clone()) {
+        warn_duplicate(&lease.task_id);
+        return false;
+    }
+    match why {
+        Some(why) => {
+            hand_back(core, session, lease, key, why, life, tracker);
+            false
+        }
+        None => {
+            dispatch(core, session, key, lease, life, tracker);
+            true
+        }
+    }
+}
+/// Reports a lease the host received and will not run: `FailStep` `TASK_NOT_STARTED`, retryable,
+/// before any handler of it runs (`sdks/SPEC.md` section 6.2), on a session of protocol 1.8 or
+/// later. The server gives the step back without consuming the attempt when it can. Below 1.8 the
+/// lease is only logged and left to lapse. It is the failure report of every task, with its retries, made by one of at most
+/// `MAX_HAND_BACKS` workers in the order received; nothing here waits, so the receive loop never
+/// blocks on the bound. The workers run in the tracker, so `stop` waits for the queue like a task
+/// in flight while the channel is still open.
+fn hand_back(
+    core: &Core,
+    session: &Session,
+    lease: pb::TaskLease,
+    key: TaskKey,
+    why: &'static str,
+    life: &CancellationToken,
+    tracker: &TaskTracker,
+) {
+    if session.minor < HAND_BACK_MINOR {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            tracing::warn!(
+                task = lease.task_id.as_str(),
+                reason = why,
+                "the host drops a task it did not start; its lease lapses"
+            )
+        }));
+        return;
+    }
+    let inserted = locked(&core.hand_backs.keys).insert(key.clone());
+    // Only the receive loop hands back, and `take` checked the same key in this set just before:
+    // a lease is handed back at most once.
+    debug_assert!(inserted, "a lease was handed back twice");
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        tracing::warn!(
+            task = lease.task_id.as_str(),
+            reason = why,
+            "the host hands back a task it did not start"
+        )
+    }));
+    locked(&core.hand_backs.queue).push_back(HandBackJob {
+        session: session.clone(),
+        lease,
+        key,
+    });
+    // Every worker busy: the one that finishes first takes this hand-back up.
+    if core.hand_backs.take_worker() {
+        tracker.spawn(drain_hand_backs(core.clone(), life.clone()));
+    }
+}
+async fn drain_hand_backs(core: Core, life: CancellationToken) {
+    loop {
+        loop {
+            let Some(job) = locked(&core.hand_backs.queue).pop_front() else {
+                break;
+            };
+            let failure =
+                ActivityFailure::retryable(TASK_NOT_STARTED, "the host did not start this task");
+            let reported = report(&core, &job.session, &job.lease, None, Err(failure));
+            // `stop` gives up after its grace: what is left lapses, the queued hand-backs and the
+            // one on its way alike (its call is dropped, so it is never made after `stop`).
+            let made = tokio::select! {biased;_=life.cancelled()=>false,_=reported=>true};
+            if !made {
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    tracing::warn!(
+                        task = job.lease.task_id.as_str(),
+                        "the host stopped before it handed back a task: its lease lapses"
+                    )
+                }));
+            }
+            locked(&core.hand_backs.keys).remove(&job.key);
+        }
+        #[cfg(test)]
+        let barrier = locked(&core.hand_backs.leaving).take();
+        #[cfg(test)]
+        if let Some((found_empty, release)) = barrier {
+            let _ = found_empty.send(());
+            let _ = release.await;
+        }
+        core.hand_backs.workers.fetch_sub(1, Ordering::AcqRel);
+        // A hand-back queued while this worker was leaving may have found every place taken: it
+        // is taken up again here.
+        if locked(&core.hand_backs.queue).is_empty() || !core.hand_backs.take_worker() {
+            return;
+        }
+    }
+}
+fn dispatch(
+    core: &Core,
+    session: &Session,
+    key: TaskKey,
+    lease: pb::TaskLease,
+    life: &CancellationToken,
+    tracker: &TaskTracker,
+) {
+    let Ok(permit) = core.permits.clone().try_acquire_owned() else {
+        // No free slot, although the credit was counted from them: the lease is beyond the free
+        // slots (`sdks/SPEC.md` section 6.2, item 2).
+        hand_back(core, session, lease, key, HAND_BACK_CREDIT, life, tracker);
+        return;
     };
     let document = serde_json::from_str::<Value>(&lease.input_json)
         .ok()
@@ -786,13 +1078,27 @@ fn dispatch(
         lost: Arc::new(AtomicBool::new(false)),
         expires: Arc::new(AtomicI64::new(lease.expires_at_epoch_ms)),
     };
-    if let Ok(mut tasks) = core.tasks.lock() {
-        if tasks.contains_key(&key) {
+    match core.tasks.lock() {
+        Ok(mut tasks) => {
+            // Only the receive loop inserts, and `take` checked the same key in this table just
+            // before: a lease of a running task is never started again.
+            debug_assert!(!tasks.contains_key(&key), "a running task was leased again");
+            tasks.insert(key.clone(), ctx.clone());
+        }
+        Err(_) => {
+            // The in-flight table is poisoned: the task could not be recorded, so it is not started.
+            drop(permit);
+            hand_back(
+                core,
+                session,
+                lease,
+                key,
+                HAND_BACK_NOT_STARTED,
+                life,
+                tracker,
+            );
             return;
         }
-        tasks.insert(key.clone(), ctx.clone());
-    } else {
-        return;
     }
     let core = core.clone();
     let session = session.clone();
@@ -821,7 +1127,7 @@ fn dispatch(
         core.options.telemetry.emit(crate::EventKind::ActivityDuration,"activity",crate::SdkTransport::Grpc,Some(started.elapsed()),result.as_ref().err().map(|_|"ACTIVITY_ERROR"));
         if let Some(cap)=&ctx.capabilities {cap.invalidate();}
         if !ctx.lost.load(Ordering::Acquire) && !matches!(&result,Err(e) if e.cancelled && ctx.cancellation_reason()==Some(CancellationReason::Shutdown)) {
-            report(&core,&session,&lease,&ctx,result).await;
+            report(&core,&session,&lease,Some(&ctx),result).await;
         }
         finish.cancel();let _=heartbeat.await;
         if let Ok(mut tasks)=core.tasks.lock(){tasks.remove(&key);}
@@ -904,11 +1210,13 @@ async fn heartbeat(
         }
     }
 }
+/// Reports the result of a task; `ctx` is `None` for a lease that is handed back, which has no
+/// handler to cancel when the lease is no longer this host's.
 async fn report(
     core: &Core,
     session: &Session,
     lease: &pb::TaskLease,
-    ctx: &ActivityContext,
+    ctx: Option<&ActivityContext>,
     result: Result<ActivityOutput, ActivityFailure>,
 ) {
     let result = match result {
@@ -940,13 +1248,21 @@ async fn report(
                     output_sha256,
                     traceparent: lease.traceparent.clone(),
                     instance,
+                    // The step-log carry of protocol 1.7 (design 041 section 2a): this SDK captures no step log
+                    // until its own task builds the capture, so it carries none, as a worker below 1.7.
+                    step_logs: None,
                 }),
                 None,
             )
         }
         Err(error) => {
+            // TASK_NOT_STARTED is reserved for the host (`sdks/SPEC.md` section 6.2): only a
+            // hand-back, the one report without a handler (`ctx` is `None`), sends it; a handler's
+            // failure that carries it is a WORKER_ERROR, with its own message and retryable flag.
+            let reserved = error.code == TASK_NOT_STARTED && ctx.is_some();
             let code = if !error.code.is_empty()
                 && error.code.len() <= 64
+                && !reserved
                 && error
                     .code
                     .bytes()
@@ -971,12 +1287,15 @@ async fn report(
                     retryable: error.retryable,
                     traceparent: lease.traceparent.clone(),
                     instance,
+                    // The step-log carry of protocol 1.7 (design 041 section 2a): this SDK captures no step log
+                    // until its own task builds the capture, so it carries none, as a worker below 1.7.
+                    step_logs: None,
                 }),
             )
         }
     };
     for attempt in 0..core.options.retry.max_attempts.min(5) {
-        if ctx.lost.load(Ordering::Acquire) {
+        if ctx.is_some_and(|ctx| ctx.lost.load(Ordering::Acquire)) {
             return;
         }
         let mut client = session.rpc.client.clone();
@@ -1010,7 +1329,11 @@ async fn report(
                     "report",
                     crate::SdkTransport::Grpc,
                     None,
-                    None,
+                    // A hand-back is told from the other failures by its code; the code of a
+                    // handler's failure is not a bounded value and is not carried.
+                    fail.as_ref()
+                        .filter(|body| body.error_code == TASK_NOT_STARTED)
+                        .map(|_| TASK_NOT_STARTED),
                 );
                 return;
             }
@@ -1022,7 +1345,9 @@ async fn report(
                     None,
                     Some(error.code),
                 );
-                ctx.cancel(CancellationReason::LeaseLost);
+                if let Some(ctx) = ctx {
+                    ctx.cancel(CancellationReason::LeaseLost);
+                }
                 return;
             }
             Err(error)
@@ -1030,7 +1355,18 @@ async fn report(
             {
                 tokio::time::sleep(core.options.retry.after(attempt, error.retry_after)).await;
             }
-            Err(_) => return,
+            Err(error) => {
+                // The report cannot be made: the lease lapses (for a hand-back, `sdks/SPEC.md`
+                // section 6.2). The task id and the code only, never the lease token.
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    tracing::warn!(
+                        task = lease.task_id.as_str(),
+                        code = error.code,
+                        "the report of a task could not be made: its lease lapses"
+                    )
+                }));
+                return;
+            }
         }
     }
 }

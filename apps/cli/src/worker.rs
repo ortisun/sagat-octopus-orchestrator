@@ -252,6 +252,8 @@ impl Dev<'_> {
                 let request = authed(
                     &self.token,
                     FailStepRequest {
+                        // Design 041 (protocol 1.7): the development worker captures no step log.
+                        step_logs: None,
                         task_id: task.task_id.clone(),
                         run_id: task.run_id.clone(),
                         step_id: task.step_id.clone(),
@@ -283,6 +285,8 @@ impl Dev<'_> {
                 let request = authed(
                     &self.token,
                     CompleteStepRequest {
+                        // Design 041 (protocol 1.7): the development worker captures no step log.
+                        step_logs: None,
                         task_id: task.task_id.clone(),
                         run_id: task.run_id.clone(),
                         step_id: task.step_id.clone(),

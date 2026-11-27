@@ -14,6 +14,7 @@ mod request;
 mod server;
 mod service;
 mod status;
+mod undelivered;
 
 /// Generated messages, server and client of `sagat_octopus_orchestrator.v1`.
 #[allow(
@@ -42,6 +43,9 @@ pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
 pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
+pub use undelivered::{
+    Abandonment, DEFAULT_WITHDRAWAL_CONCURRENCY, DeliveryProbe, Withdrawals, withdrawal_concurrency,
+};
 
 impl std::fmt::Debug for pb::ResolvedDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -96,9 +100,16 @@ impl std::fmt::Debug for pb::AppendStepLogsRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppendStepLogsRequest")
             .field("records", &self.records.len())
-            .field("final_batch", &self.final_batch)
-            .field("highest_sequence", &self.highest_sequence)
             .finish_non_exhaustive()
+    }
+}
+// The last records of an attempt on its report (design 041 section 2a): its counts only.
+impl std::fmt::Debug for pb::StepLogCarry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepLogCarry")
+            .field("records", &self.records.len())
+            .field("highest_sequence", &self.highest_sequence)
+            .finish()
     }
 }
 impl std::fmt::Debug for pb::StepLogRecord {

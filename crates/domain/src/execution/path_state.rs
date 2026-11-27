@@ -857,6 +857,7 @@ impl PathExecutionState {
             }
             event @ (RunEvent::StepReleased { .. }
             | RunEvent::StepLeased { .. }
+            | RunEvent::StepLeaseWithdrawn { .. }
             | RunEvent::StepStarted { .. }
             | RunEvent::StepCompleted { .. }
             | RunEvent::StepRetryScheduled { .. }

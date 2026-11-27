@@ -49,8 +49,17 @@ trap cleanup EXIT
 
 # The PostgreSQL the benchmark runs against: the image defaults (fsync on, synchronous_commit on, shared_buffers 128MB) except
 # max_connections, which the scenarios need (a pool of 48 for the 32-way claim, two replicas of 16, the owner pool). Loopback only.
+# The idle scenarios count the statements of the engine with pg_stat_statements, which must be preloaded; the other scenarios run
+# on the server of the report, without it (SAGAT_PERF_PG_STATEMENTS=1 or 0 says otherwise; the default is 1 only when the selection
+# names "idle").
+STATEMENTS="${SAGAT_PERF_PG_STATEMENTS:-}"
+if [ -z "$STATEMENTS" ]; then
+  if [[ "$ONLY" == *idle* ]]; then STATEMENTS=1; else STATEMENTS=0; fi
+fi
+EXTRA=()
+if [ "$STATEMENTS" = 1 ]; then EXTRA=(-c shared_preload_libraries=pg_stat_statements); fi
 docker run -d --name "$NAME" -p "127.0.0.1:$PORT:5432" -e POSTGRES_PASSWORD=postgres --shm-size=1g "$IMAGE" \
-  -c max_connections=200 >/dev/null
+  -c max_connections=200 ${EXTRA[@]+"${EXTRA[@]}"} >/dev/null
 for _ in $(seq 1 60); do
   if docker exec "$NAME" pg_isready -U postgres >/dev/null 2>&1 \
      && docker exec "$NAME" psql -U postgres -tAc 'SELECT 1' >/dev/null 2>&1; then break; fi
@@ -65,7 +74,7 @@ URL="postgres://postgres:postgres@127.0.0.1:$PORT/postgres"
   echo "hw.ncpu / hw.memsize: $(sysctl -n hw.ncpu hw.memsize 2>/dev/null | tr '\n' ' ')"
   echo "docker: $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes, {{.OperatingSystem}}, server {{.ServerVersion}}, {{.Driver}}')"
   echo "image: $IMAGE"
-  echo "container: $NAME, port $PORT, --shm-size=1g, -c max_connections=200"
+  echo "container: $NAME, port $PORT, --shm-size=1g, -c max_connections=200 ${EXTRA[*]+${EXTRA[*]}}"
   echo "postgres: $(docker exec "$NAME" psql -U postgres -tAc 'SELECT version()')"
   docker exec "$NAME" psql -U postgres -tAc \
     "SELECT name || ' = ' || setting || coalesce(unit, '') FROM pg_settings WHERE name IN ('shared_buffers','max_connections','work_mem','effective_cache_size','synchronous_commit','fsync','full_page_writes','max_wal_size','wal_level','random_page_cost','checkpoint_timeout','wal_buffers') ORDER BY name"
@@ -110,7 +119,7 @@ scenario() { # label test-name [VAR=value ...]
     snapshot "$label" "$rep" before
     local began=$SECONDS status=0
     env SAGAT_TEST_DATABASE_URL="$URL" SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_PERF_FRAGMENTS="$OUT/fragments" \
-        SAGAT_PERF_PG_IMAGE="$IMAGE" "$@" \
+        SAGAT_PERF_PG_IMAGE="$IMAGE" SAGAT_PERF_PG_CONTAINER="$NAME" "$@" \
         "$BIN" --ignored --nocapture --test-threads=1 --exact "$test" >"$OUT/logs/$label.$rep.log" 2>&1 || status=$?
     snapshot "$label" "$rep" after
     printf '%s\t%s\t%s\t%s\n' "$label" "$rep" "$status" "$((SECONDS - began))" >> "$OUT/status.tsv"
@@ -133,6 +142,8 @@ scenario claim                 business_id_claim_thirty_two_way                 
 scenario reset                 reset_at_the_sizes_of_the_ceiling                    SAGAT_PERF_RESET_EVENTS=1000,5000,20000
 scenario triggers-steady       trigger_handover_steady_state                        SAGAT_PERF_TRIGGERS=10000,100000
 scenario triggers-backlog      trigger_handover_backlog_after_an_upgrade            SAGAT_PERF_TRIGGERS=10000,100000 SAGAT_PERF_TRIGGER_SECONDS=60
+# The tenant set of the automatic handover's audit under the lock (G2248): 100,000 converged cron triggers of 1,000 tenants.
+scenario triggers-tenant-set   trigger_handover_tenant_set_under_the_lock           SAGAT_PERF_TRIGGERS=100000 SAGAT_PERF_TRIGGER_TENANTS=1000
 
 # Between the two sizes of the steady state, where the handover check on a converged fleet was found to depend on the size.
 scenario triggers-steady-mid   trigger_handover_steady_state                        SAGAT_PERF_TRIGGERS=20000,50000
@@ -142,6 +153,13 @@ scenario triggers-steady-small trigger_handover_steady_state                    
 # default rate), and the schedule pass with the hard ceilings of its round (1,000 actions, 500 schedules) at 10,000 schedules.
 scenario batch-one-default-poll50 batch_one_job_at_the_default_rate             SAGAT_PERF_BATCH_RUNS=120 SAGAT_PERF_BATCH_POLL_MS=50
 scenario firing-instant-round1000 firing_lag_all_due_at_the_same_instant        SAGAT_PERF_SCHEDULES=10000 SAGAT_PERF_SCHEDULES_ROUND_ACTIONS=1000 SAGAT_PERF_SCHEDULES_BATCH=500
+
+# What the schedule passes cost a deployment with no schedule and no cron trigger (on by default since 0.3.0, OD-2026-11-13-8):
+# five windows of 60 s (nothing, the schedule pass alone, the reconciliation alone, both, nothing) at 2 and at 100 tenants, and the
+# throughput of runs that start and complete with the passes on and off, in pairs whose order alternates.
+scenario idle                  idle_cost_of_the_schedule_passes_without_schedules    SAGAT_PERF_IDLE_TENANTS=2 SAGAT_PERF_IDLE_SECONDS=60
+scenario idle-100-tenants      idle_cost_of_the_schedule_passes_without_schedules    SAGAT_PERF_IDLE_TENANTS=100 SAGAT_PERF_IDLE_SECONDS=60
+scenario idle-throughput       run_throughput_with_the_schedule_passes_on_and_off    SAGAT_PERF_THROUGHPUT_RUNS=2000 SAGAT_PERF_THROUGHPUT_PAIRS=3
 
 echo "== summary" >&2
 python3 -I "$(dirname "$0")/summarize.py" "$OUT" | tee "$OUT/summary.md"

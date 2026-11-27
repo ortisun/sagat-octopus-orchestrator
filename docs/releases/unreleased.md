@@ -3,6 +3,20 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Workers: leases no host received are withdrawn (feature 006, ADR-0098)
+
+- A lease the engine committed and never handed to a host goes back to `READY` with its attempt unspent, recorded as the new
+  journal event `step.lease_withdrawn`, once the operator records the requirement `lease-withdrawal-v1` with the new
+  generic command `control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-live N` (owner role).
+  Until then nothing changes. The requirement cannot be removed once a journal holds the event; `SAGAT_LEASE_WITHDRAWAL=off`
+  on an engine stops new withdrawals. `docs/runbooks/lease-withdrawal.md`.
+- Migration `20270208000200_lease_withdrawal_floor` builds a partial index on `run_events` under a SHARE lock (journal
+  writes wait for it); on a large journal build it `CONCURRENTLY` first (the recipe is in the runbook, "Before upgrading").
+- The six SDKs hand a lease they will not run back with `TASK_NOT_STARTED` only on a session of worker protocol 1.8 or
+  later; below it, as before, the lease lapses. A handler that raises `TASK_NOT_STARTED` is reported as `WORKER_ERROR`.
+- A release that carries this without its follow-up (the requests of ADR-0099, decision D006-090) cannot be the build a
+  protocol 1.8 build rolls back to (gap G006-032).
+
 ## Breaking: every run input is checked against its version's schema (design 043)
 
 From 0.3.0 the input of every run is checked against the `inputSchema` of the version the run pins, before the run is
@@ -48,6 +62,48 @@ decides from now on changes:
 
 Workers that are stopped before their in-flight activities end now create review items. Drain
 workers before a restart ([scaling runbook](../runbooks/scaling.md#draining-workers-before-a-restart)).
+
+## Schedules are on by default (feature 018, OD-2026-11-13-8)
+
+`SAGAT_SCHEDULES_ENABLED` now defaults to `true` in the control plane and the engine (and in the development stack and the Helm chart, value
+`schedules.enabled`): a deployment that sets nothing serves the schedule routes and runs the schedule pass. Upgrade in this order: migrate, then
+the execution engines, then the control planes (OD-2026-11-14-3). **An explicit `SAGAT_SCHEDULES_ENABLED=false` kept from 0.2 keeps schedules off**,
+and after the handover of the cron triggers such an engine is refused at registration: remove the line, or keep it on purpose
+([schedules runbook](../runbooks/schedules.md#2-turning-it-on-and-off)). Batch operations and the two reset switches stay off by default.
+
+## The cron triggers are handed over automatically after a deployment (feature 018, ADR-0091, D2248)
+
+**The handover of the cron triggers from the legacy cron pass to the schedule pass is automatic.** A one-shot job of the deployment (the compose
+service `schedule-trigger-handover`, the Helm Job `<release>-schedule-trigger-handover-<revision>`) runs `control-plane schedule-trigger-handover
+--auto` as the narrow role `sagat_handover` and hands over once the database finds, in three rounds 15 s apart and no sooner than ten minutes after
+the job began, that every engine seen in the last ten minutes lists `schedules-v1`, the live engines hold still (at least `--min-live`), no engine
+below 0.3.0 is seen in the scheduler memberships, the reconciliation made no trigger schedule in the last ten minutes, a control plane is live and no
+cron trigger lacks its schedule ([schedules runbook](../runbooks/schedules.md#62-the-handover-step-by-step)).
+
+- **How to see that it happened:** `trigger_schedule_handover_mode{mode="AUTOMATIC"}` is 1 in every engine; the log line `the cron triggers were
+  handed over to the schedule pass` (mode, epoch, engines, the count of tenants); `SELECT state, changed_mode, changed_at FROM
+  schedule_trigger_handover`; every tenant that had a cron trigger has the audit record `schedule.trigger_handover`. While it waits,
+  `trigger_schedule_handover_blocked{reason}` says why ([6.3](../runbooks/schedules.md#63-why-a-handover-is-blocked)).
+- **It is one-way:** there is no command back, the schema `down` refuses once it happened, and no engine below 0.3.0 may run after it (it would
+  ignore a pause).
+- **What to do:** give `migrate` `SAGAT_HANDOVER_PASSWORD` (it creates and grants `sagat_handover` at every run and sets its login from a SCRAM
+  verifier while the state is `LEGACY`), or create the login once; in Helm put `DATABASE_URL` (without the password) and `SAGAT_HANDOVER_PASSWORD`
+  in the Secret `schedules.autoHandover.databaseSecret`. After the handover retire the role (`--retire-role`, `schedules.autoHandover.retireRole`,
+  `SAGAT_HANDOVER_RETIRE_ROLE`, or `ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL`), **then switch the job off
+  (`schedules.autoHandover.enabled: false`, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`)**, and only then delete the Secret: a later release would
+  otherwise run a job that cannot log in. Give `migrate` `SAGAT_HANDOVER_MIN_LIVE` (the engine's replicas or the autoscaler's minimum), the
+  floor the job counts live engines with.
+- **`helm upgrade` with the values of 0.2 fails at render** until `schedules.autoHandover.databaseSecret` names the Secret or the job is
+  switched off: the job is on by default and the chart requires its Secret (fail-closed; architecture review of 2026-11-15, m6). A role
+  that may create in a schema is refused its grants and its login: on a database first made before PostgreSQL 15 run
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` first (security review of 2026-11-15). The schema `down` of the release leaves the role's
+  login to you (`ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL`, D2306).
+- **To keep it manual:** `schedules.autoHandover.enabled: false` (or `schedules.autoHandover: false`) in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`
+  in compose; then hand over with `--apply` as before.
+- **What is accepted:** an engine binary below the registry release that never registers keeps its legacy pass and ignores a pause (G2005); a
+  control plane below 0.3.0 that publishes after the handover loses that trigger's first ticks until the reconciliation plans it (G2020); a backfill
+  over ticks the legacy pass started more than seven days ago starts a second run (G2021). **An engine with `SAGAT_SCHEDULES_ENABLED=false` holds the
+  handover** (it lists no `schedules-v1`).
 
 ## Schedules: the business-id prefix of an action (feature 018)
 

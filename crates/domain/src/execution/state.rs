@@ -1467,6 +1467,17 @@ impl StepState {
         self.attempt == attempt && self.generation == generation
     }
 
+    /// A lease that never reached a handler is taken back (feature 006, decision D006-003): the step is ready again, the
+    /// attempt that never began is given back so the next lease reuses its number, and the generation is kept so the next
+    /// lease has the next one. A request to stop is cleared, as a new lease clears it: the planner cancels a ready step of a
+    /// stopping scope at once (decision D006-011).
+    fn withdraw_lease(&mut self) {
+        self.status = StepStatus::Ready;
+        self.attempt = self.attempt.saturating_sub(1);
+        self.cancel_requested = false;
+        self.next_attempt_at = None;
+    }
+
     pub(super) fn apply_instance_lifecycle(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -1502,6 +1513,17 @@ impl StepState {
                 self.generation = *generation;
                 self.cancel_requested = false;
                 self.next_attempt_at = None;
+            }
+            RunEvent::StepLeaseWithdrawn {
+                attempt,
+                generation,
+                ..
+            } => {
+                require(self, &[Leased])?;
+                if !self.fenced_by(*attempt, *generation) {
+                    return Err(stale_attempt(instance));
+                }
+                self.withdraw_lease();
             }
             RunEvent::StepStarted {
                 attempt,
@@ -3840,6 +3862,15 @@ impl RunState {
                 step.cancel_requested = false;
                 step.next_attempt_at = None;
             }
+            RunEvent::StepLeaseWithdrawn {
+                node,
+                attempt,
+                generation,
+                ..
+            } => {
+                self.fenced_step(node, name, &[Leased], *attempt, *generation)?
+                    .withdraw_lease();
+            }
             RunEvent::StepStarted {
                 node,
                 attempt,
@@ -4432,6 +4463,7 @@ impl RunState {
             }
             event @ (RunEvent::StepReleased { .. }
             | RunEvent::StepLeased { .. }
+            | RunEvent::StepLeaseWithdrawn { .. }
             | RunEvent::StepStarted { .. }
             | RunEvent::StepCompleted { .. }
             | RunEvent::StepRetryScheduled { .. }
@@ -4800,6 +4832,30 @@ pub fn derived_settles_drain(
             && original.is_some_and(StepStatus::is_terminal))
 }
 
+/// What the stop rule of a report reads of its attempt and its run (design 041, OD-2026-11-16-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportFence {
+    /// The step's cancellation was asked for.
+    pub cancel_requested: bool,
+    /// The run is stopping (its stop reason is set).
+    pub run_stopping: bool,
+    pub run_finished: bool,
+    /// The node is a compensation or a reconciliation, which runs while its run stops.
+    pub derived_node: bool,
+}
+
+/// The stop rule of a report, one rule for every caller (OD-2026-11-16-11): the report of an attempt is refused once its
+/// run has finished; and, unless the report is the answer to a cancellation (`cancellation_report`), once its step's
+/// cancellation was asked for, or once its run is stopping and its node is not a compensation or a reconciliation.
+/// `attempt_authority_fence` applies it to a report; the step-log ingest applies it at T2 to a batch, which is never a
+/// cancellation report, so that a batch is stored exactly when a report of its attempt would be accepted.
+#[must_use]
+pub const fn report_fence_allows(fence: ReportFence, cancellation_report: bool) -> bool {
+    !fence.run_finished
+        && (cancellation_report || !fence.cancel_requested)
+        && (cancellation_report || !fence.run_stopping || fence.derived_node)
+}
+
 /// Whether a step in `RETRY_WAIT` must hold back the drain of its iteration instead of being
 /// cancelled with it: its last attempt left the outcome unknown (a v0.1/v0.2 journal; current
 /// engines never schedule such a retry). Its due retry turns it into a review (`retry_due`), so the
@@ -4811,4 +4867,57 @@ pub fn derived_settles_drain(
 #[must_use]
 pub fn retry_wait_holds_drain(status: StepStatus, failure: Option<&FailureCode>) -> bool {
     status == StepStatus::RetryWait && failure.is_some_and(FailureCode::leaves_outcome_unknown)
+}
+
+#[cfg(test)]
+mod report_fence_tests {
+    use super::{ReportFence, report_fence_allows};
+
+    const OPEN: ReportFence = ReportFence {
+        cancel_requested: false,
+        run_stopping: false,
+        run_finished: false,
+        derived_node: false,
+    };
+
+    /// Design 041, OD-2026-11-16-11: every combination of the four facts, for a report that answers a cancellation and
+    /// for one that does not, against the rule written out.
+    #[test]
+    fn the_report_fence_refuses_exactly_what_the_stop_rule_refuses() {
+        for bits in 0..16u8 {
+            let fence = ReportFence {
+                cancel_requested: bits & 1 != 0,
+                run_stopping: bits & 2 != 0,
+                run_finished: bits & 4 != 0,
+                derived_node: bits & 8 != 0,
+            };
+            for cancellation in [false, true] {
+                let expected = !fence.run_finished
+                    && (cancellation
+                        || (!fence.cancel_requested
+                            && (!fence.run_stopping || fence.derived_node)));
+                assert_eq!(
+                    report_fence_allows(fence, cancellation),
+                    expected,
+                    "{fence:?} {cancellation}"
+                );
+            }
+        }
+        assert!(report_fence_allows(OPEN, false));
+        assert!(!report_fence_allows(
+            ReportFence {
+                run_stopping: true,
+                ..OPEN
+            },
+            false
+        ));
+        assert!(report_fence_allows(
+            ReportFence {
+                run_stopping: true,
+                derived_node: true,
+                ..OPEN
+            },
+            false
+        ));
+    }
 }

@@ -28,15 +28,6 @@ fn config(extra: &[(&str, &str)]) -> EngineConfig {
     EngineConfig::from_lookup(&lookup, Environment::Dev).expect("a configuration")
 }
 
-#[test]
-fn the_default_engine_runs_no_schedule_pass_and_lists_only_run_input_validation() {
-    // design 043: `enforce` is the default, and an engine in `enforce` promises `run-input-validation-v1`
-    assert_eq!(
-        capabilities(&config(&[])),
-        vec![Capability::RunInputValidationV1]
-    );
-}
-
 /// FR-043-013: the capability is listed only in `enforce`, so a replica in `report` is refused once it is required.
 #[test]
 fn an_engine_in_report_mode_does_not_list_run_input_validation() {
@@ -49,6 +40,8 @@ fn an_engine_in_report_mode_does_not_list_run_input_validation() {
         if listed {
             expected.push(Capability::RunInputValidationV1);
         }
+        expected.push(Capability::LeaseWithdrawalV1);
+        expected.push(Capability::LeaseWithdrawalV2);
         assert_eq!(list, expected, "SAGAT_RUN_INPUT_VALIDATION={mode:?}");
     }
 }
@@ -88,15 +81,24 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
         ("false", false),
         ("0", false),
         ("no", false),
-        ("", false),
+        ("", true),
     ] {
         let list = capabilities(&config(&[("SAGAT_SCHEDULES_ENABLED", flag)]));
         assert_eq!(
             list,
             if listed {
-                vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+                vec![
+                    Capability::SchedulesV1,
+                    Capability::RunInputValidationV1,
+                    Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
+                ]
             } else {
-                vec![Capability::RunInputValidationV1]
+                vec![
+                    Capability::RunInputValidationV1,
+                    Capability::LeaseWithdrawalV1,
+                    Capability::LeaseWithdrawalV2,
+                ]
             },
             "SAGAT_SCHEDULES_ENABLED={flag:?}"
         );
@@ -106,10 +108,19 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
 #[test]
 fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pass() {
     let list = capabilities(&config(&[
+        ("SAGAT_SCHEDULES_ENABLED", "false"),
         ("SAGAT_BATCHES_ENABLED", "true"),
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
     ]));
-    assert_eq!(list, vec![Capability::RunInputValidationV1], "{list:?}");
+    assert_eq!(
+        list,
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
+        ],
+        "{list:?}"
+    );
     let all = capabilities(&config(&[
         ("SAGAT_SCHEDULES_ENABLED", "true"),
         ("SAGAT_BATCHES_ENABLED", "true"),
@@ -117,7 +128,12 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
     ]));
     assert_eq!(
         all,
-        vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+        vec![
+            Capability::SchedulesV1,
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
+        ]
     );
 }
 
@@ -272,7 +288,35 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
     }
     // the request surfaces: the worker API obeys the gate in its admission layer
     assert!(
-        source.contains("WorkerGrpc::new(state, workers).with_serving_gate("),
+        source
+            .split_whitespace()
+            .collect::<String>()
+            .contains("WorkerGrpc::new(state,workers).with_serving_gate("),
         "the worker API was not given the gate"
+    );
+}
+
+/// Schedules are on by default in 0.3.0 (OD-2026-11-13-8): an engine started with no setting runs the schedule pass and
+/// says so, and only an explicit `false` takes it out.
+#[test]
+fn the_default_engine_lists_schedules_v1() {
+    // schedules on by default (OD-2026-11-13-8), `enforce` by default (design 043), and every engine of this build lists
+    // `lease-withdrawal-v1` (feature 006) and, since the follow-up of pull request #260, `lease-withdrawal-v2`
+    assert_eq!(
+        capabilities(&config(&[])),
+        vec![
+            Capability::SchedulesV1,
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
+        ]
+    );
+    assert_eq!(
+        capabilities(&config(&[("SAGAT_SCHEDULES_ENABLED", "false")])),
+        vec![
+            Capability::RunInputValidationV1,
+            Capability::LeaseWithdrawalV1,
+            Capability::LeaseWithdrawalV2
+        ]
     );
 }

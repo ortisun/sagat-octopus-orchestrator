@@ -561,6 +561,7 @@ impl Worker<'_> {
 
     pub fn complete_message(lease: &TaskLease, output: &str) -> CompleteStepRequest {
         CompleteStepRequest {
+            step_logs: None,
             task_id: lease.task_id.clone(),
             run_id: lease.run_id.clone(),
             step_id: lease.step_id.clone(),
@@ -578,6 +579,7 @@ impl Worker<'_> {
 
     pub fn fail_message(lease: &TaskLease, code: &str, retryable: bool) -> FailStepRequest {
         FailStepRequest {
+            step_logs: None,
             task_id: lease.task_id.clone(),
             run_id: lease.run_id.clone(),
             step_id: lease.step_id.clone(),

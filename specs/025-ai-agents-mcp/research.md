@@ -201,3 +201,5 @@ decision 2026-11-24-4); the rows are in `docs/owner-decisions.md`.
 Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, Owner decision
 2026-11-15-8). This feature takes the next free minor of the register in `sdks/SPEC.md` section 9 when its contract
 merges (Gap 1280).
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the register in `sdks/SPEC.md` section 9 names 1.9 for design 045 and 1.10 to 1.12 for draft 019 (2026-11-27). A host of a later minor also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

@@ -26,8 +26,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::instances::{
-    Activated, Activation, Capability, ChangeRefused, Heartbeat, InstanceStore, InstanceToken,
-    Registered, Registration, Removed, Requirement, Requirements,
+    Activated, Activation, Capability, ChangeRefused, Heartbeat, InstanceKind, InstanceStore,
+    InstanceToken, Registered, Registration, Removed, Requirement, Requirements,
 };
 use sagat_domain::identity::Subject;
 use sqlx::{PgPool, Row};
@@ -309,9 +309,11 @@ impl InstanceStore for PgInstanceStore {
         instance: Uuid,
         token: &InstanceToken,
     ) -> Result<Heartbeat, StoreError> {
+        // the beat that never waits for the epoch and says when an operator's change holds it (feature 006, decision
+        // D006-098; migration `20270211000300_instance_heartbeat_reporting_change`)
         let row = sqlx::query(
-            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts \
-             FROM instance_heartbeat($1, $2)",
+            "SELECT out_found, out_epoch, out_live_kinds, out_live_counts, out_change_in_progress \
+             FROM instance_heartbeat_reporting_change($1, $2)",
         )
         .bind(instance)
         .bind(token.as_bytes().as_slice())
@@ -323,6 +325,7 @@ impl InstanceStore for PgInstanceStore {
         Ok(Heartbeat {
             found: col(&row, "out_found")?,
             epoch: col(&row, "out_epoch")?,
+            change_in_progress: col(&row, "out_change_in_progress")?,
             live: kinds
                 .into_iter()
                 .zip(counts)
@@ -368,6 +371,131 @@ impl InstanceStore for PgInstanceStore {
             }
         }
         Ok(Requirements { epoch, required })
+    }
+}
+
+/// The live instances (seen within 30 seconds, as the activation counts them) of the kinds asked, and those of them that do
+/// not list a capability, for an operator command that records a requirement of it (feature 006,
+/// `control-plane capability-activate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityCensus {
+    pub live: u32,
+    pub lacking: u32,
+    /// Up to sixteen of the instances that lack it.
+    pub lacking_examples: Vec<Uuid>,
+    /// Whether the requirement is recorded already.
+    pub recorded: bool,
+    /// The kinds asked that have at least one live instance (decision D006-082), in the order of [`InstanceKind::ALL`].
+    pub kinds_live: Vec<InstanceKind>,
+}
+
+/// Counts the live instances of `kinds` and those that lack `capability`, in one statement, through the owner's function
+/// `platform_capability_census`: the runtime role may not run it.
+///
+/// # Errors
+/// The store's.
+pub async fn capability_census(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+    kinds: &[InstanceKind],
+) -> Result<CapabilityCensus, StoreError> {
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    let row = sqlx::query(
+        "SELECT out_live AS live, out_lacking AS lacking, out_examples AS examples, out_recorded AS recorded, \
+                out_kinds_live AS kinds_live \
+           FROM platform_capability_census($1, $2)",
+    )
+    .bind(capability.as_str())
+    .bind(&kinds)
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)?;
+    Ok(CapabilityCensus {
+        live: u32::try_from(col::<i32>(&row, "live")?).map_err(|_| corrupt("live instances"))?,
+        lacking: u32::try_from(col::<i32>(&row, "lacking")?)
+            .map_err(|_| corrupt("lacking instances"))?,
+        lacking_examples: col(&row, "examples")?,
+        recorded: col(&row, "recorded")?,
+        kinds_live: {
+            let tokens: Vec<String> = col(&row, "kinds_live")?;
+            let mut kinds = Vec::with_capacity(tokens.len());
+            for token in &tokens {
+                kinds.push(InstanceKind::parse(token).ok_or_else(|| corrupt("instance kind"))?);
+            }
+            InstanceKind::ALL
+                .into_iter()
+                .filter(|kind| kinds.contains(kind))
+                .collect()
+        },
+    })
+}
+
+/// Whether the role of this session may record a requirement (execute the activation function): the runtime role may not.
+///
+/// # Errors
+/// The store's.
+pub async fn may_activate(conn: &mut sqlx::PgConnection) -> Result<bool, StoreError> {
+    sqlx::query_scalar(
+        "SELECT has_function_privilege('platform_requirement_activate(text, text[], text)', 'EXECUTE')",
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
+/// Whether `capability` is a recorded requirement of every kind in `kinds` (feature 006, decision D006-096: an entry of
+/// `control-plane capability-activate` that follows another).
+///
+/// # Errors
+/// The store's.
+pub async fn requirement_recorded(
+    conn: &mut sqlx::PgConnection,
+    capability: Capability,
+    kinds: &[InstanceKind],
+) -> Result<bool, StoreError> {
+    let kinds: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = $1 AND kinds @> $2::text[])",
+    )
+    .bind(capability.as_str())
+    .bind(&kinds)
+    .fetch_one(conn)
+    .await
+    .map_err(store_error)
+}
+
+/// The refusal of [`census_step`] when the requirement the activation follows is not recorded for every kind under the lock.
+pub const FOLLOWED_REQUIREMENT_MISSING: &str =
+    "the requirement this one follows is not recorded for every kind";
+
+/// The feature step of an activation that only checks the fleet again under the epoch lock: `judge` is handed the census and
+/// says whether to refuse (keeping its own reasons). With `follows`, the step first reads that requirement again, under the
+/// same lock its removal takes, and refuses with [`FOLLOWED_REQUIREMENT_MISSING`] unless it is recorded for every kind
+/// (decision D006-096).
+pub fn census_step<J>(
+    capability: Capability,
+    kinds: &'static [InstanceKind],
+    follows: Option<Capability>,
+    judge: J,
+) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send
+where
+    J: FnOnce(&CapabilityCensus) -> bool + Send + 'static,
+{
+    move |conn| {
+        Box::pin(async move {
+            if let Some(follows) = follows
+                && !requirement_recorded(conn, follows, &InstanceKind::ALL).await?
+            {
+                return Err(StoreError::StateConflict(FOLLOWED_REQUIREMENT_MISSING));
+            }
+            let census = capability_census(conn, capability, kinds).await?;
+            if judge(&census) {
+                return Err(StoreError::StateConflict(
+                    "the activation was refused under the lock",
+                ));
+            }
+            Ok(())
+        })
     }
 }
 

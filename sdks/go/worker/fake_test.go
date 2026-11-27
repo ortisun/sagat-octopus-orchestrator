@@ -71,6 +71,9 @@ type fakeService struct {
 	// overfill makes a poll answer with every queued lease, whatever max_tasks asked for: a server that
 	// does not keep to the protocol.
 	overfill bool
+	// failGate, when set, is called by FailStep after the call is recorded and before it is answered: a test
+	// holds the failures there.
+	failGate func(ctx context.Context)
 	// holds keeps the successful answer to a method until its condition is true (or ten seconds have passed): a
 	// call the test holds in flight until what it claims has happened meanwhile, instead of a window of time.
 	holds map[string]func() bool
@@ -198,6 +201,12 @@ func (f *fakeService) CompleteStep(ctx context.Context, r *pb.CompleteStepReques
 func (f *fakeService) FailStep(ctx context.Context, r *pb.FailStepRequest) (*pb.StepCommandResponse, error) {
 	if err := f.enter(ctx, "FailStep", r); err != nil {
 		return nil, err
+	}
+	f.mu.Lock()
+	gate := f.failGate
+	f.mu.Unlock()
+	if gate != nil {
+		gate(ctx)
 	}
 	return &pb.StepCommandResponse{CommandId: "c", StepStatus: "FAILED", RunStatus: "RUNNING"}, nil
 }

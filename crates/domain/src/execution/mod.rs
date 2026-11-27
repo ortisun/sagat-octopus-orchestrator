@@ -35,20 +35,21 @@ pub use capacity::{
 };
 pub use capacity_transfer::{CapacityTransferRefusal, acquire_gate, vacate_gate};
 pub use command::{
-    AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
-    ScopedOutputRefusalSuccess, advance_scope_compensation, complete_instance,
-    complete_path_instance, complete_reconciliation, complete_reconciliation_instance,
-    complete_reconciliation_path_instance, complete_step, expire_attempt, expire_instance,
-    expire_path_instance, fail_instance, fail_path_instance, fail_report_for_storage_quota,
-    fail_step, fail_step_for_storage_quota, fail_unentered_loop, finish_child, fire_timer,
-    heartbeat, heartbeat_instance, heartbeat_path_instance, lease_instance, lease_path_instance,
-    lease_step, mark_for_review, mark_for_review_instance, mark_for_review_path_instance,
-    pause_run, prepare_scoped_content_refusal, prepare_scoped_output_refusal, record_reset,
-    release_pending, release_start, resolve, resolve_review, resolve_review_instance,
-    resolve_review_path_instance, resume_run, retry_due, retry_due_instance,
-    retry_due_path_instance, retry_review, retry_review_instance, retry_review_path_instance,
-    satisfy_wait, skip_review, skip_review_instance, skip_review_path_instance, start_run,
-    start_run_delayed, stop_for_storage_quota, stop_run, time_out_wait,
+    AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, MAX_WITHDRAWALS_PER_ATTEMPT,
+    Progress, Resolution, ScopedOutputRefusalSuccess, advance_scope_compensation,
+    complete_instance, complete_path_instance, complete_reconciliation,
+    complete_reconciliation_instance, complete_reconciliation_path_instance, complete_step,
+    expire_attempt, expire_instance, expire_path_instance, fail_instance, fail_path_instance,
+    fail_report_for_storage_quota, fail_step, fail_step_for_storage_quota, fail_unentered_loop,
+    finish_child, fire_timer, heartbeat, heartbeat_instance, heartbeat_path_instance,
+    lease_instance, lease_path_instance, lease_step, mark_for_review, mark_for_review_instance,
+    mark_for_review_path_instance, pause_run, prepare_scoped_content_refusal,
+    prepare_scoped_output_refusal, record_reset, release_pending, release_start, resolve,
+    resolve_review, resolve_review_instance, resolve_review_path_instance, resume_run, retry_due,
+    retry_due_instance, retry_due_path_instance, retry_review, retry_review_instance,
+    retry_review_path_instance, satisfy_wait, skip_review, skip_review_instance,
+    skip_review_path_instance, start_run, start_run_delayed, stop_for_storage_quota, stop_run,
+    time_out_wait, withdraw_instance, withdraw_lease, withdraw_path_instance,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -62,6 +63,7 @@ pub use event::{
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
     ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
+    WithdrawalCause,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -96,7 +98,8 @@ pub use scoped_timers::{
 };
 pub use state::{
     CollectionIterationRestore, CollectionPhase, CollectionResult, CollectionState, LoopCheckpoint,
-    LoopIterationRestore, LoopPhase, LoopState, RunChainState, RunId, RunState, RunStatus,
-    RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus, WaitingOn,
-    derived_settles_drain, retry_wait_holds_drain, scope_final_status,
+    LoopIterationRestore, LoopPhase, LoopState, ReportFence, RunChainState, RunId, RunState,
+    RunStatus, RunWorkSummary, SagaPhase, SagaState, ScopeSagaState, StepState, StepStatus,
+    WaitingOn, derived_settles_drain, report_fence_allows, retry_wait_holds_drain,
+    scope_final_status,
 };

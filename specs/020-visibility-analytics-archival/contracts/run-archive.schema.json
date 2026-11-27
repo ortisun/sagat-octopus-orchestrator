@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sagat-octopus-orchestrator.example/schemas/run-archive/sagat-run-archive-v1.json",
   "title": "Run archive object, sagat-run-archive-v1 (draft)",
-  "description": "An archive is two objects per run under `<prefix>/sagat-run-archive-v1/t=<tenant>/ns=<namespace>/dt=<finished UTC date>/<runId>`: `<runId>.ndjson.gz` (gzip, one JSON value per line: line 1 is the header, then one line per journal event in sequence order, then one `payload` line per distinct retained payload within the policy) and `<runId>.manifest.json` (this schema's `manifest`). The names are deterministic, so a retried export rewrites the same objects with identical bytes. Verification compares the stored size and SHA-256 of the data object with the manifest before any hot data is deleted (FR-020-033). The document model is the history export's (run-history.schema.json): an archived run exported later gives the same `digest`. Under the PLATFORM destination the prefix is `tenants/<tenant>/namespaces/<namespace>/archive` in the platform blob store (ADR-0023 key rules).",
+  "description": "An archive is two objects per run under `<prefix>/sagat-run-archive-v1/t=<tenant>/ns=<namespace>/dt=<finished UTC date>/<runId>`: `<runId>.ndjson.gz` (gzip, one JSON value per line: line 1 is the header, then one line per journal event in sequence order, then one `payload` line per distinct retained payload within the policy) and `<runId>.manifest.json` (this schema's `manifest`). The names are deterministic, so a retried export rewrites the same objects with identical bytes. Verification compares the stored size and SHA-256 of the data object with the manifest before any hot data is deleted (FR-020-033). The document model is the history export's (run-history.schema.json): an archived run exported later gives the same `digest`. Under the PLATFORM destination the prefix is `tenants/<tenant>/namespaces/<namespace>/archive` in the platform blob store (ADR-0023 key rules). Under the CONNECTION destination (added 2026-11-24) the prefix is the object_storage connection's prefix plus the policy's `prefix`, and the managed executor writes each object create-only: an existing object with the same SHA-256 is the write's success, a different one blocks the job (ARCHIVE_INTEGRITY). After the event lines come the `stepLog` lines of feature 041 (FR-020-046); they are not part of the history document, so `historyDigest` does not cover them.",
   "$defs": {
     "manifest": {
       "type": "object",
@@ -46,6 +46,21 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "level": {"type": "string"},
         "value": {"description": "The payload projected to valuesLevel with FR-016-009 withheld nodes; absent for METADATA_ONLY. `secret` nodes are always withheld."}
+      }
+    },
+    "stepLogLine": {
+      "description": "Added 2026-11-24 (FR-020-046). One step-log stream of feature 041 that still existed when the run was archived: its metadata always; its lines (already redacted by the worker, ADR-0085) only when valuesLevel is UP_TO_PII, because log text is read as pii in every namespace (FR-041-021).",
+      "type": "object",
+      "required": ["line", "node", "attempt", "records", "bytes"],
+      "properties": {
+        "line": {"const": "stepLog"},
+        "node": {"type": "string"},
+        "instancePath": {"type": "array"},
+        "attempt": {"type": "integer", "minimum": 1},
+        "records": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 0},
+        "expiresAt": {"type": "string", "format": "date-time"},
+        "lines": {"type": "array", "description": "Present only for UP_TO_PII.", "items": {"type": "object", "properties": {"seq": {"type": "integer"}, "at": {"type": "string", "format": "date-time"}, "level": {"type": "string"}, "text": {"type": "string"}}}}
       }
     }
   }

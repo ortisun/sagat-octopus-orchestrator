@@ -1,0 +1,144 @@
+# The two alerts of the automatic handover (ADR-0091 decision 5, D2270). CI runs every *_test.yaml of this directory.
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # blocked by one reason, then another: `max without (reason)` keeps the hour, and the alert fires an hour after the first
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_blocked{instance="engine-a:9091", reason="ENGINE_UNREGISTERED"}'
+        values: '1x40 0x40'
+      - series: 'trigger_schedule_handover_blocked{instance="engine-a:9091", reason="RECONCILIATION_RECENT"}'
+        values: '0x40 1x40'
+      - series: 'trigger_schedule_handover_blocked{instance="engine-a:9091", reason="FIRST_HORIZON"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverBlocked
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: SagatTriggerHandoverBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: The automatic handover of the cron triggers has been blocked for an hour; the reason is the series of trigger_schedule_handover_blocked at 1.
+              runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
+  # blocked for forty minutes, then the rounds count (every reason at zero): no alert
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_blocked{instance="engine-a:9091", reason="FLEET_CHANGING"}'
+        values: '1x40 0x40'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: SagatTriggerHandoverBlocked
+        exp_alerts: []
+
+  # the job is expected, the state is LEGACY and no attempt row exists: the alert fires after thirty minutes
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_auto_handover_expected{instance="engine-a:9091"}'
+        values: '1x60'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The deployment runs the automatic handover, the cron triggers are not handed over, and its job has written no round for fifteen minutes.
+              runbook: docs/runbooks/schedules.md#61-before-the-handover-the-job-the-role-and-the-opt-out
+
+  # a stale attempt row (its last round twenty minutes old and getting older): it fires too
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_auto_handover_expected{instance="engine-a:9091"}'
+        values: '1x60'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '0x60'
+      - series: 'trigger_schedule_handover_attempt_age_seconds{instance="engine-a:9091"}'
+        values: '1200+60x60'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The deployment runs the automatic handover, the cron triggers are not handed over, and its job has written no round for fifteen minutes.
+              runbook: docs/runbooks/schedules.md#61-before-the-handover-the-job-the-role-and-the-opt-out
+
+  # a fresh attempt row (the job writes every 15 s): silent
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_auto_handover_expected{instance="engine-a:9091"}'
+        values: '1x60'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '0x60'
+      - series: 'trigger_schedule_handover_attempt_age_seconds{instance="engine-a:9091"}'
+        values: '15x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts: []
+
+  # the job is not expected (the opt-out): silent with no row
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_auto_handover_expected{instance="engine-a:9091"}'
+        values: '0x60'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts: []
+
+  # handed over: silent with no row
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_auto_handover_expected{instance="engine-a:9091"}'
+        values: '1x60'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverNotAttempted
+        exp_alerts: []
+
+  # a committed handover with tenants left without their audit record: the alert fires after thirty minutes
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_audit_pending{instance="engine-a:9091"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The cron triggers were handed over, and tenants of the handover have had no audit record for thirty minutes.
+              runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
+  # the audit completed: silent
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_audit_pending{instance="engine-a:9091"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts: []
