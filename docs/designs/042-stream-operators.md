@@ -287,12 +287,12 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   | The chain is `REMOVED` (its trigger was removed) | `REFUSED` with `TRIGGER_REMOVED`, audited, held values deleted |
   | At the seal of a `flatMap` window: an index input over `MAX_PAYLOAD_BYTES` | `REFUSED` with `RUN_DATA_LIMIT`, audited, held values deleted, no run |
   | At the seal of a `flatMap` window: the recorded list over the held-bytes quota, or the tenant content quota refusing at commit | not a refusal: the seal rolls back, the window stays `OPEN`, counted `quota_wait`, sealed again after a back-off (`next_attempt_at`, doubling from 1 second to 5 minutes) |
-  | Still `OPEN` 24 hours after its deadline `D` (a seal that kept waiting) | `REFUSED` with `SEAL_EXPIRED`, audited; held values kept until the window is purged; retryable back to `OPEN` |
+  | Still `OPEN` at `seal_expires_at` (`D` + 24 hours, or 24 hours after the last retry; a seal that kept waiting) | `REFUSED` with `SEAL_EXPIRED`, audited; held values kept until the window is purged; retryable back to `OPEN` |
   | Still `SEALED` at `start_expires_at` (24 hours after the seal, or after the last retry) | `REFUSED` with `START_EXPIRED`, audited; held values kept until the window is purged (FR-042-022) |
 
   Only a `START_EXPIRED` window (back to `SEALED`; the retry sets `start_expires_at` 24 hours ahead and resets the
   back-off) and a `SEAL_EXPIRED` window (back to `OPEN`, so that the seal and every check of FR-042-020 run again; the
-  retry sets a new 24-hour bound from the retry) are retryable, by an operator, once the cause is fixed; the other refusals cannot be changed by a retry, since the
+  retry sets `seal_expires_at` 24 hours ahead and resets the back-off) are retryable, by an operator, once the cause is fixed; the other refusals cannot be changed by a retry, since the
   version and its schema are pinned. An operator may discard any `REFUSED` window. A start that read the chain as live
   before the trigger was removed may still create its one run; that is stated, not prevented. A window sealed at once is
   started by the dispatcher right after its apply commits, in a second transaction, with the same start code as the
@@ -306,13 +306,21 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   (`RUN_INPUT_INVALID`), or an index input over `MAX_PAYLOAD_BYTES` (`RUN_DATA_LIMIT`), makes the window `REFUSED` at
   once with that code, and no run starts. The recorded list is held bytes: the seal (and a flush, and the apply of a
   window sealed at once) checks it under the tenant's `operator_held_bytes` lock, taken last, as an element is checked
-  (FR-042-021). When it would pass the held-bytes quota, or when only the commit-time flush of the tenant content quota
-  refuses the seal, the seal is not a refusal: it rolls back, leaves the window `OPEN` with a back-off
+  (FR-042-021). A successful seal of a `flatMap` window sets its members' `value` to `NULL` in the same transaction,
+  before it reads the room: neither the start nor the input of FR-042-032 needs them (an index input is the summary and
+  element `i`, and the fingerprint uses `(source, event_id)`), so the check is on the net held delta (the list minus the
+  members' bytes), which `operator_held_room` nets because the deletion's delta is already pending; a `select` that does
+  not enlarge its envelope therefore never waits. When the net delta would pass the held-bytes quota, or when only the
+  commit-time flush of the tenant content quota refuses the seal, the seal is not a refusal: it rolls back, leaves the window `OPEN` with a back-off
   (`next_attempt_at`, doubling from 1 second to 5 minutes, so `select` and the validator are not run every tick), and is
   counted `quota_wait`; a shortage of the tenant's pool, which any publisher of the tenant can cause, never destroys a
-  window whose elements were accepted. A window still `OPEN` 24 hours after its deadline is refused `SEAL_EXPIRED`,
-  retryable back to `OPEN`. For a window sealed at once, the apply's step 5 refuses the element instead (`FAILED`,
-  retryable by a delivery retry). The start then runs one
+  window whose elements were accepted. What remains is a hold-and-wait for a `select` that enlarges its envelope: such
+  windows wait for room that other waiting windows hold, until room is freed elsewhere or `seal_expires_at`; the alert
+  `OperatorSealQuotaWait` fires when `operator_window_seal_total{outcome="quota_wait"}` grows for 15 minutes. A window
+  still `OPEN` at `seal_expires_at` is refused `SEAL_EXPIRED`, retryable back to `OPEN`. For a window sealed at once,
+  the apply's step 5 refuses the element only for the held-bytes quota (`FAILED`, retryable by a delivery retry); a
+  `count` or `onFull` seal at the apply that lacks room only for the fan-out keeps the element as a member and leaves the
+  window `OPEN` and due, for the pass's waiting seal. The start then runs one
   transaction per index under the key suffixed with the index, records `started_count`, and becomes `STARTED` when
   `started_count = fan_out`; a crash between two indexes resumes at the next one, and the port's replay answers an index
   already created. A final refusal at index `k` (the version removed, or a refusal the earlier check did not foresee)
@@ -333,7 +341,8 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   by a quota of their own, `operator_held_bytes`, 1 GiB (1,073,741,824 bytes) by default, which an operator may change
   like any quota: an element that would pass it ends with `FAILED`/`QUOTA_EXCEEDED` and holds nothing, a final outcome,
   not the dispatcher's wait for room. Held values also count against the tenant's retained content
-  (`tenant_content_bytes`), which the existing delta triggers enforce at commit: a refusal there is the dispatcher's
+  (`tenant_content_bytes`, with `content_reserved_bytes`), which the existing delta triggers enforce at commit and
+  step 5 of section 5 reads beforehand: a content shortfall, whether found at step 5 or at commit, is the dispatcher's
   wait for room (the event stays `PENDING` with its attempt count unchanged and is offered again), not a final outcome,
   and while it waits it holds the windows that cover it until `D + maxHoldMs` like any pending event (FR-042-017). The
   number of chains (`operator_chains`, 50 per tenant), the sum of `maxKeys` (`operator_keys`, 100,000 per tenant) and
@@ -902,8 +911,8 @@ primary key. A chain's and a window's shard is `run_shard` of its id (the last b
 | `operator_chain_usage` | `chain_id` | `key_count`, `max_keys` | with the chain |
 | `operator_keys` | `chain_id, key_digest` | `key_id` (random), epoch start, `skip` and `take` counters, `mark_count`, last element time | no `OPEN` or `SEALED` window and idle past `keyIdleMs` |
 | `operator_marks` | `chain_id, key_digest, value_digest` | `expires_at` | at `expires_at` |
-| `operator_windows` | `window_id` (a UUIDv7 drawn when the window opens) | `chain_id`, `key_digest`, `key_id`, state, `opened_at`, `closes_at`, `max_close_at`, `seal_horizon` (`xid8`), count, bytes, first and last `received_at`, late and overflow flags, `version_id`, `run_id`, `fan_out`, `fan_out_values` (bytea, content), `started_count`, attempts, `next_attempt_at`, `start_expires_at`, last error code, `requested_by`, `final_at`, shard | seven days after `final_at` |
-| `operator_window_members` | `window_id, source, event_id` | `received_at`, late flag, `value` (bytea, the projected element; content) | `value` deleted at start; the row with the window |
+| `operator_windows` | `window_id` (a UUIDv7 drawn when the window opens) | `chain_id`, `key_digest`, `key_id`, state, `opened_at`, `closes_at`, `max_close_at`, `seal_horizon` (`xid8`), count, bytes, first and last `received_at`, late and overflow flags, `version_id`, `run_id`, `fan_out`, `fan_out_values` (bytea, content), `started_count`, attempts, `next_attempt_at`, `seal_expires_at` (`D` + 24 hours, reset by a retry), `start_expires_at`, last error code, `requested_by`, `final_at`, shard | seven days after `final_at` |
+| `operator_window_members` | `window_id, source, event_id` | `received_at`, late flag, `value` (bytea, the projected element; content) | `value` deleted at start, or at a successful `flatMap` seal; the row with the window |
 | `operator_key_limit_counts` | `chain_id, minute` | the number of `KEY_LIMIT` refusals in that minute | once its audit record is written |
 
 Indexes: the open windows of a key (`chain_id, key_digest` where `state = 'OPEN'`), the due windows per shard
@@ -932,7 +941,9 @@ in the process.
 
 `value` and `fan_out_values` are deleted (set to `NULL` and their bytes released from the tenant's usage) in the
 transaction that starts the window's run, or the last index's run after `flatMap`, or discards or refuses it, except a
-`START_EXPIRED` refusal, whose values stay until the window is purged; with `emit: first` or `last` one member keeps a
+`START_EXPIRED` or `SEAL_EXPIRED` refusal, whose values stay until the window is purged (so that a retry finds them);
+the members' `value` of a `flatMap` window is set to `NULL` already by its successful seal, which keeps only
+`fan_out_values` (FR-042-020); with `emit: first` or `last` one member keeps a
 value, and after `ignoreElements` none has one. `event_deliveries` gains `outcome`, `window_id`, `error_code` and
 `reason` (nullable, FR-042-031), written once by the insert and never updated; it keeps its key, its cascade from
 `inbox_events` and therefore its lifetime, while a member row keeps its own `(source, event_id, received_at)` so a
@@ -970,9 +981,15 @@ deviation for design 042). The start, a discard, a refusal or the purge that del
 window, the member rows whose `value` it sets to `NULL` and a delta row of its own transaction. `sagat_app` has
 `SELECT` on the counter and no privilege at all on `operator_held_deltas` (as `quota_transaction_deltas` is revoked
 from it by `20261024000000_durable_quotas`). The apply, the seal and the flush read the room through one owner-owned
-definer function, `operator_held_room(tenant)`, which returns the committed held counter plus this transaction's
-pending held delta and the committed tenant content usage plus this transaction's pending content delta, takes no row
-lock, has `search_path` pinned to `pg_catalog, pg_temp`, is revoked from `PUBLIC` and is executable by `sagat_app`. The
+definer function, `operator_held_room(tenant)`, declared `VOLATILE`, which first takes the tenant's held-bytes
+advisory lock itself (`pg_advisory_xact_lock(hashtextextended('quota:operator_held_bytes:' || tenant, 0))`, the key
+`lock` in `crates/infra-postgres/src/quotas.rs` builds for that resource) and only then reads, so its inner query takes
+its snapshot after the lock wait and sees every adder that committed meanwhile; it returns the committed held counter
+plus this transaction's pending held delta, and the committed tenant content usage (`content_bytes` plus
+`content_reserved_bytes` of `tenant_retained_usage`, as the content flush counts them) plus this transaction's pending
+content delta; it takes no row lock, has `search_path` pinned to `pg_catalog, pg_temp`, is revoked from `PUBLIC` and is
+executable by `sagat_app`. The lock and the read are therefore one statement; a barrier test runs two adders at the
+quota boundary and sees exactly one admitted. The
 capability fences of FR-042-034 are two
 owner-owned definer functions, `collection_operators_required()` and `trigger_operators_required()`, of the shape of
 `lease_withdrawal_required()` (`search_path` pinned to `pg_catalog, pg_temp`, every name schema-qualified, revoked from
@@ -998,24 +1015,29 @@ decision 7: chain, usage, key, windows; then slot 8b):
    the reservation, and read the key row `FOR UPDATE` again; a barrier test runs two applies of one new key at
    `maxKeys - 1` and sees both join the key. No unique violation is raised by the key row, and a `distinct` mark is
    written `INSERT … ON CONFLICT DO UPDATE SET expires_at = …` (a mark past its horizon that the purge has not removed
-   is renewed, never a violation), so no digest reaches the server log through an error; the runtime role also runs
-   with the settings `docs/runbooks/step-logs.md` already requires (`log_parameter_max_length = 0`,
-   `log_parameter_max_length_on_error = 0`, `log_error_verbosity = terse`), so neither a slow-statement line nor a
-   constraint error copies a digest parameter or a failing row into PostgreSQL's log (Task 042-40); the event uses no
+   is renewed, never a violation), so no digest reaches the server log through an error. It is also a deployment
+   requirement, applied by the shipped artefacts and checked: the runtime role runs with `log_parameter_max_length =
+   0`, `log_parameter_max_length_on_error = 0` and `log_error_verbosity = terse` (the settings
+   `docs/runbooks/step-logs.md` already asks for), set per role by the owner (`ALTER ROLE sagat_app SET …`, which a
+   superuser may run for each of the three, `log_parameter_max_length` and `log_error_verbosity` being settable only by a
+   superuser and so not by the runtime role itself), so neither a slow-statement line nor a constraint error copies a
+   digest parameter or a failing row into PostgreSQL's log; Task 042-40 adds the lines and the check; the event uses no
    attempt; apply `distinct` (its mark under the key's ceiling), `skip` and `take`, in that order;
 4. for a chain with `window` or `debounce`: lock the `OPEN` windows of the key that the element falls into (by span or
    interval, FR-042-016) `FOR UPDATE` in `window_id` order, merge them when there are several, or open one; insert the
    member (`ON CONFLICT DO NOTHING`); update the count, the bytes, the deadline (clearing `seal_horizon` when it moves)
    and the flags; seal at once when `count` or `onFull: emit` says so (and, with `flatMap`, evaluate `select` and record
    the fan-out, FR-042-020); for any other chain, write the emission as a new window sealed at once with its one member;
-5. when the element adds held bytes, take the tenant's `operator_held_bytes` lock (the advisory lock of
-   `crates/infra-postgres/src/quotas.rs`, slot 8b, last) and check, under it, what `operator_held_room(tenant)` returns
-   (the committed `operator_held_usage` row plus this transaction's pending held delta, read once and never counted
-   twice, against `operator_held_bytes`; the committed tenant content usage plus this transaction's pending content
-   delta against the tenant content quota); when either would be passed, the
-   transaction rolls back to a savepoint taken before step 3 and records `FAILED`/`QUOTA_EXCEEDED`, so nothing is held.
-   A refusal that only the commit-time flush of the tenant content quota finds (a concurrent transaction of the tenant
-   committed in between) is the dispatcher's wait for room, not a final outcome (FR-042-021);
+5. when the element adds held bytes, call `operator_held_room(tenant)` once, which takes the tenant's
+   `operator_held_bytes` advisory lock itself (slot 8b, last) and then reads, in one statement (section 4): the
+   committed `operator_held_usage` row plus this transaction's pending held delta, read once and never counted twice,
+   against `operator_held_bytes`, and the committed tenant content usage (with its reserved bytes) plus this
+   transaction's pending content delta against the tenant content quota. Only the held-bytes part is final: when it
+   would be passed, the transaction rolls back to a savepoint taken before step 3 and records `FAILED`/`QUOTA_EXCEEDED`,
+   so nothing is held. A content shortfall, found here or only by the commit-time flush of the tenant content quota, is
+   the dispatcher's wait for room, not a final outcome (FR-042-021): the whole transaction rolls back and the event stays
+   `PENDING`. A `count` or `onFull` seal at step 4 of a `flatMap` window that lacks held room only for its fan-out keeps
+   the element as a member, leaves the window `OPEN` and due, and lets the pass's waiting seal take it (FR-042-020);
 6. insert the `event_deliveries` row for `trigger:{id}` with the outcome; on a conflict, roll back: the admission was
    already applied.
 
@@ -1032,7 +1054,8 @@ outcome is a delivery row.
 A pass `operator_windows` in `crates/scheduler/src/passes.rs`, on the shards the replica holds. Each tick, in bounded
 batches per tenant:
 
-- **seal**: for `OPEN` windows whose deadline `D` (`closes_at` or `max_close_at`) is at or before `now()` (the start of
+- **seal**: for `OPEN` windows whose deadline `D` (`closes_at` or `max_close_at`) is at or before `now()` and whose
+  `next_attempt_at` is null or at or before `now()` (the back-off of a waiting seal is never skipped) (`now()` is the start of
   the statement's transaction; never `clock_timestamp()` in the statement that reads the snapshot, checked by
   `scripts/check-architecture.py`): record `seal_horizon = pg_snapshot_xmax(pg_current_snapshot())` when it is null; go
   on only once `pg_snapshot_xmin(pg_current_snapshot())` has reached it (counted `held_by_horizon`); for each (tenant,
@@ -1040,14 +1063,15 @@ batches per tenant:
   skip the windows that event is not past (counted `held_by_backlog`); both holds end at `D + maxHoldMs`, after which the
   window is sealed anyway (counted `sealed_past_hold`). For the others, one transaction each: read the shard row `FOR
   SHARE` (ADR-0020), take the chain row `FOR SHARE`, the key row and the window `FOR UPDATE` while it is `OPEN`, and seal
-  it if it is still due (a moved deadline is counted `lost_race`); with `flatMap`, evaluate `select` and check each
+  it if it is still due (a moved deadline is counted `lost_race`); with `flatMap`, set the members' `value` to `NULL`
+  (the seal keeps only the recorded list, FR-042-020), evaluate `select` and check each
   index's input there (FR-042-020), each index input also against `MAX_PAYLOAD_BYTES` (over it the window is refused
   `RUN_DATA_LIMIT`, a row of FR-042-019's table), then, when the recorded `fan_out_values` add held bytes, take the
-  tenant's `operator_held_bytes` lock last (slot 8b) and check them through `operator_held_room` as step 5 of section 5
-  checks an element: over the quota, or refused only by the commit-time flush of the tenant content quota, the seal rolls
+  tenant's `operator_held_bytes` lock last (slot 8b) through `operator_held_room`, which then sees the net delta (the
+  list minus the members' bytes just released), and check it as step 5 of section 5 checks an element: over the quota, or refused only by the commit-time flush of the tenant content quota, the seal rolls
   back and a short transaction on the window alone sets `next_attempt_at` (doubling from 1 second to 5 minutes), counted
-  `quota_wait`; the window stays `OPEN` and keeps its elements; a window still `OPEN` 24 hours after `D` is refused
-  `SEAL_EXPIRED` by the pass (audited `operator.window_refused`), retryable back to `OPEN`;
+  `quota_wait`; the window stays `OPEN` and keeps its elements (the rollback restores their values); a window still
+  `OPEN` at `seal_expires_at` (`D` + 24 hours, reset by a retry) is refused `SEAL_EXPIRED` by the pass (audited `operator.window_refused`), retryable back to `OPEN`;
 - **start**: for `SEALED` windows whose `next_attempt_at` has passed, run the start of FR-042-019. It is not fenced
   (ADR-0050 decision 6 keeps fence reads to passes' own aggregates, and the dispatcher, which starts windows sealed at
   once, holds no shard): one statement reads the state, the held values and the chain's state; then one transaction
@@ -1077,7 +1101,7 @@ seal's `flatMap` evaluation and its two checks, the held-bytes lock taken last (
 QUOTA_EXCEEDED` and leaves the window `OPEN` and unchanged); a discard
 locks an `OPEN` or `REFUSED` window the same way, deletes its held values and sets `DISCARDED`; a window retry locks a
 `REFUSED` window with `START_EXPIRED` (sets `SEALED`, `start_expires_at` 24 hours ahead) or `SEAL_EXPIRED` (sets `OPEN`,
-a new 24-hour seal bound from the retry), records `requested_by` and resets `attempts` and `next_attempt_at`. Each act writes its own audit record with its caller. The start's run has the
+`seal_expires_at` 24 hours ahead), records `requested_by` and resets `attempts` and `next_attempt_at`. Each act writes its own audit record with its caller. The start's run has the
 engine as its starter, as today's trigger starts do; when the window carries `requested_by`, the start's `RunStarted`
 audit record adds "requested by X at T", so the caller is traced without becoming the initiator of a run created later.
 Delivery retries are not recorded on the window: the caller is in `operator.delivery_retried` only.
@@ -1194,7 +1218,9 @@ A chain, window or event that is missing or another tenant's answers `404` with 
 
 - **Alerts** (slice 3): `OperatorWindowsLag` when the pass's lag is over 30 seconds for 5 minutes;
   `OperatorSealHorizonOld` when `operator_seal_horizon_age_seconds` is over 300 for 5 minutes; `OperatorSealedPastHold`
-  when `operator_window_seal_total{outcome="sealed_past_hold"}` increases for 15 minutes.
+  when `operator_window_seal_total{outcome="sealed_past_hold"}` increases for 15 minutes; `OperatorSealQuotaWait` when
+  `operator_window_seal_total{outcome="quota_wait"}` increases for 15 minutes (a tenant pool held by waiting seals,
+  FR-042-020).
 - **Spans**: `operator.apply` on the event's trace; `operator.window.start` on the run's trace with the window's id and
   its member count as attributes, and no link to the members' traces, since a link would put a window's membership,
   which FR-042-024 counts as personal data, in the trace backend. The run carries no journal addition: the window names
@@ -1357,7 +1383,8 @@ ADR-0087.
 - **NFR-042-001 Performance** (targets on a stated environment, not promises): a collection chain of eight stages over
   1,000 small elements adds at most 20 ms to scope entry at the 95th percentile, and the worst case at the ceilings is
   reported with its effect on `scheduler_tick_seconds` (T042-9). Slices 2 to 5: an event joining an open window of an
-  existing key costs at most 8 statements in its one transaction (section 5 lists them); sealing a window at most 6,
+  existing key costs at most 8 statements in its one transaction (section 5 lists them); sealing a window at most 6
+  (a `flatMap` seal adds one update that releases its members' values),
   and starting it at most 4 beyond the run start; a trigger without a chain costs zero more (FR-042-030); 1,000 events
   per second across 10,000 keys with the pass's lag under 2 seconds at the 99th percentile, the new-key and held-bytes
   serialisation measured (T042-33).
@@ -1564,11 +1591,15 @@ re-read is the third revision of this design. The cut order of section 10 applie
   at once), `fan_out` and its values recorded, each index's input checked there, `REFUSED` with `EXPRESSION_ERROR`,
   `OPERATOR_FAN_OUT`, `RUN_INPUT_INVALID` or `RUN_DATA_LIMIT` before any run, the recorded list checked against the
   held-bytes quota under its lock in the seal and the flush (the window kept `OPEN`, counted `quota_wait`, retried after a
-  back-off, `SEAL_EXPIRED` after 24 hours and retryable back to `OPEN`) and in the apply of a window sealed at once
-  (`FAILED`/`QUOTA_EXCEEDED`), a commit-time content refusal handled as the held-bytes one, and the partial fan-out of FR-042-020
-  recorded and audited; tests of each refusal, of a `select` that doubles a 256 KiB envelope against a tenant at its
-  quota (the window kept `OPEN` with its elements, nothing more held), of a `SEAL_EXPIRED` window retried back to `OPEN`
-  that runs every check of the seal again, and of a version removed between two indexes.
+  back-off, `SEAL_EXPIRED` at `seal_expires_at` and retryable back to `OPEN`) and in the apply of a window sealed at once
+  (`FAILED`/`QUOTA_EXCEEDED`), a commit-time content refusal handled as the held-bytes one, the members' `value` set to
+  `NULL` by a successful seal so the check is on the net delta, and the partial fan-out of FR-042-020 recorded and
+  audited; tests of each refusal, of a `select` that doubles a 256 KiB envelope against a tenant at its quota (the window
+  kept `OPEN` with its elements, nothing more held), of a tenant pool filled entirely by `OPEN` `flatMap` windows with an
+  identity `select` (every one of them seals, none waits), of a `count` seal at the apply that lacks room only for its
+  fan-out (the element kept, the window left due and sealed by the pass), of a `SEAL_EXPIRED` window retried back to
+  `OPEN` that runs every check of the seal again with `seal_expires_at` reset and its back-off respected, and of a
+  version removed between two indexes.
   Refs: FR-042-020
   Owner-gate: OD-2026-11-27-434
 - [ ] T042-25 Mark and count late elements, with the span or interval of FR-042-017; test an event retried after its
@@ -1616,9 +1647,13 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Refs: FR-042-027, FR-042-024
   Owner-gate: OD-2026-11-27-432, OD-2026-11-27-424
 - [ ] T042-40 Write the events runbook section (the horizon is cluster-wide and how to find its holder; flush, discard
-  and both retries; the runtime role's `log_parameter_max_length = 0`, `log_parameter_max_length_on_error = 0` and
-  `log_error_verbosity = terse`, as `docs/runbooks/step-logs.md` requires, so no digest parameter reaches PostgreSQL's
-  log), the quickstart of CUJ 3 with its failure scenario, and the reference.
+  and both retries), the quickstart of CUJ 3 with its failure scenario, and the reference; and make the runtime role's
+  log settings a checked deployment requirement: add `ALTER ROLE sagat_app SET log_parameter_max_length = 0`,
+  `ALTER ROLE sagat_app SET log_parameter_max_length_on_error = 0` and `ALTER ROLE sagat_app SET log_error_verbosity =
+  terse`, run by the superuser that creates the role, to `infra/docker/postgres-init/01-runtime-role.sh`, state the
+  same three lines in the Helm chart's `infra/helm/templates/NOTES.txt` and in the runbooks for an operator-managed
+  database, and add a privilege-audit assertion that connects as `sagat_app` and checks `SHOW log_error_verbosity`,
+  `SHOW log_parameter_max_length` and `SHOW log_parameter_max_length_on_error`, run with `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
   Refs: NFR-042-003
 - [ ] T042-41 Update `docs/traceability.md`, the roadmap row and the release notes; register the remaining gaps.
   Refs: NFR-042-004
@@ -1702,7 +1737,7 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Owner-gate: OD-2026-11-27-431
 - [ ] T042-57 The manual acts as application and store methods: list chains and windows, flush (`OPEN` only, bypassing
   both holds), discard (`OPEN` or `REFUSED`), window retry (`REFUSED` with `START_EXPIRED`, back to `SEALED` with `start_expires_at` reset, or
-  `SEAL_EXPIRED`, back to `OPEN` with a new seal bound), `requested_by` recorded for the start's audit line only (the run's starter is the engine), each with its
+  `SEAL_EXPIRED`, back to `OPEN` with `seal_expires_at` reset), `requested_by` recorded for the start's audit line only (the run's starter is the engine), each with its
   `409` code and its audit action with its caller, and tests of each state precondition, of a flush racing an apply in
   both orders, and that a flushed window's run is started by the engine with "requested by" in its `RunStarted` audit
   record; their REST actions are lane A's (Task 042-34).
@@ -1803,3 +1838,10 @@ comparable to the first delivery of feature 018, in two lanes.
   retryable back to `OPEN`; the commit order of the two flushes; the re-read of the key row when no slot is left;
   mark upserts and the runtime role's logging settings; Gap 042-018 widened to callers who see runs by their timing or
   read the tenant's usage; the window-input level as a property of the version.
+  Its fourth security re-read (`docs/designs/042-stream-operators.reviews/2026-11-27/reread-4/security.md`, Decision
+  042-183) added: a successful `flatMap` seal releases its members' values, so the held check is on the net delta and an
+  identity `select` never waits, with the alert `OperatorSealQuotaWait` on the hold-and-wait that remains; only the
+  held-bytes part of step 5 is final, a content shortfall being the dispatcher's wait, and a `count` or `onFull` seal
+  short of fan-out room leaving the window to the pass; `seal_expires_at`, the values of a `SEAL_EXPIRED` window kept
+  for its retry, and the back-off in the seal's selection; `operator_held_room` taking the advisory lock itself in one
+  `VOLATILE` statement; the runtime role's log settings applied by the shipped artefacts and checked.
