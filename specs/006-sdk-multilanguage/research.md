@@ -2027,3 +2027,25 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   D006-119 no longer says the wait is unbounded. Not a defect: the assertion "no connection discarded" of the full-pool test
   holds by construction (the call never gets a connection); it stays as the design's statement of the case.
 
+- **D006-124 — Review round 2 of Task 006-049 by the security reviewer, settled** (no Blocker; one Major that predates this
+  feature, four Minors; security findings are fixed). Fixed: `test_probe_errors` matched only `.probe(`; it now matches a
+  probe called through its type's path or passed as a function (`(?:\.|::)\s*probe\b`), with negative cases of each form,
+  seen failing on the old pattern. The audit of the runtime role's privileges excused a literal by its first word, so a
+  `BEGIN; UPDATE ...` would have been excused with the allowances of `BEGIN` and `COMMIT`; transaction control alone (the
+  whole literal `BEGIN`, `COMMIT` or `ROLLBACK`) is now a statement that needs no privilege, the two allowances are gone, and
+  a literal that glues anything after it stays unmodelled (`ROLLBACK` joins the unmodelled verbs) and fails the audit
+  (`transaction_control_alone_is_a_statement_and_anything_after_it_is_not`). A dropped call's rollback, which nobody waits
+  for, may take one statement timeout and 100 ms before its connection is discarded, so a host that resets its calls does
+  not make the server close the pool's connections. A call that arrives without the places of its connection is counted
+  (`grpc_calls_without_connection_places_total`) and said once in the log, so a change of tonic's connection info that
+  turned the per-connection limit off would not pass unseen. Open, as G006-058: the Major.
+- **G006-058 — A caller with no token can hold the process's admission by withholding the request body (security,
+  predates feature 006's 1.8 work).** The connection's place and the process's ticket (`in_flight`, `max_in_flight` 1,024)
+  are taken in `Admit::call` before tonic's handler waits for the body, and authentication runs only once the body is
+  decoded: sixteen connections of one address, each with 64 streams that send their headers and never the body (and answer
+  the pings), fill the process's tickets for the unary timeout (30 s), again and again, and every heartbeat, report and
+  acknowledgement of every tenant is shed. The per-connection layer of D006-119 neither adds nor removes it (tonic's limit
+  sat in front of the same ticket). The fix is the next slice of Task 006-049, before anything of 1.8 is offered: the
+  process's ticket taken only once the first message of the request has arrived, under a deadline of its own for that
+  first message (a call that sends none in time is refused `RESOURCE_EXHAUSTED` and counted), with a contract test that
+  opens streams of headers only and expects a real heartbeat to be served; and a TLS variant of the per-connection tests.
