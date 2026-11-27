@@ -1016,7 +1016,8 @@ with other builds), never in CI. The bound is a p99 under 1 ms. Each SDK's pull 
 - TypeScript (T041-15, `node dist/bench/step-logs.js` after `npx tsc -p tsconfig.json`): p50 0.083 ms, p99 0.131 ms,
   max 0.487 ms (2026-11-27, after the review fixes; 0.27 ms and 0.29 ms before them). Under the bound.
 
-- Go (T041-16): recorded by its pull request.
+- Go (T041-16, `SAGAT_STEP_LOG_BENCH=1 go test ./worker -run TestStepLogCallBenchmark -v`): p50 0.0085 ms, p99 0.0117 ms,
+  max 0.157 ms (2026-11-27, after the review fixes). Under the bound.
 
 - Python (T041-17): recorded by its pull request.
 
