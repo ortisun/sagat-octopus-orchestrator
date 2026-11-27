@@ -23,6 +23,10 @@ The rules are [Architecture decision 0078](../adr/ADR-0078-capacity-group-lock-o
 [Architecture decision 0154](../adr/ADR-0154-nested-capacity-membership-is-created-by-the-engine-and-the-sweeper-serves-every-member.md),
 which decides its open items. The registers are in `specs/039-nested-collections/research.md`; feature 014's registers
 (`specs/014-workflow-primitives/research.md`, Decisions 701 to 715, Gaps 706 to 726) stay where they are and are cited.
+The revision of 2026-11-27 answers the first architecture review
+(`docs/designs/039-nested-collections.reviews/2026-11-26/round-1/architecture.md`): the scoped guard and `FinishPath`,
+descendant admission, groups only for versions published with nesting, the unit released at retirement, the
+activation's configuration and removal, and the yield that lets the quantum preempt a busy holder (Decision 039-011).
 
 ### Terms
 
@@ -52,7 +56,7 @@ only one member of a unit run at a time (possession), so that the tenant's limit
 
 Much of that is built and dormant: the tables and the three native commands with their receipts (migrations
 `20261210000000_capacity_finish_storage`, `20261212000000_scoped_finish_binding`, `20261225000000_capacity_discovery_index`,
-`20261231000000_capacity_worker_membership_indexes`; `crates/infra-postgres/src/capacity_*.rs`), bounded holder discovery,
+`20261226000000_capacity_transfer_receipts`, `20261231000000_capacity_worker_membership_indexes`; `crates/infra-postgres/src/capacity_*.rs`), bounded holder discovery,
 and the worker guard. What is missing is listed by feature 014 (`specs/014-workflow-primitives/tasks.md`, the "Current
 frontier" notes; `capacity-*.md`), by the activation gate of ADR-0075 (conditions (a) to (l)), by the "Open" items of
 ADR-0078 and by Gaps 715, 716, 718, 719, 720, 722, 724, 725 and 726 of feature 014. In short: nothing creates a group or
@@ -74,36 +78,56 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   compensation of approvals (Decision 295 of feature 014). The definition service MUST accept such a document only when
   the requirement `nested-collections-v1` is recorded in the instance registry (ADR-0082), and the codec MUST still
   refuse every shape this design does not list (Technical Plan 8).
-- **Requirement 039-002** A root admission that may nest MUST create a group with its first member in the admission's
-  transaction; a descendant MUST join the group of its ancestor and MUST NOT reach the fresh-admission check (Decision
-  705). Joining is bounded by the lifetime `maxInstances` budget and by the local scope slots.
-- **Requirement 039-003** Only the holder MAY be granted worker leases (ADR-0075 as built, Owner question 706). Reports,
-  heartbeats, timers, signals, retries, control nodes and child outcomes MUST NOT be gated by possession.
+- **Requirement 039-002** A root admission of a version published with nesting (Technical Plan 8) MUST create a group
+  with its first member in the admission's transaction. Every admission made inside an ACTIVE member (a collection or
+  loop iteration whose owning path lies within a scoped-path member's iteration, or any admission in the run of a
+  ChildRoot member, a child's own collections included) is a descendant: it MUST join the group of its ancestor and
+  MUST NOT reach the fresh-admission check or charge `tenant_iteration_usage` (Decision 705, ADR-0030 §14). Joining is
+  bounded by the lifetime `maxInstances` budget and by the local scope slots. An admission outside every member, in a
+  version published without nesting (a top-level child workflow included), creates no group and behaves as today.
+- **Requirement 039-003** Only the holder MAY be granted worker leases (ADR-0075 as built, Owner question 706), for a
+  ChildRoot member's run and for the steps of a scoped-path member's iteration alike: both lease producers check
+  possession by (run) for a ChildRoot member and by (run, root node, iteration index) for a scoped-path member, and a
+  step of the root run outside every member is not gated. Reports, heartbeats, timers, signals, retries, control nodes
+  and child outcomes MUST NOT be gated by possession.
 - **Requirement 039-004** Possession MUST move only by the three fenced commands of ADR-0078 for ChildRoot members and by
   their scoped-path twins (Technical Plan 4), called only by the sweeper, each in its own transaction, holding no other
   lock or transaction of the caller.
 - **Requirement 039-005** The sweeper MUST serve every member state that can occur: a quiescent holder with another
-  member waiting (vacate), a vacant group with a member that has runnable work (acquire), a holder or non-holder whose
-  head is final (finish), and a vacant group whose members are all final (finish the last, which retires the group).
-- **Requirement 039-006** No member MAY wait without bound while others run: when another member has runnable work, a
-  quiescent holder that has held possession for at least the quantum (1 second by default, 100 milliseconds to 60
-  seconds) is vacated, and `Acquire` chooses the member whose oldest runnable step became ready first.
+  member that has runnable work (vacate), a vacant group with a member that has runnable work (acquire), a holder or
+  non-holder whose head or iteration is final, whatever its outcome (succeeded, failed, cancelled or compensated), with
+  the last finish retiring the group (finish). A scoped-path member finishes by `FinishPath` (Technical Plan 4), which
+  needs no certified success and serves a body that nests.
+- **Requirement 039-006** No member MAY wait without bound while others run: when another member has runnable work and
+  the holder has held possession for at least the quantum (1 second by default, 500 milliseconds, the sweeper's tick,
+  to 60 seconds), the sweeper requests a yield (`RequestYield`, Technical Plan 3), after which the guard grants the
+  holder no new lease; once its leased and running steps end it is quiescent and is vacated, and `Acquire` chooses the
+  member whose oldest runnable step became ready first. The yield gates new leases only, never a report or a running
+  step (Owner question 706).
 - **Requirement 039-007** Candidate selection and the sweeper MUST use one shared runnable predicate, held equal by a
   differential test (Gap 715); the guarded poll MUST rotate its sample of ineligible runs (Gap 724) and MUST NOT count
   runs the claim refuses toward its eligible window (Gap 725).
 - **Requirement 039-008** One ACTIVE ChildRoot membership per chain MUST be enforced by the unique index of ADR-0078
-  section 5 and ADR-0075 condition (k), and one ACTIVE scoped-path membership per root iteration by the existing unique
-  constraint.
+  section 5 and ADR-0075 condition (k), and one ACTIVE scoped-path membership per root iteration by a new partial unique
+  index on (tenant, namespace, `original_run_id`, `root_owner_node`, `iteration_index`) for ACTIVE `SCOPED_PATH` rows;
+  the existing `capacity_group_members_scoped_path_unique` includes `group_id` and covers every state, so it cannot.
 - **Requirement 039-009** Transfer receipts MUST be bounded: per group, the latest 16 and every receipt younger than 24
-  hours are kept; older ones are purged in batches of at most 1,000 by a bounded pass. The audit records of each
-  transfer stay as the permanent evidence.
+  hours are kept; older ones are purged in batches of at most 1,000 by a bounded pass. A retired group's header,
+  members and remaining receipts are deleted with its root run, by the run purge of feature 020 in the transaction that
+  purges that run, so the total is bounded by the retained runs. The audit records of each transfer stay as the
+  permanent evidence.
 - **Requirement 039-010** The worker's complete lock sequence MUST be written in
   `specs/039-nested-collections/contracts/worker-lock-sequence.json` and checked against ordered markers in the code by
   `scripts/check-capacity-activation.py`, which MUST also refuse any `capacity_groups` row lock without `NOWAIT` or
   `SKIP LOCKED` (ADR-0075 condition (a)).
 - **Requirement 039-011** Activation MUST follow the gate of ADR-0075: every condition (a) to (l) holds, then the
   operator records the requirement `nested-collections-v1`, which the registry refuses while a live engine or control
-  plane lacks the guard-capable capability; the first membership can be created only after it.
+  plane does not list it. A process lists it only when its configuration runs the parts nesting needs
+  (`SAGAT_NESTED_COLLECTIONS=on`): a control plane when its worker guard runs with the scoped and ChildRoot checks and
+  the yield, an execution engine when its creator and its `capacity_sweep` pass run (ADR-0082). The first membership
+  can be created only after the requirement is recorded. The registry's removal `verify` refuses to remove the
+  requirement while any group is not `RETIRED` or a version published with nesting is active; rolling a binary back
+  below the recorded requirement is unsupported.
 - **Requirement 039-012** Crash, duplicate, stale fence, lost broker hint, cancellation, unknown or failed compensation
   and unknown COMMIT MUST be proven for nested scopes, in both race orders, with held locks or barriers.
 - **Requirement 039-013** Nested scopes MUST be offered in all six SDKs through the collection builders that exist, with
@@ -115,21 +139,31 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   separate database host, with a release build, as the runtime role, twice, and the report states the environment, the
   failures and the latency of a transfer (target: a waiting member acquires within two sweeper ticks of the holder's
   quiescence at the 99th percentile).
-- **Non-functional requirement 039-002** A run without nesting MUST cost what it costs today: no added statement in its
-  admission, claim or completion, held by the budget suite of design 038.
+- **Non-functional requirement 039-002** With the requirement not recorded, a run MUST cost what it costs today: no
+  added statement in its admission, claim or completion. With it recorded, a run that is no member pays at most the
+  budget lines of Task 039-13: no added statement in its admission or completion, and none in its claim, because the
+  guard's reads are skipped on the run row's `capacity_member` flag, read with the run row the claim already locks; the
+  guarded poll adds at most one candidate statement per poll. Both held by the budget suite of design 038.
 - **Non-functional requirement 039-003** The sweeper's tick MUST be bounded: at most 256 candidates and 64 commands per
-  tick per replica.
+  tick per replica (configurable to 512). At the 500-millisecond tick that is 128 commands, so 64 transfers (a `Vacate`
+  and an `Acquire`), per second per replica; with the 1-second quantum a replica meets the two-tick target of
+  Non-functional requirement 039-001 for at most 64 contended groups on its shards, and beyond that a member's wait
+  grows by one tick per further 64 contended groups. The report of Task 039-15 states the number of contended groups
+  per replica.
 
 ### Success criteria
 
 - **Success criterion 039-001** At a tenant limit of 1, a root iteration that waits on an inner collection of 10
-  iterations, each of which starts a child workflow, completes; the tenant never has two members of different groups
-  running at once.
+  iterations, each of which starts a child workflow, completes, and so do a child workflow that contains a collection
+  and a loop that contains a collection; the tenant never has two members of different groups running at once, because
+  the unit is released only when its group retires (Technical Plan 2); lowering the limit below the current usage
+  delays new root admissions and never blocks admitted nested work (the policy-reduction test of ADR-0030 §14).
 - **Success criterion 039-002** The race test of ADR-0075 condition (e) passes as the runtime role: holder and non-holder
   pollers race the sweeper's `Vacate` and `Acquire`, an unknown COMMIT is injected on the lease path, no group ever has
   two members with a live leased or running step, and `Acquire` eventually succeeds.
-- **Success criterion 039-003** With three members with runnable work, each is granted a lease within three quanta plus
-  two ticks (fairness), measured.
+- **Success criterion 039-003** With three members with runnable work, including a holder whose inner `forEach` runs
+  with a concurrency above 1, each is granted a lease within three quanta plus two ticks plus the longest running step
+  (fairness), measured.
 - **Success criterion 039-004** The 100,000-instance nested workload of Non-functional requirement 039-001 completes twice
   with every instance run once and the consistency checks green.
 
@@ -183,7 +217,7 @@ draft and the confirmation of the delegated rows are decided as delegate rows (O
 |---|---|---|
 | Accept ADR-0078 (Owner decision 2026-11-26-140) | Accepted as written | Its third architecture and PostgreSQL review found no Blocker or Major; the open items are decided by ADR-0154, not by editing it |
 | The creator (Owner decision 2026-11-26-141) | The engine creates groups and members inside the transactions that admit the work; no API | Membership is a consequence of admission, never a user act; an API would add a way to put a chain into a group it does not belong to |
-| Sweeper coverage (Owner decision 2026-11-26-142) | Four selections: quiescent holder with a waiting member, vacant group with runnable work, final head of any member, vacant group with only final members | Without the last two a group's unit counts against admission for ever (ADR-0078, Open) |
+| Sweeper coverage (Owner decision 2026-11-26-142, refined by Owner decision 2026-11-27-394) | Five selections: final holder, final non-holder (the last retiring the group), a yield requested of a holder past its quantum while another member waits, a quiescent holder vacated while another member waits, a vacant group acquired | Without the finishes a group's unit counts against admission for ever (ADR-0078, Open); without the yield a busy holder is never quiescent |
 | Fairness (Owner decision 2026-11-26-143) | A quantum of 1 second and oldest-ready-first `Acquire` | Without it a busy holder starves its siblings (Gap 718); a quantum bounds the wait by the number of members |
 | Receipt retention (Owner decision 2026-11-26-144) | Latest 16 per group and 24 hours; audit is the permanent record | Receipts are idempotency keys for a retained command, needed for minutes; the audit trail already holds every transfer |
 | Scoped paths (Owner decision 2026-11-26-145) | Commands and a receipt table of their own, as Decision 706 decided, quiescence over the member's iteration path | A forEach in a forEach is a scoped path; without them the commonest nesting cannot run |
@@ -208,8 +242,9 @@ draft and the confirmation of the delegated rows are decided as delegate rows (O
 
 *   **Given**: a group whose holder has a long sequence of short steps and two child members with runnable work.
 *   **When**: the holder runs.
-*   **Then**: between two of its steps, after a quantum, the sweeper vacates it and the oldest waiting member acquires;
-    each member is served within three quanta plus two ticks.
+*   **Then**: after a quantum the sweeper requests a yield, the guard grants the holder no new lease, its running steps
+    end, the sweeper vacates it and the oldest waiting member acquires; each member is served within three quanta plus
+    two ticks plus the longest step of the holder that was running when the yield was requested.
 
 ### CUJ 3: Nesting not yet enabled
 
@@ -228,55 +263,104 @@ discovery (`capacity_discovery.rs`); the worker guard (`crates/application/src/w
 `scripts/check-capacity-activation.py` and the step-status-writer inventory
 (`specs/014-workflow-primitives/contracts/step-status-writers.json`).
 
-### 2. The creator
+### 2. The creator and descendant admission
 
-- **Group and first member.** When a root collection admits an iteration whose body may nest (the body contains a
-  collection, a loop, an approval or a child), the admission transaction that takes the tenant unit (`retained < limit`)
-  also inserts the group (`HELD`, holder the new scoped-path member) and the member. The group row is new, so no lock
-  on it is waited for. A root child workflow started outside a collection is a ChildRoot root admission and does the
-  same with a ChildRoot member.
-- **Join.** A child workflow started inside a group's work is created by the existing parent-first path (the parent run
-  `FOR NO KEY UPDATE`, then the tree-admission advisory lock, then the new chain and run rows, ADR-0030 §19 and
+- **Only versions published with nesting.** The definition service marks a version `nesting` when it accepts a nested
+  shape of Technical Plan 8, which it does only while `nested-collections-v1` is recorded. The creator acts only for
+  such versions and checks the requirement in the admitting transaction (a read of the registry's requirement, no
+  lock); a version published without nesting, or a top-level child workflow outside every member, creates no group and
+  charges what it charges today.
+- **Group and first member.** When a root admission of a nesting version (a root collection iteration, or a root loop
+  iteration, whose body contains a collection, a loop, an approval or a child) takes the tenant unit
+  (`retained < limit`), the same transaction inserts the group (`HELD`, holder the new scoped-path member,
+  `held_since` now) and the member. The group row is new, so no lock on it is waited for. That initial `HELD` is the one
+  exception to ADR-0078 section 3's rule that possession moves only by the commands, recorded in ADR-0154.
+- **Descendants.** Every admission inside an ACTIVE member is a descendant (Requirement 039-002): the collection
+  admission of `crates/infra-postgres/src/primitives.rs` and the loop admissions of
+  `crates/infra-postgres/src/loop_progress.rs` resolve, in their transaction, a `MembershipContext` (the member row that
+  covers the admitting path or run, read without a lock on the header), and with one they skip the fresh-admission
+  check and the charge of `tenant_iteration_usage`; they are bounded by `maxInstances` and the local scope slots. An
+  inner collection or loop inside a scoped-path member's iteration is work of that member and joins nothing; a
+  collection inside the run of a ChildRoot member is work of that member too.
+- **Join.** A child workflow started inside a member's work is created by the existing parent-first path (the parent
+  run `FOR NO KEY UPDATE`, then the tree-admission advisory lock, then the new chain and run rows, ADR-0030 §19 and
   ADR-0037 §6); the same transaction then locks the group `FOR UPDATE NOWAIT` (ADR-0078 rule 2) and inserts the
   ChildRoot member `ACTIVE`. A `Busy` answer rolls the creation back and the step that creates the child is retried by
-  the next tick, with no attempt consumed; nothing waits on the group. An inner collection or loop inside a scoped-path
-  member's iteration joins nothing: it is work of that member.
+  the next tick, with no attempt consumed, counted (`capacity_member_join_total{outcome="busy"}`); nothing waits on the
+  group.
+- **The tenant unit is released when the group retires.** For an iteration that owns a group, the iteration checkpoint
+  no longer decrements the unit (`primitives.rs`, the decrement at the iteration's end): the `Finish` that retires the
+  group decrements it in its transaction. A cancelled or failed root iteration whose ChildRoot members still compensate
+  therefore keeps its unit until they are final, so two members of different groups never run at once at a limit of 1.
+  An iteration without a group keeps today's decrement.
 - **Grants.** The migration grants `sagat_app` column-scoped `INSERT` on both tables (ADR-0075 condition (l)) and adds
-  the unique index on ACTIVE ChildRoot memberships per chain (condition (k)).
-- **Audit and telemetry.** `capacity.member.created` (a new action with its OCSF mapping in design 040: API Activity,
-  Create), and `capacity_members_created_total{kind}`.
+  the unique indexes of Requirement 039-008 (condition (k)).
+- **Audit and telemetry.** `capacity.member.created`, a new value of the closed audit action vocabulary with its test,
+  and its row in design 040's mapping table (API Activity, Create) once that table is built; and
+  `capacity_members_created_total{kind}`.
 
 ### 3. The sweeper
 
-A pass `capacity_sweep` on the scheduler tick, on the shards the replica holds (ADR-0020), with no transaction open while
-it calls a command (ADR-0078 section 4). Each tick it pages, with a keyset cursor and at most 256 candidates:
+A pass `capacity_sweep` on the scheduler tick, with no transaction open while it calls a command (ADR-0078 section 4).
+A group is served by one replica: the one holding the shard of the group's root run, recorded on the header at
+creation as `shard` (a run's shard never changes); every command the sweeper issues for the group reads that shard's
+fence `FOR SHARE` (the leaf lock of ADR-0050), and Task 039-7 makes the built ChildRoot commands read the group's
+shard rather than the shard of the member run they name, with a test. Each tick it pages, per held shard, with a keyset
+cursor and at most 256 candidates:
 
-1. `HELD` groups whose holder's head is final → `Finish` the holder;
-2. ACTIVE non-holder members whose head is final → `Finish` that member;
-3. `HELD` groups whose holder is quiescent (no leased or running step of its work) and either has no runnable work or
-   has held possession for at least the quantum while another member has runnable work → `Vacate`;
-4. `VACANT` groups with an ACTIVE member that has runnable work (the shared predicate) → `Acquire` for the member whose
-   oldest runnable step became ready first;
-5. `VACANT` groups whose ACTIVE members all have final heads → `Finish` each, the last one retiring the group.
+1. `HELD` groups whose holder's head or iteration is final → `Finish` (or `FinishPath`) the holder;
+2. ACTIVE non-holder members whose head or iteration is final, in `HELD` or `VACANT` groups → `Finish` that member, the
+   last one retiring the group;
+3. `HELD` groups whose holder has held possession for at least the quantum while another member has runnable work →
+   `RequestYield` (sets `yield_requested_at` on the header by compare-and-set of revision, under `NOWAIT`; idempotent,
+   so it needs no receipt; possession does not move);
+4. `HELD` groups whose holder is quiescent (no leased or running step of its work) while another member has runnable
+   work → `Vacate` (which clears `yield_requested_at`);
+5. `VACANT` groups with an ACTIVE member that has runnable work (the shared predicate) → `Acquire` for the member whose
+   oldest runnable step became ready first (which sets `held_since` and clears `yield_requested_at`).
 
-At most 64 commands per tick. The operation key is derived from the whole tuple each command fingerprints (ADR-0078
-section 4); a `FingerprintConflict` means "rediscover". The quantum needs the time possession began: the header gains
-`held_since timestamptz` set by `Acquire` (and by the creator), read by the sweeper only.
+A holder alone in its group is never vacated, so a single-member group does not churn between its steps. At most 64
+commands per tick; candidates beyond the page and commands beyond the cap are deferred to the next tick and counted
+(`capacity_sweep_deferred_total{reason}`, `reason` in `candidates`, `commands`). The operation key is derived from the
+whole tuple each command fingerprints (ADR-0078 section 4); a `FingerprintConflict` means "rediscover".
 
-### 4. Scoped-path commands
+### 4. Scoped-path commands and the scoped guard
 
-`VacatePath`, `AcquirePath` and the scoped leaf finish serve scoped-path members with a receipt table of their own
-(`capacity_path_transfer_receipts`), the same compare-and-set of revision and epoch, the same lock order (the run that
-owns the path, then the group `NOWAIT`, then the shard `FOR SHARE`), and quiescence over the member's iteration path: no
-leased or running step whose path starts with the member's root node and iteration index.
+`VacatePath`, `AcquirePath` and `FinishPath` serve scoped-path members with a receipt table of their own
+(`capacity_path_transfer_receipts`), the same compare-and-set of revision and epoch, and the lock order of every
+capacity command (ADR-0030 §18, ADR-0078 rule 1): the member's chain when it has one, then the run that owns the path,
+then the group `NOWAIT`, then the shard `FOR SHARE`, written in the checked contract of Technical Plan 6. Quiescence is
+over the member's iteration path: no leased or running step whose path starts with the member's root node and iteration
+index.
+
+`FinishPath` finishes a scoped-path member whose iteration is final, whatever its outcome, and whatever its body
+contains: its proof is read from the source facts in its transaction (the iteration's checkpoint row is final, no step
+under the path prefix is non-final, and every ChildRoot member admitted under that iteration is final). It needs no
+certified success, so it is not the scoped leaf finish of feature 014 (`crates/application/src/leaf_certification.rs`,
+`crates/infra-postgres/src/scoped_leaf_finish.rs`), which stays for a depth-1 ordinary leaf; a test per terminal
+outcome (succeeded, failed, cancelled, compensated) and per body shape (leaf, nested collection, loop, child).
+
+**The scoped guard.** Today the guard refuses every claim on a run that has a `SCOPED_PATH` member
+(`crates/infra-postgres/src/execution/worker_capacity.rs`, `UnsupportedScope`), and ADR-0075 requires scoped paths to
+fail closed. With the requirement recorded, both lease producers (`worker_capacity.rs` and the candidate window of
+`crates/infra-postgres/src/workers.rs`) grant a lease on a step whose path lies within a scoped-path member's iteration
+only when that member holds its group and no yield is requested, keyed by (run, root node, iteration index); a step of
+the root run outside every member is not gated, so a nested admission never halts the root run's top-level steps. The
+shared predicate of Technical Plan 5 gains the same scoped clause. Without the requirement the refusal stays. ADR-0154
+amends ADR-0075's scoped-path bullet to this rule; race tests cover a holder and a non-holder iteration claiming at once,
+and a claim racing `VacatePath`.
 
 ### 5. The runnable predicate and the guarded poll
 
 One SQL fragment, `runnable_member_work`, in `crates/infra-postgres`, used by candidate selection and by the sweeper,
-with a differential test that both answer the same on a generated corpus (Gap 715). The guarded poll samples ineligible
+with a differential test that both answer the same on a generated corpus (Gap 715). The predicate excludes the steps of
+paused and stopping runs (`workers.rs`), so `Acquire` never hands possession to a member that cannot run. The guarded
+poll samples ineligible
 runs by a rotating keyset cursor instead of always the four oldest (Gap 724) and counts toward its eligible window only
 runs whose claim the guard would accept (Gap 725). A run without membership takes the path of today unchanged
-(Non-functional requirement 039-002).
+(Non-functional requirement 039-002). Between the guard's unlocked header read and its `SKIP LOCKED` read the holder may
+change (Gap 726): the second read rechecks the holder, the revision and the yield, and refuses on any difference; the
+cost of the statement's generic plan is measured by Task 039-13.
 
 ### 6. The worker's lock sequence, checked
 
@@ -285,14 +369,22 @@ advisory lock, the binding advisory lock for a scoped path, the worker session, 
 run, the group `SKIP LOCKED` after an unlocked header read, the activity quota locks, the breaker, the database and
 script locks), each with the function that takes it. `scripts/check-capacity-activation.py` reads it and checks that the
 named functions take them in that order (ordered source markers), and that no `capacity_groups ... FOR` lacks `NOWAIT` or
-`SKIP LOCKED`. A real-PostgreSQL test per writer of a group or member row runs it with the group held on another
+`SKIP LOCKED`. The file also lists the lock sequences of the creator (Technical Plan 2) and of every capacity command
+(Technical Plan 4). The check holds an allow-list of the callers of the commands (the `capacity_sweep` pass only; ADR-0078
+"Enforced by"), replacing today's ban of every production call (`scripts/check-capacity-activation.py`), and the check
+that ADR-0075 condition (g) names. A real-PostgreSQL test per writer of a group or member row runs it with the group held on another
 connection and expects `Busy` or a skip, never a wait.
 
 ### 7. Receipts and retention
 
-A bounded pass deletes, per group, receipts older than 24 hours that are not among the latest 16, in batches of 1,000,
-under a grant of `DELETE` on the receipt tables only to the pass's function. The down migration's refusal while a
-receipt exists stays.
+A bounded pass deletes, per group, receipts older than 24 hours that are not among the latest 16, in batches of 1,000.
+The receipt tables carry `ENABLE ALWAYS` append-only triggers that refuse `DELETE`
+(`20261226000000_capacity_transfer_receipts`, `20261210000000_capacity_finish_storage`); the migration replaces them by
+triggers that allow a `DELETE` only of a receipt that the retention rule releases (older than 24 hours and not among
+its group's latest 16, checked by the trigger itself) or of a retired group's receipts in the transaction that purges
+its root run, and grants `sagat_app` `DELETE` on those tables; a negative privilege test deletes a kept receipt and is
+refused. The retired group's header and members are deleted by the same run purge (Requirement 039-009). The down
+migration's refusal while a receipt exists stays.
 
 ### 8. The codec opening
 
@@ -307,7 +399,7 @@ collection. This design opens, under the registry requirement:
 | A `forEach` inside a body | refused | accepted to a depth of 4 collection or loop levels; a scoped-path member per root iteration |
 | A loop (`while`, `repeatUntil`) inside a body | refused | accepted within the same depth |
 | A child workflow inside a body | refused (not a body node kind) | accepted; a ChildRoot member that joins the group |
-| A collection beside loops, approvals and other nodes at the top level | refused | accepted; each root collection iteration that may nest takes one group |
+| A collection beside loops, conditions, switches, timers, event waits, child workflows and approvals (under the approval row below) at the top level | refused | accepted; each root collection or loop iteration that may nest takes one group; continue-as-new and return beside a collection stay refused |
 | An approval inside a body | refused, pending scoped compensation | accepted only once Decision 295's dependency is met; Task 039-10 checks it and otherwise keeps the refusal (Gap 039-007) |
 | `chainPolicy` with a collection | refused | still refused (continuation of a collection is not in this design) |
 | `triggers` on a workflow with a collection | refused | still refused (Gap 039-006) |
@@ -319,16 +411,22 @@ removed (the switch is read at publication only, as design 042 does).
 
 ### 9. Activation
 
-The order: every condition of ADR-0075 (a) to (l) proven by its task; every control plane and engine of the release
-lists `nested-collections-v1`; the operator records the requirement; the first membership is created by the first
-nested admission after that. Removing the requirement stops new nested publications and admissions of new groups;
-existing groups drain through the sweeper.
+The order: every condition of ADR-0075 (a) to (l) proven by its task; every control plane and engine runs with
+`SAGAT_NESTED_COLLECTIONS=on` and therefore lists `nested-collections-v1` (Requirement 039-011); the operator records the
+requirement; the first membership is created by the first nested admission after that. To stop nesting the operator
+first stops publishing nested versions and lets their runs finish, so that every group retires; the registry's
+`verify` refuses to remove the requirement before then, because a process without the guard must never register while
+a group can lease. A binary rollback below the recorded requirement is unsupported (an older binary cannot parse a
+stored nested version).
 
 ### 10. Telemetry and operability
 
 `capacity_sweep_commands_total{operation, outcome}`, `capacity_group_held_seconds` (a histogram of the age of `HELD`),
-`capacity_member_wait_seconds` (ready to acquired), `worker_claim_skipped_total{reason}` (existing), the refusal class
-enumerated with a test (ADR-0075 condition (h)), an alert on a group held over 5 minutes, and
+`capacity_member_wait_seconds` (ready to acquired), `capacity_member_join_total{outcome}` (`created`, `busy`),
+`capacity_sweep_deferred_total{reason}`, `capacity_sweep_backlog` (candidates left after a page),
+`worker_claim_skipped_total{reason}` (existing, gaining `yield_requested` and `scoped_not_holder`), the refusal class
+enumerated with a test (ADR-0075 condition (h)), an alert on a group held over 5 minutes, one on joins answered `busy`
+for 5 minutes, and
 `docs/runbooks/workflow-primitives.md` gains the nesting section (enable, read the wait, a stuck holder).
 
 ## Risks and Mitigations
@@ -337,8 +435,12 @@ enumerated with a test (ADR-0075 condition (h)), an alert on a group held over 5
 |---|---|
 | A lock cycle through the group header | Nothing waits on the header (ADR-0078 rule 1); the checked lock sequence; a held-group test per writer |
 | Two members run at once | Possession gates every lease grant; Success criterion 039-002 races it with an unknown COMMIT |
-| A member starves | The quantum and oldest-ready-first acquire; Success criterion 039-003 |
-| A group's unit never frees | The sweeper's selections 1, 2 and 5 |
+| A member starves | The quantum, the yield request and oldest-ready-first acquire; Success criterion 039-003 |
+| A group's unit never frees | The sweeper's selections 1 and 2, `FinishPath` for every terminal outcome |
+| A nested admission halts the root run | The scoped guard gates only the steps inside a member's iteration |
+| Descendants charge the tenant again and deadlock at limit 1 | The membership context skips the fresh-admission check; the limit-one tests |
+| A cancelled iteration frees its unit while its children compensate | The unit is released when the group retires |
+| A process without the guard registers while groups can lease | The removal `verify` refuses while a group is not retired |
 | Receipts grow without bound | Retention of Requirement 039-009 |
 | A run without nesting pays for it | No membership, no change to its path; the design-038 budget suite |
 | An old engine leases without the guard | The registry requirement before the first membership |
@@ -351,7 +453,7 @@ enumerated with a test (ADR-0075 condition (h)), an alert on a group held over 5
 | I. State and retry semantics are explicit and durable | Pass | Membership commits with the admission; each command compares and sets revision and epoch in one transaction; commit uncertainty re-sends the retained command (Decision 713) |
 | II. Modular domain, ports and adapters | Pass | Possession rules in `crates/domain/src/execution/capacity.rs`; statements in `crates/infra-postgres`; the sweeper in `crates/scheduler` |
 | III. External effects are at-least-once; sagas compensate | Pass | Nesting adds no external effect; compensation inside a nested scope keeps feature 037's rules |
-| IV. Compatibility is versioned and pinned | Pass with conditions | Additive schema; the codec opens only under a registry requirement; stored documents stay readable. Condition: the schema is not rolled back once a receipt exists (ADR-0078 section 6) |
+| IV. Compatibility is versioned and pinned | Pass with conditions | Additive schema; the codec opens only under a registry requirement; stored documents stay readable; groups exist only for versions published with nesting. Condition: the schema is not rolled back once a receipt exists (ADR-0078 section 6), and a binary is not rolled back below the recorded requirement |
 | V. Code, tenant boundary and secrets are isolated | Pass | Every row carries tenant and namespace; the runtime role gets column-scoped inserts only; no tenant label |
 | VI. Observability and audit are part of the feature | Pass | Member creation and every transfer audited; metrics with closed labels; a HELD-age alert |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | Each transfer writes its outbox hint; a lost hint is recovered by the level-triggered sweeper |
@@ -363,7 +465,8 @@ enumerated with a test (ADR-0075 condition (h)), an alert on a group held over 5
 | Addition | Why it is needed | Simpler alternative rejected |
 |---|---|---|
 | Possession and a sweeper | One tenant unit per root, deadlock-free at limit 1 (Decision 705) | A unit per descendant: deadlock at limit 1 (ADR-0030 §14) |
-| A quantum | Fairness among members (Gap 718) | None: a holder with endless short steps starves its siblings |
+| A quantum and a yield request | Fairness among members (Gap 718); a busy holder is never quiescent without it | None: a holder with endless or concurrent short steps starves its siblings |
+| A scoped guard and `FinishPath` | A forEach in a forEach must lease and finish | Leaving scoped paths fail closed: the commonest nesting cannot run |
 | Scoped-path commands of their own | Decision 706; the binding differs from a ChildRoot's | One command with a discriminated binding: rewrites the built and tested ChildRoot commands |
 | Receipt retention | Bounded storage (Gap 720) | Keep for ever: unbounded growth at one receipt per quantum per group |
 | A checked lock-sequence file | ADR-0078 Open; prose drifts | Prose in the ADR |
@@ -396,36 +499,48 @@ Tasks 039-2, 039-5, 039-6, 039-7, 039-8, 039-9. **Slice 3, the codec and the SDK
   delegate rows.
   Refs: Requirement 039-004, Requirement 039-005
 - [ ] T039-2 Migration: column-scoped `INSERT` grants on groups and members, the unique index on ACTIVE ChildRoot
-  memberships per chain, `held_since` on the group header, the scoped-path receipt table, the partial indexes the
-  sweeper's five selections need, the `nested-collections-v1` registry value, the down migration's refusals; with the
-  migration checklist and the runtime-privilege test.
+  memberships per chain and the partial unique index on ACTIVE scoped-path memberships per root iteration,
+  `held_since`, `yield_requested_at` and `shard` on the group header with the `UPDATE` grant extended to the first two,
+  `capacity_member` on runs, the `nesting` flag on versions, `INSERT` grants on the scoped columns of the finish
+  receipts, the scoped-path receipt table, the retention triggers that replace the append-only ones with the `DELETE`
+  grant, the partial indexes the sweeper's selections need, the `nested-collections-v1` registry value, the down
+  migration's refusals; with the migration checklist and negative privilege tests for each grant and trigger.
   Refs: Requirement 039-008, Requirement 039-009, Requirement 039-011
   Owner-gate: OD-2026-11-26-141
-- [ ] T039-3 Write `worker-lock-sequence.json` and extend `scripts/check-capacity-activation.py` with the ordered-marker
-  check and the `NOWAIT`/`SKIP LOCKED` rule; negative fixtures seen failing.
+- [ ] T039-3 Write `worker-lock-sequence.json` (the guarded claim, the creator, every capacity command with the chain
+  first) and extend `scripts/check-capacity-activation.py` with the ordered-marker check, the `NOWAIT`/`SKIP LOCKED`
+  rule, the allow-list of command callers (the sweeper only) and the check of ADR-0075 condition (g); negative fixtures
+  seen failing.
   Refs: Requirement 039-010
   Owner-gate: OD-2026-11-26-146
-- [ ] T039-4 Domain: the quantum, the oldest-ready choice, the scoped-path command rules, the sweeper's five selections
-  as pure functions with property tests.
+- [ ] T039-4 Domain: the quantum and the yield, the oldest-ready choice, the scoped-path command rules and the
+  `FinishPath` proof, the membership context, the sweeper's five selections as pure functions with property tests.
   Refs: Requirement 039-005, Requirement 039-006
   Owner-gate: OD-2026-11-26-142, OD-2026-11-26-143, OD-2026-11-26-145
-- [ ] T039-5 The creator: group and first member at a nesting root admission; ChildRoot join after the parent-first
-  creation locks with the group `NOWAIT`; `Busy` retried by the next tick with no attempt consumed; audit and metrics.
-  Refs: Requirement 039-002
-  Owner-gate: OD-2026-11-26-141
+- [ ] T039-5 The creator: group and first member at a root admission of a nesting version only, with the requirement
+  read; ChildRoot join after the parent-first creation locks with the group `NOWAIT`; `Busy` retried by the next tick
+  with no attempt consumed and counted; the descendant admissions of `primitives.rs` and `loop_progress.rs` through the
+  membership context; the unit released at the group's retirement; audit and metrics; the limit-one tests (a child
+  containing a collection, a loop containing a collection), the policy-reduction test, and a test that a top-level
+  child of a version published before the requirement creates no group.
+  Refs: Requirement 039-002, Success criterion 039-001
+  Owner-gate: OD-2026-11-26-141, OD-2026-11-27-391, OD-2026-11-27-392
 - [ ] T039-6 The shared runnable predicate and its differential test; the guarded poll's rotating sample and claimable
   window (Gaps 715, 724, 725).
   Refs: Requirement 039-007
   Owner-gate: OD-2026-11-26-147
-- [ ] T039-7 `VacatePath` and `AcquirePath` with their receipts and quiescence over the iteration path; the commit
-  uncertainty classifier shared.
-  Refs: Requirement 039-004
-  Owner-gate: OD-2026-11-26-145
-- [ ] T039-8 The `capacity_sweep` pass: five selections, bounded pages, operation keys from the whole tuple, no lock held
-  across a command; held-lock, restart and lost-hint tests.
+- [ ] T039-7 `VacatePath`, `AcquirePath` and `FinishPath` with their receipts and quiescence over the iteration path,
+  the chain first in their lock order; `RequestYield`; the built ChildRoot commands fenced on the group's shard; the
+  scoped guard in both lease producers and the scoped clause of the shared predicate; the commit uncertainty classifier
+  shared; a test per terminal outcome and body shape of `FinishPath`, and the race tests of the scoped guard.
+  Refs: Requirement 039-003, Requirement 039-004, Requirement 039-005
+  Owner-gate: OD-2026-11-26-145, OD-2026-11-27-390
+- [ ] T039-8 The `capacity_sweep` pass: five selections served by the replica holding the group's shard, bounded
+  pages, deferral counted, operation keys from the whole tuple, no lock held across a command; held-lock, restart,
+  lost-hint and single-member no-churn tests.
   Refs: Requirement 039-004, Requirement 039-005, Requirement 039-006
   Owner-gate: OD-2026-11-26-142, OD-2026-11-26-143
-- [ ] T039-9 Receipt retention pass and its test.
+- [ ] T039-9 Receipt retention pass and its test; the deletion of a retired group with its root run's purge.
   Refs: Requirement 039-009
   Owner-gate: OD-2026-11-26-144
 - [ ] T039-10 Open the codec to the shapes of Technical Plan 8 under the registry requirement; a `parse_stored` test with
@@ -437,7 +552,8 @@ Tasks 039-2, 039-5, 039-6, 039-7, 039-8, 039-9. **Slice 3, the codec and the SDK
 - [ ] T039-12 The race matrix of Requirement 039-012 and ADR-0075 condition (e) as the runtime role (Success criterion
   039-002), and the limit-one and fairness tests (Success criteria 039-001 and 039-003).
   Refs: Requirement 039-012, Success criterion 039-001, Success criterion 039-002, Success criterion 039-003
-- [ ] T039-13 The design-038 budget lines for a run without nesting (Non-functional requirement 039-002).
+- [ ] T039-13 The design-038 budget lines for a run without nesting, with the requirement off and on (Non-functional
+  requirement 039-002), and the generic-plan cost of the guard's second read (Gap 726).
   Refs: Non-functional requirement 039-002
 - [ ] T039-14 The dedicated full-stack nested run on the integrated branch before activation.
   Refs: Requirement 039-011
@@ -446,9 +562,11 @@ Tasks 039-2, 039-5, 039-6, 039-7, 039-8, 039-9. **Slice 3, the codec and the SDK
   Refs: Non-functional requirement 039-001, Success criterion 039-004
 - [ ] T039-16 Telemetry, the alert, the refusal-class enumeration test, and the runbook's nesting section.
   Refs: Requirement 039-011
-- [ ] T039-17 Activation: the registry requirement, the gate record of ADR-0075 (a) to (l) with each condition's evidence,
+- [ ] T039-17 Activation: the configuration switch and the capability listing of Requirement 039-011, the removal
+  `verify`, the registry requirement, the gate record of ADR-0075 (a) to (l) with each condition's evidence,
   `docs/traceability.md`, the roadmap row and the release notes; feature 014's moved clauses closed here.
   Refs: Requirement 039-011
+  Owner-gate: OD-2026-11-27-393
 
 #### Follow-up tasks
 

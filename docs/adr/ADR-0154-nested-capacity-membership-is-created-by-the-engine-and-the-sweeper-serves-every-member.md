@@ -23,21 +23,38 @@ and left six items open (design 039, The Problem). Nesting cannot be activated u
    the parent-first creation locks (the parent run, the tree-admission advisory lock, the new rows), by locking the group
    `FOR UPDATE NOWAIT` and inserting the member; `Busy` rolls the creation back for a retry on the next tick, with no
    attempt consumed. No API creates a group or a member.
-2. **The sweeper serves every state.** It MUST finish a final holder, finish a final non-holder, vacate a quiescent
-   holder that has no runnable work or has held for the quantum while another member has runnable work, acquire a vacant
-   group for the member whose oldest runnable step became ready first, and finish the members of a vacant group whose
-   members are all final.
-3. **Fairness by a quantum.** The quantum is 1 second by default, configurable from 100 milliseconds to 60 seconds;
-   `held_since` on the header records when possession began.
-4. **Scoped paths have their own commands and receipts** (Decision 706 of feature 014), with quiescence over the
-   member's iteration path.
+2. **The sweeper serves every state.** It MUST finish a final holder and a final non-holder whatever their outcome (the
+   last finish retiring the group), request a yield of a holder that has held for the quantum while another member has
+   runnable work, vacate a quiescent holder only while another member has runnable work, and acquire a vacant group for
+   the member whose oldest runnable step became ready first. A group is served by the replica holding the shard of its
+   root run, recorded on the header, and every command for it reads that shard's fence.
+3. **Fairness by a quantum and a yield.** The quantum is 1 second by default, configurable from 500 milliseconds (the
+   sweeper's tick) to 60 seconds; `held_since` on the header records when possession began. `RequestYield` sets
+   `yield_requested_at` on the header by compare-and-set of its revision under `NOWAIT`, without moving possession;
+   while it is set the guard grants the holder no new lease (leases only, never a report); `Vacate` and `Acquire` clear
+   it. The creator's initial `HELD` and this flag are the two header writes outside the three commands of ADR-0078
+   section 3.
+4. **Scoped paths have their own commands, receipts and guard** (Decision 706 of feature 014): `VacatePath`,
+   `AcquirePath` and `FinishPath`, with quiescence over the member's iteration path and the lock order chain, run,
+   group `NOWAIT`, shard `FOR SHARE`. `FinishPath` serves every terminal outcome and every body shape from the source
+   facts, with no certified success. With the requirement recorded, both lease producers gate a step inside a
+   scoped-path member's iteration on that member's possession, keyed by (run, root node, iteration index), and leave
+   the root run's other steps ungated; this amends ADR-0075's rule that scoped paths fail closed, which stays true
+   while the requirement is not recorded.
+4a. **Descendants join; the unit is released at retirement.** An admission inside an ACTIVE member (a scoped-path
+   member's iteration, or the run of a ChildRoot member) skips the fresh-admission check and the tenant charge
+   (ADR-0075 (c) and (d), ADR-0030 §14); groups are created only for versions published with nesting under the
+   requirement; the tenant unit of an iteration that owns a group is released by the `Finish` that retires the group.
 5. **Receipts are bounded:** per group the latest 16 and those younger than 24 hours are kept; the audit record of each
    transfer is the permanent evidence.
 6. **The worker's lock sequence is a checked file**, `specs/039-nested-collections/contracts/worker-lock-sequence.json`,
    verified against ordered markers in the code, together with the rule that every `capacity_groups` row lock carries
    `NOWAIT` or `SKIP LOCKED`.
 7. **Activation is a registry requirement**, `nested-collections-v1`, recorded only after every condition of ADR-0075's
-   gate holds; the first membership follows it.
+   gate holds; the first membership follows it. A process lists the capability only when its configuration runs the
+   guard (control plane) or the creator and the sweeper (engine) (ADR-0075 (f), ADR-0082); the removal `verify` refuses
+   while any group is not `RETIRED`; a binary rollback below the requirement is unsupported. Retired groups are deleted
+   with their root run's purge, bounding the total.
 
 ## Considered options
 
