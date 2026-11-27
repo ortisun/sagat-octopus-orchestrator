@@ -20,6 +20,7 @@ use sagat_application::error::{AccessDenial, AppError};
 use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
+use sagat_application::worker::acknowledgement::{self, AcknowledgementStore, CallDeadline};
 use sagat_application::worker::{
     BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
     WorkerStore,
@@ -566,7 +567,12 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
+    S: RunStore
+        + WorkerStore
+        + DefinitionStore
+        + PathExecutionStore
+        + AcknowledgementStore
+        + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
@@ -1073,12 +1079,98 @@ where
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
-    // Protocol 1.8 (delivery acknowledgement): served from Task 006-049; until then, as against an older replica.
+    // Protocol 1.8 (delivery acknowledgement, Task 006-049). Served whatever the minor negotiated: before Task 006-057 no lease
+    // is marked, so every task is answered `NOT_HELD` (decision D006-110).
     async fn acknowledge_tasks(
         &self,
-        _: Request<pb::AcknowledgeTasksRequest>,
+        request: Request<pb::AcknowledgeTasksRequest>,
     ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
-        Err(Status::unimplemented("AcknowledgeTasks"))
+        let deadline = request
+            .extensions()
+            .get::<crate::limits::Arrival>()
+            .map_or_else(
+                || CallDeadline::of_arrival(Instant::now()),
+                |arrival| CallDeadline::of_arrival(arrival.0),
+            );
+        let trace = trace_of(&request);
+        observe(&self.core, "AcknowledgeTasks", trace, async {
+            let auth = self.authenticate(&request).await?;
+            let message = request.get_ref();
+            if !message.worker_id.is_empty() {
+                worker_id(&message.worker_id)?;
+            }
+            let task_ids: Vec<&str> = message.tasks.iter().map(|t| t.task_id.as_str()).collect();
+            acknowledgement::check_request(&task_ids).map_err(invalid)?;
+            let scoped = self.workers.supports_scoped_worker_protocol();
+            let mut attempts = Vec::with_capacity(message.tasks.len());
+            for task in &message.tasks {
+                let mut attempt = Attempt::parse(
+                    &task.task_id,
+                    &task.run_id,
+                    &task.step_id,
+                    task.attempt,
+                    task.generation,
+                    &task.lease_token,
+                )?;
+                attach_instance(&mut attempt, task.instance.as_ref(), scoped)?;
+                attempts.push(attempt);
+            }
+            let tasks: Vec<_> = attempts.iter().map(Attempt::task_ref).collect();
+            let principal = &auth.session.principal;
+            let ctx = RequestContext {
+                trace_id: Some(trace.trace_id().to_string()),
+                span_id: None,
+            };
+            // a binding refusal is audited off the answer path, once per call, whatever the call's status: the call answers
+            // its rows `NOT_HELD`, or fails after it found them
+            let audit_denial = |denial: Option<AccessDenial>| {
+                if let Some(denial) = denial {
+                    drop(sagat_api_http::denial::spawn_audit_access_denied(
+                        &self.core,
+                        principal,
+                        &rpc_name("AcknowledgeTasks"),
+                        denial,
+                        &ctx,
+                    ));
+                }
+            };
+            // the runs addressed with no matching row, checked against the other tenants off the answer path, whatever the
+            // call answers
+            let check_other_tenants = |runs: Vec<sagat_domain::execution::RunId>| {
+                if !runs.is_empty() {
+                    crate::acknowledgement::check_other_tenants(
+                        Arc::clone(&self.workers),
+                        principal.clone(),
+                        runs,
+                        ctx.trace_id.clone(),
+                    );
+                }
+            };
+            let answer = match self
+                .workers
+                .acknowledge_tasks(principal, &tasks, deadline)
+                .await
+            {
+                Ok(answer) => answer,
+                Err(failed) => {
+                    audit_denial(failed.denial);
+                    check_other_tenants(failed.unmatched_runs);
+                    return Err(match failed.failure {
+                        // through `app`, so that `observe` audits a missing permission or a revoked membership as every
+                        // other call does
+                        acknowledgement::AcknowledgementFailure::Refused(error) => app(error),
+                        other => crate::acknowledgement::failure_status(other),
+                    });
+                }
+            };
+            audit_denial(answer.denial);
+            check_other_tenants(answer.unmatched_runs.clone());
+            Ok(crate::acknowledgement::response(
+                &task_ids,
+                &answer.verdicts,
+            ))
+        })
+        .await
     }
     async fn resolve_database(
         &self,

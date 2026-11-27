@@ -309,15 +309,17 @@ pub(crate) async fn share_secrets_lock(
     tenant: TenantId,
     namespace: NamespaceId,
 ) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
-        .bind(format!(
-            "quota:{}:{tenant}:{namespace}",
-            QuotaResource::Secrets
-        ))
+    sqlx::query(crate::bindings::SHARE_ADVISORY_LOCK)
+        .bind(secrets_lock_key(tenant, namespace))
         .execute(conn)
         .await
         .map_err(store_error)?;
     Ok(())
+}
+
+/// The key of a namespace's secrets lock.
+pub(crate) fn secrets_lock_key(tenant: TenantId, namespace: NamespaceId) -> String {
+    format!("quota:{}:{tenant}:{namespace}", QuotaResource::Secrets)
 }
 
 /// Takes the lock of the webhook endpoints of one namespace for the rest of the transaction.

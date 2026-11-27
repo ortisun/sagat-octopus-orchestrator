@@ -8,6 +8,8 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+pub mod acknowledgement;
+mod binding_checks;
 mod claim_counters;
 mod database;
 mod lake_complete;
@@ -3047,17 +3049,28 @@ where
         {
             return Err(AppError::NotBound);
         }
-        self.ensure_activity_bound(principal, tx, task).await?;
-        if !managed
-            && !tx
-                .current_worker_authorized(principal.subject().as_str())
-                .await?
-        {
-            return Err(AppError::Forbidden {
-                permission: Permission::WorkerExecute,
-            });
+        if managed {
+            // a database runner is no member that executes work: its authority is the executor's ownership above
+            return self.ensure_activity_bound(principal, tx, task).await;
         }
-        Ok(())
+        let activity = {
+            let (def, _) = tx.parts();
+            match def
+                .node_for_instance(task.instance)
+                .map(sagat_domain::workflow::Node::kind)
+            {
+                Some(NodeKind::Activity { activity, .. }) => Some(activity.to_string()),
+                _ => None,
+            }
+        };
+        binding_checks::refusal(
+            binding_checks::judge_binding(
+                &mut binding_checks::RunBinding(tx),
+                principal.subject().as_str(),
+                activity.as_slice(),
+            )
+            .await,
+        )
     }
 
     async fn ensure_activity_bound<Tx: RunTx>(

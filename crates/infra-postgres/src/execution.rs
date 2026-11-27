@@ -1179,13 +1179,21 @@ async fn current_worker_authorized(
     // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
     // wait for each other until commit.
     crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
-    let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
-            .bind(tenant.as_uuid())
-            .bind(subject)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_error)?;
+    let role: Option<String> = sqlx::query_scalar(LOCK_MEMBERSHIP)
+        .bind(tenant.as_uuid())
+        .bind(subject)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    membership_executes_work(role)
+}
+
+/// The membership of one subject (`$2`) of a tenant (`$1`), read under the row lock a revocation waits for.
+pub(crate) const LOCK_MEMBERSHIP: &str =
+    "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])";
+
+/// Whether a membership's role, as [`LOCK_MEMBERSHIP`] read it, is one that executes ordinary work.
+pub(crate) fn membership_executes_work(role: Option<String>) -> Result<bool, StoreError> {
     let Some(role) = role else {
         return Ok(false);
     };

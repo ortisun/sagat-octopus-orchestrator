@@ -5,6 +5,7 @@
 //! pipeline as the REST API ([`sagat_api_http::authenticate_bearer`]), maps errors with the same
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
+mod acknowledgement;
 mod blobs;
 /// The wire answer to a managed database or lake step (`response`).
 pub mod database;

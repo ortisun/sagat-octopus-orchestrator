@@ -71,20 +71,7 @@ pub struct PgInstanceStore {
 
 /// A failure of the connection: the database cannot be reached, which is not the registry's fault.
 fn registry_error(error: sqlx::Error) -> StoreError {
-    use sqlx::Error;
-    let connection = match &error {
-        Error::Io(_)
-        | Error::Tls(_)
-        | Error::PoolTimedOut
-        | Error::PoolClosed
-        | Error::WorkerCrashed => true,
-        // connection exceptions (08) and the server shutting down or restarting (57P01 to 57P03)
-        Error::Database(db) => db.code().is_some_and(|code| {
-            code.starts_with("08") || matches!(&*code, "57P01" | "57P02" | "57P03")
-        }),
-        _ => false,
-    };
-    if connection {
+    if crate::pool::store_unreachable(&error) {
         tracing::warn!(%error, "the database could not be reached by the instance registry");
         StoreError::DatabaseUnavailable
     } else {

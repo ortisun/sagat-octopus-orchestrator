@@ -167,26 +167,13 @@ where
                 _ => None,
             }
         };
-        if let Some(activity) = activity {
-            let bound = tx
-                .bound_patterns(principal.subject().as_str())
-                .await?
-                .iter()
-                .map(|text| ActivityPattern::parse(text))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| AppError::Internal)?;
-            if sagat_domain::binding::first_uncovered(&bound, &[activity]).is_some() {
-                return Err(AppError::NotBound);
-            }
-        }
-        if !tx
-            .current_worker_authorized(principal.subject().as_str())
-            .await?
-        {
-            return Err(AppError::Forbidden {
-                permission: Permission::WorkerExecute,
-            });
-        }
-        Ok(())
+        super::binding_checks::refusal(
+            super::binding_checks::judge_binding(
+                &mut super::binding_checks::PathBinding(tx),
+                principal.subject().as_str(),
+                activity.as_slice(),
+            )
+            .await,
+        )
     }
 }

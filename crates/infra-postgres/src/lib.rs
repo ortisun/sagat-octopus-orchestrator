@@ -6,6 +6,7 @@
 
 use sqlx::migrate::Migrator;
 
+pub mod acknowledgement;
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;

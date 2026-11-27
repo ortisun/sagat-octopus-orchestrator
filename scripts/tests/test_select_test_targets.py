@@ -34,6 +34,8 @@ TARGETS = {
     "integration_claim_transition_efficiency": "integration/claim-transition-efficiency/main.rs",
     "integration_step_logs": "integration/step-logs/main.rs",
     "contract_platform_foundation": "contract/platform-foundation/main.rs",
+    "integration_durable_execution": "integration/durable-execution/main.rs",
+    "contract_grpc_durable_execution": "contract/durable-execution/grpc/main.rs",
 }
 BUDGET = {"integration_claim_transition_efficiency"}
 # The suites of the server's step-log code (constitution 4.5.0, OD-2026-11-15-10; design 041, task T041-32).
@@ -514,6 +516,21 @@ class Scope(unittest.TestCase):
                 self.write(rel, f"// {rel}\n")
                 self.commit()
                 self.assertEqual(self.chosen(), STEP_LOG_SERVER)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_the_delivery_acknowledgement_selects_the_suites_that_hold_its_tests(self):
+        acknowledgement = {"integration_durable_execution", "contract_grpc_durable_execution"}
+        for rel, expected in (
+                ("crates/application/src/worker/acknowledgement.rs",
+                 acknowledgement | BUDGET | {"integration_step_logs"}),
+                ("crates/application/src/worker/binding_checks.rs",
+                 acknowledgement | BUDGET | {"integration_step_logs"}),
+                ("crates/infra-postgres/src/acknowledgement.rs", acknowledgement | BUDGET),
+                ("crates/api-grpc/src/acknowledgement.rs", acknowledgement)):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), expected)
                 self.base = git(self.root, "rev-parse", "HEAD")
 
     def test_the_report_path_that_stores_a_carry_selects_the_step_log_suite_and_the_budget(self):

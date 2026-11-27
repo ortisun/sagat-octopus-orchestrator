@@ -494,6 +494,9 @@ enum Class {
     /// Moves a blob for a step that is running: shed like a lease call, but it owns its time limit
     /// (a transfer legitimately outlasts a unary call) and its own cap on how many run at once.
     Transfer,
+    /// Acknowledges delivered leases (protocol 1.8, `AcknowledgeTasks`): admitted between discovery and the lease calls,
+    /// so that it never takes the whole reserve of the calls that keep leased work alive (feature 006, Task 006-049).
+    Acknowledge,
 }
 
 impl Class {
@@ -503,6 +506,7 @@ impl Class {
                 "Heartbeat" | "CompleteStep" | "FailStep" | "ResolveSecrets" | "ResolveDatabase",
             ) => Self::Lease,
             Some("WriteBlob" | "ReadBlob") => Self::Transfer,
+            Some("AcknowledgeTasks") => Self::Acknowledge,
             // Registering and polling, and whatever a future method does until it is classified.
             _ => Self::Discovery,
         }
@@ -513,9 +517,47 @@ impl Class {
             Self::Discovery => "discovery",
             Self::Lease => "lease",
             Self::Transfer => "transfer",
+            Self::Acknowledge => "acknowledge",
         }
     }
 }
+
+/// The calls in flight under which an acknowledgement is admitted, for a limit `limit` and a discovery threshold
+/// `discovery` (`stream-completion.md`, "Wire", admission): `max(D, min(L - 1, D + max(1, (L - D) / 2)))`. The requests in
+/// flight never exceed the limit, and when the reserve `L - D` is at least one place, at least `max(1, ceil((L - D) / 2))`
+/// of it stays for the calls of the class `Lease`; with a reserve of one place the acknowledgement shares the discovery
+/// band.
+const fn acknowledge_limit(limit: usize, discovery: usize) -> usize {
+    let reserve = limit.saturating_sub(discovery);
+    let half = if reserve / 2 > 1 { reserve / 2 } else { 1 };
+    let raised = discovery + half;
+    let below_limit = limit.saturating_sub(1);
+    let capped = if raised < below_limit {
+        raised
+    } else {
+        below_limit
+    };
+    if capped > discovery {
+        capped
+    } else {
+        discovery
+    }
+}
+
+/// What a shed call is answered: `RESOURCE_EXHAUSTED` with a retry hint, and for an acknowledgement the reason
+/// `ACKNOWLEDGEMENT_SHED` (it costs at worst a withdrawal; the host asks again within its attempt).
+fn shed_refusal(class: Class) -> ApiError {
+    let refusal = ApiError::rate_limited(SHED_RETRY);
+    if class == Class::Acknowledge {
+        refusal.with_reason(sagat_application::worker::acknowledgement::REASON_ACKNOWLEDGEMENT_SHED)
+    } else {
+        refusal
+    }
+}
+
+/// When a call arrived at the outermost layer of the platform's gRPC server: the start of an acknowledgement's deadline.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Arrival(pub(crate) std::time::Instant);
 
 struct Shared {
     in_flight: AtomicUsize,
@@ -549,6 +591,10 @@ impl Shared {
         let limit = match class {
             Class::Discovery => self.discovery_max.load(Ordering::Acquire),
             Class::Lease | Class::Transfer => self.max.load(Ordering::Acquire),
+            Class::Acknowledge => acknowledge_limit(
+                self.max.load(Ordering::Acquire),
+                self.discovery_max.load(Ordering::Acquire),
+            ),
         };
         let running = self.in_flight.fetch_add(1, Ordering::AcqRel);
         if running >= limit {
@@ -686,7 +732,10 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        request
+            .extensions_mut()
+            .insert(Arrival(std::time::Instant::now()));
         let class = Class::of(request.uri().path());
         if let Some(refusal) = self.shared.not_serving() {
             // not load shedding: the replica may not serve (the instance registry), see the runbook
@@ -695,8 +744,9 @@ where
         }
         let Some(ticket) = self.shared.admit(class) else {
             metrics::counter!("grpc_shed_total", "class" => class.label()).increment(1);
-            let shed = to_status(&ApiError::rate_limited(SHED_RETRY)).into_http();
-            return Box::pin(std::future::ready(Ok(shed)));
+            return Box::pin(std::future::ready(Ok(
+                to_status(&shed_refusal(class)).into_http()
+            )));
         };
         let call = self.inner.call(request);
         let limit = (class != Class::Transfer)
@@ -745,6 +795,82 @@ mod tests {
             Class::Discovery,
             "unknown is shed first"
         );
+        assert_eq!(class("AcknowledgeTasks"), Class::Acknowledge);
+    }
+
+    #[test]
+    fn a_shed_acknowledgement_says_so_and_every_shed_call_is_resource_exhausted() {
+        let envelope = |status: &tonic::Status| {
+            status
+                .metadata()
+                .get(crate::status::ERROR_METADATA)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let shed = to_status(&shed_refusal(Class::Acknowledge));
+        assert_eq!(shed.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(envelope(&shed).as_deref(), Some("ACKNOWLEDGEMENT_SHED"));
+        assert!(
+            shed.metadata()
+                .get(crate::status::RETRY_AFTER_METADATA)
+                .is_some()
+        );
+        for class in [Class::Discovery, Class::Lease, Class::Transfer] {
+            let other = to_status(&shed_refusal(class));
+            assert_eq!(other.code(), tonic::Code::ResourceExhausted, "{class:?}");
+            assert_eq!(
+                envelope(&other).as_deref(),
+                Some("RATE_LIMITED"),
+                "{class:?}"
+            );
+        }
+    }
+
+    /// The properties of the acknowledgement's admission for every limit from 1 to 64 and every discovery threshold the
+    /// configuration can give it (three quarters of the limit, at least one), and for every threshold below the limit:
+    /// never above the limit, never below discovery, and a reserve of at least half the band (rounded up) kept for the
+    /// lease calls whenever the band has a place.
+    #[test]
+    fn an_acknowledgement_never_takes_the_lease_reserve_for_every_limit_to_64() {
+        for limit in 1..=64_usize {
+            for discovery in 1..=limit {
+                let admitted = acknowledge_limit(limit, discovery);
+                assert!(admitted <= limit, "{limit}/{discovery}: within the limit");
+                assert!(
+                    admitted >= discovery,
+                    "{limit}/{discovery}: no less than discovery"
+                );
+                let reserve = limit - discovery;
+                if reserve >= 2 {
+                    let kept = limit - admitted;
+                    assert!(
+                        kept >= reserve.div_ceil(2).max(1),
+                        "{limit}/{discovery}: {kept} kept for leases of a band of {reserve}"
+                    );
+                    assert!(admitted > discovery, "{limit}/{discovery}: above discovery");
+                } else if reserve == 1 {
+                    assert_eq!(
+                        admitted, discovery,
+                        "{limit}/{discovery}: shares the discovery band"
+                    );
+                }
+            }
+        }
+        // the configured threshold: three quarters
+        let admission = Admission::new(64, Duration::from_secs(30));
+        let shared = admission.shared;
+        assert_eq!(shared.discovery_max.load(Ordering::Acquire), 48);
+        assert_eq!(acknowledge_limit(64, 48), 56);
+        let held: Vec<_> = (0..56)
+            .map(|_| shared.admit(Class::Acknowledge).expect("below its limit"))
+            .collect();
+        assert!(shared.admit(Class::Acknowledge).is_none(), "shed at 56");
+        let leases: Vec<_> = (0..8)
+            .map(|_| shared.admit(Class::Lease).expect("the lease reserve"))
+            .collect();
+        assert!(shared.admit(Class::Lease).is_none(), "full is full");
+        drop((held, leases));
+        assert_eq!(shared.in_flight.load(Ordering::Acquire), 0, "nothing leaks");
     }
 
     #[test]
