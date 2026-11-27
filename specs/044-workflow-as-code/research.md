@@ -1368,3 +1368,37 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
   - Left to the server lane, reported to the coordinating session: the protocol has no cancelled outcome for a wait or
     an approval (the runtime takes a step outcome `cancelled`); and Update-with-Start must journal `run.started` before
     the `update.admitted` it creates, or the update meets no handler (`HANDLER_NOT_REGISTERED`).
+- **D044-317** (2026-11-27) The runtime follows the contract of Task 044-2 as the server lane settled it (pull request
+  291, worker protocol 1.10, Decisions 044-244 to 044-251), which supersedes the lane's drafts where they differ:
+  - The saga scope of an activity or a script enters its hashed body as `"scope": "s-<n>"` (the corpus README's body
+    table); a command record carries the scope (`HistoryCommandRecord.saga_scope`), the runtime's model has it as
+    `sagaScope` on `command.record`, and a replay compares the kind, the target and, for an activity or a script, the
+    scope; a difference fails `NONDETERMINISM` with `actualSagaScope` (empty outside a scope), which the host keeps only
+    when it matches `^s-[1-9][0-9]{0,9}$` and the replayer reports with the expected scope (Decision 044-244). Gap
+    044-303 is answered by it.
+  - A cancelled activity or script rejects with `CommandCancelled`, as a wait and an approval do (Decision 044-248); a
+    step outcome `failed` or `timed_out` still rejects with `ActivityError`. A cancelled step's promise settles only
+    from its outcome in the history, never at `requestCancellation`; a sleep rejects with `TimerCancelled` once its
+    `timer_cancel` is made, because that command is its end (Decision 044-245).
+  - A script command takes `timeoutMs` in its fragment, as a graph script node does, and `waitForEvent` requires
+    `timeoutMs` in its type as well as at the call (Decision 044-247); Decision 044-310's "a script takes no
+    `timeoutMs`" is withdrawn.
+  - A validator's refusal rejects its update with `VALIDATION_FAILED` (Decision 044-251), not Decision 044-309's
+    `VALIDATION_REJECTED`; `HANDLER_NOT_REGISTERED` stays.
+  delegate (OD-2026-11-24-4): the server lane owns the contract and its corpus is the proof six SDKs share, so the
+  runtime takes its rules as written; the corpus test (`the corpus vectors of Task 044-30 hold`) now runs on every
+  change and compares every RFC 8785 case, every primitive stream and every command of `vectors/chain.json` (body,
+  `d(k)` and `H(k)`).
+- **D044-318** (2026-11-27) The test environment journals what the server journals for the cases the contract settled:
+  - A start writes `run.started` first; a delayed start then takes the next sequence for `run.start_delayed` (a journal
+    row that is not visible, so the history skips its number) and its first workflow task waits for the delay; a
+    Signal-with-Start's `signal.buffered` or an Update-with-Start's `update.admitted` follows (Decision 044-246).
+  - A step whose attempt has not begun is cancelled by the function's `step_cancel` at once, with a step outcome
+    `cancelled`, error code `CANCELLED`, origin `effect`; a step whose attempt began is not (Decision 044-245): the
+    command changes nothing, and the test settles the step as its worker would (`completeStep`, or `failStep` with the
+    status `cancelled`). A wait for an event and an approval wait and are never begun; an activity or a script with a
+    stub runs at once, and one without a stub is ready until the test calls `beginStep(commandNumber)`, which is what a
+    worker's lease does; a child without a stub has not started until `beginStep`, and a child cancelled before it
+    starts ends `child.finished` `cancelled`, origin `effect`. delegate (OD-2026-11-24-4): a developer's unit test can
+    then prove both halves of the rule a function must live with (a cancellation that came too late leaves the activity's
+    outcome to its attempt), with the same events a real run would hold.
