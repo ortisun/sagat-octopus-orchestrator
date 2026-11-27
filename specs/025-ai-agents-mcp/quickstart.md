@@ -2,7 +2,7 @@
 
 Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
 2026-11-24-1); Architecture decisions 0059 and 0060 accepted (delegate, Owner decisions 2026-11-26-123
-and 2026-11-26-124); not started.
+and 2026-11-26-124); not started. Revised 2026-11-27 (round 3) for Decisions 025-017 to 025-019.
 
 Nothing in this guide runs today. It is the target demo of the Definition of Done: T025-072 makes
 `cargo test -p sagat-tests --test e2e_ai_agents_mcp --locked quickstart::` execute exactly these
@@ -57,7 +57,10 @@ Expected: revision 1, `ACTIVE`, no credential value in the response; the probe i
 `AI_PROVIDER_PROBE` that succeeds with the model list and the tested revision. The prices are demo
 values, not real prices. Saving the same provider with `"credential": {"mode":
 "azure-entra-client-credentials", ...}` or `aws-access-key` is refused with
-`AI_CREDENTIAL_MODE_UNAVAILABLE` (Gap 025-001).
+`AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker exists (Gap 025-001); once it does, the
+runner receives only an access token from it (an Entra access token, or an Amazon Bedrock short-term
+API key minted from a short-lived STS session), never the client secret or the access key (Decision
+025-017).
 
 ## 2. Publish and run an agent (US01–US04)
 
@@ -94,7 +97,9 @@ endpoint returns it only to a holder of `payload:read-internal` and the reveal g
 | Approval expiry | approval `timeoutMs: 5000`, no decision | `onExpire: fail` → `AI_TOOL_DENIED`; the losing late decision is `409 ALREADY_DECIDED` |
 | Classification refusal | change the provider to `maxPromptClassification: public` and republish | publication `422` with `PROMPT_CLASSIFICATION_EXCEEDED` and the pointer of `context.ticket` |
 | Ceiling lowered after publication | keep the published version; save a new provider revision with `maxPromptClassification: public` (no republication); start a run, and separately let a run already waiting on approval reach turn 3 | the new run is refused at admission (`409 AI_DESTINATION_RESTRICTED`); the waiting run's next model call fails `CLASSIFICATION_EGRESS_REFUSED` before dispatch and the dev provider receives nothing |
-| Blind approval | decide the `issue_refund` approval as a member without `payload:read-internal` | the tool-call view shows `decidable: false`; the decision is `403 APPROVAL_INPUT_WITHHELD`, nothing is applied, `ai.approval_input_withheld` is audited |
+| Blind approval | decide the `issue_refund` approval as a member without `payload:read-internal` | the tool-call view shows the decision context, the redacted transcript outline and every input field masked by path and level only, with `decidable: false`; the decision is `403 APPROVAL_INPUT_WITHHELD`, nothing is applied, `ai.approval_input_withheld` is audited |
+| Masked decision declared | with a context field annotated `pii` (so the transcript level is `pii`), republish with `issue_refund`'s approval `decisionFields: []` (an `activity` tool, which may run with `approval: "none"`); decide as an `operator` without the reveal grant | the view masks `orderId` and `amountCents` by path and level only; `decidable: true`; the decision applies and records the masked fields; the same declaration on an `operation` tool is refused at publication `DECISION_FIELDS_REQUIRED` |
+| No decider with context | a `pii` transcript, the default `decisionFields`, an `escalation` route to the `admin` role, nobody holding the reveal grant; approval `timeoutMs: 120000` | at open, `ai.approval_escalated`; within 60 seconds the request is marked `NO_DECIDER_WITH_CONTEXT` and `agent_approvals_without_decider` is 1; at the deadline `onExpire` applies with the reason `NO_DECIDER_WITH_CONTEXT`, audited `ai.approval_no_decider`; granting the reveal grant to an `admin` before the deadline clears the mark at the next sweep and that admin decides |
 | Redirected probe | dev provider scenario `redirect-probe` (`302` to another allowed host) | the probe fails `AI_DESTINATION_DENIED`, `egress.denied` is audited, and the other host receives no request and no credential |
 | Undeclared tools | scenario `undeclared-tools` (256 requests named after a canary string) | 256 refusal results; the run graph, journal and spans show `UNKNOWN_TOOL` and call indexes only; the canary appears only in the transcript |
 | Publisher loses the secret | revoke the publisher's `secret:use` on `anthropic-dev-key`, start a run | the model call is refused at resolution (`AI_CAPABILITY_UNAVAILABLE`), no credential leaves OpenBao, the denial is audited |
@@ -140,7 +145,11 @@ refuses the agent), publish, and run: the call is leased by the agent
 runner and its result returns to the model. Then switch the test server to `weather-v2` (changed input
 schema) and run again: the call fails with `AI_TOOL_CHANGED` and the server log shows no `tools/call`.
 Refreshing the server after that changes nothing for the published version, whose snapshot identifier
-is recorded in it; only a republication picks up the new snapshot. Lowering the server's
+is recorded in it; only a republication picks up the new snapshot. Switch the test server to the
+scenario `false-read-only` (its `delete_records` states `readOnlyHint: true`): declaring
+`delete_records` `effect: "read"` without an approval policy is refused at publication
+(`WRITE_TOOL_APPROVAL_REQUIRED`) because the revision does not classify it `read`, and
+`ai.mcp.tool_classification_mismatch` is audited at the refresh and at the publication. Lowering the server's
 `maxArgumentClassification` to `public` in a new revision refuses the next call before it is sent
 (`CLASSIFICATION_EGRESS_REFUSED`).
 

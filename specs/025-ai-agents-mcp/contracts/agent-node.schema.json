@@ -241,11 +241,11 @@
             "write"
           ],
           "default": "write",
-          "description": "write (the default) requires approval or approval: \"none\". read without an approval policy is refused for child tools (the child workflow can write), for database execute tools, and for mcp tools whose pinned snapshot does not state readOnlyHint true (or states destructiveHint true); snapshot annotations only ever tighten this rule (WRITE_TOOL_APPROVAL_REQUIRED)."
+          "description": "write (the default) requires approval or approval: \"none\". read without an approval policy is refused for child tools (the child workflow can write), for database execute tools, and for mcp tools that the pinned MCP-server revision does not classify read (its toolClassifications; an unclassified tool is write). The snapshot's annotations (readOnlyHint, destructiveHint) are untrusted hints that never loosen this rule; a disagreement between an annotation and the pinned classification is audited ai.mcp.tool_classification_mismatch at refresh and at publication (WRITE_TOOL_APPROVAL_REQUIRED; Decision 025-018)."
         },
         "inputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused) and no field may be annotated secret (SECRET_TOOL_INPUT). A tool-call approval is decidable only by a decider whose rights disclose every field (APPROVAL_INPUT_WITHHELD otherwise). For child tools the child version's inputSchema is checked the same way. Validated by the design 043 validator; an INVALID_INPUT result carries only its value-free rule and field."
+          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused) and no field may be annotated secret (SECRET_TOOL_INPUT). The approval view masks every field the decider's rights withhold (its path and level only); a tool-call approval is decidable only by a decider whose rights disclose every field the approval's decisionFields name (APPROVAL_INPUT_WITHHELD otherwise). For child tools the child version's inputSchema is checked the same way. Validated by the design 043 validator; an INVALID_INPUT result carries only its value-free rule and field."
         },
         "result": {
           "$ref": "#/$defs/expression",
@@ -505,7 +505,7 @@
             "server",
             "tool"
           ],
-          "description": "Allow-listed tool of the server's snapshot pinned at publication (the snapshot identifier and server revision are recorded in the published version); inputSchema comes from the snapshot and must be closed. effect read without an approval policy needs the snapshot's readOnlyHint true and no destructiveHint true. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED). An isError result reaches the model as MCP_TOOL_ERROR; its text is forwarded only when the node's transcript level is pii (Decision 025-008)."
+          "description": "Allow-listed tool of the server's snapshot pinned at publication (the snapshot identifier and server revision are recorded in the published version); inputSchema comes from the snapshot and must be closed. effect read without an approval policy needs the pinned server revision to classify the tool read (toolClassifications, set by the administrator who saved the revision; an unclassified tool is write); the snapshot's annotations are hints only. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED). An isError result reaches the model as MCP_TOOL_ERROR; its text is forwarded only when the node's transcript level is pii (Decision 025-008)."
         }
       ],
       "allOf": [
@@ -571,7 +571,23 @@
             "refuse",
             "fail"
           ],
-          "default": "fail"
+          "default": "fail",
+          "description": "Applied at the deadline; when no decider could see the decision fields (NO_DECIDER_WITH_CONTEXT), the outcome records that reason."
+        },
+        "decisionFields": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^(/[^/]+)*$"
+          },
+          "description": "JSON pointers into the tool's inputSchema naming the fields a decider must see in clear to decide; absent means every field of the input. A decider whose current rights withhold a named field is refused APPROVAL_INPUT_WITHHELD; the other fields are shown masked by path and level. May be narrowed, to the empty list included, only for a tool that may run with approval \"none\"; narrowing it on an operation tool or a database execute tool is refused at publication (DECISION_FIELDS_REQUIRED). A pointer outside the input schema is refused (INVALID_DECISION_FIELD). Decision 025-019."
+        },
+        "escalation": {
+          "$ref": "#/$defs/approvalPolicy",
+          "description": "Eligibility used when no eligible decider of policy (the initiator excluded) can see every decision field: checked when the approval opens, after every APPROVAL_INPUT_WITHHELD refusal and on every approval sweeper pass (every 60 seconds); the move is audited ai.approval_escalated. When nobody on this route can see them either, or no route is declared, the approval stays pending and visible (gauge agent_approvals_without_decider) and at its deadline ends through onExpire with the recorded reason NO_DECIDER_WITH_CONTEXT, audited ai.approval_no_decider. Decision 025-019."
         }
       }
     },

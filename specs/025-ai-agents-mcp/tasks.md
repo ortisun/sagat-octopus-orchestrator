@@ -10,7 +10,9 @@ recorded (constitution VIII). Test tasks are written first and must fail before 
 Revised 2026-11-26 against `develop` at `3f22b612` after an independent audit; tasks 025-082 to
 025-092 were added then. Revised 2026-11-27 after the security review of that date (Decision
 025-016): tasks 025-093 to 025-099 were added and the tests of the existing tasks it touched were
-extended in place.
+extended in place. Revised again on 2026-11-27 (round 3) for Decisions 025-017 to 025-019 (Owner
+decisions 2026-11-27-2 and 2026-11-27-400 to 2026-11-27-403): tasks 025-100 to 025-103 were added,
+Task 025-096 was rewritten in place, and the tasks that stated the replaced rules were amended in place.
 
 Format: `T025-NNN [P?] [USn?] Description — requirements — files — evidence`. `[P]` = different
 files, no dependency on an unfinished task in the same phase. Test targets: `contract_ai_agents_mcp`,
@@ -90,15 +92,19 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   levels of Task 025-093, `write` tools with approval or `approval: "none"`, `operation` tools and
   database `execute` tools with a policy (`approval: "none"` and `effect: "read"` refused for
   `execute`), `child` tools declared `read` only with a policy, `mcp` tools declared `read` without a
-  policy only on a pinned snapshot stating `readOnlyHint: true` and not `destructiveHint: true`, no tool
-  input field annotated `secret` (`SECRET_TOOL_INPUT`), and the transitive version flag
+  policy only when the pinned MCP-server revision classifies the tool `read` (Task 025-102, whatever the
+  snapshot's annotations say), `decisionFields` narrowed only on tools that may run with
+  `approval: "none"` (`DECISION_FIELDS_REQUIRED`), no tool input field annotated `secret`
+  (`SECRET_TOOL_INPUT`), and the transitive version flag
   `agent_unattended_writes` of Task 025-094 — FR-025-003, 006, 010, 011, 013..015, 017, 019 —
   `crates/infra-ir/src/agent.rs`, `crates/infra-ir/src/classification_check.rs` — publication fixtures
   for every reason in `contracts/errors.md`, a tool with a misspelled key (refused), a publisher
   without `secret:use` on a provider secret (refused), a database `execute` tool with
   `approval: "none"` (refused `WRITE_TOOL_APPROVAL_REQUIRED`), a `child` tool declared `read` without a
-  policy (refused), an `mcp` tool declared `read` on a snapshot without `readOnlyHint` and on one with
-  `readOnlyHint: true` and `destructiveHint: true` (both refused), a `secret` tool input field (refused).
+  policy (refused), an `mcp` tool declared `read` on a tool its pinned revision does not classify, and
+  on one classified `write` whose snapshot states `readOnlyHint: true` (both refused), an `operation`
+  tool with `decisionFields: []` (refused `DECISION_FIELDS_REQUIRED`), a `secret` tool input field
+  (refused).
 - [ ] T025-010 Application ports and the agent transactions of plan.md (activation, model completion,
   tool completion, approval outcome, cancellation, deadline) with `begin_safely` and the stated lock
   order — FR-025-008, 012, 017, 018 — `crates/application/src/agents.rs`, `agents/`,
@@ -145,9 +151,11 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 
 - [ ] T025-011 [P] [US1] Dependency spike and pins: SSE parser, MCP codec (in-repo vs library, written
   comparison), advisory audit, and the check that `aws-bedrock` accepts an Amazon Bedrock API key as a
-  bearer token; no SigV4 signer is pinned while Gap 025-001 is open — FR-025-003, 027 — `Cargo.toml`,
-  research.md — `cargo deny`/audit clean; comparison recorded (G1291); if the Bedrock bearer mode is
-  not usable, `aws-bedrock` is recorded as waiting for Gap 025-001 instead.
+  bearer token, including a short-term Bedrock API key such as design 047's broker mints for the
+  `aws-access-key` mode (Task 025-101); no SigV4 signer is pinned in the runner (Decision 025-017) —
+  FR-025-003, 027 — `Cargo.toml`, research.md — `cargo deny`/audit clean; comparison recorded (G1291);
+  if the Bedrock bearer mode is not usable, `aws-bedrock` is recorded as waiting for design 047's broker
+  instead.
 - [ ] T025-012 [P] [US1] Bounded incremental body reader in the egress guard as a new variant of
   `ResponseBody` taken by the existing `send_with` (bytes, idle and total deadline, same resolver
   checks), not a second client — FR-025-023 — `crates/infra-egress/src/lib.rs` — SSRF, redirect,
@@ -163,8 +171,9 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 - [ ] T025-015 [P] [US1] `aws-bedrock` and `azure-openai` adapters with capability flags and validation
   fallback, in the modes that hand the runner a static API key or bearer token only: `aws-bedrock` with
   an Amazon Bedrock API key as a bearer token (verified by the Task 025-011 spike, Gap 1291) and
-  `azure-openai` with an API key; the SigV4 signing path and the Entra token exchange are not built
-  while Gap 025-001 is open — FR-025-003, 009, 013 — `crates/infra-ai/src/{bedrock,azure}.rs` — adapter
+  `azure-openai` with an API key; the runner never builds a SigV4 signing path nor an Entra token
+  exchange: once design 047's broker exists, both modes reach the adapters as access tokens (Tasks
+  025-100 and 025-101) — FR-025-003, 009, 013 — `crates/infra-ai/src/{bedrock,azure}.rs` — adapter
   suite; a test that no adapter accepts a secret access key or a client secret slot.
 - [ ] T025-016 [US1] `apps/agent-runner`: config, registration under `BindingProfile::Agent`, finite
   credit polling, heartbeat, cancellation, closed failure vocabulary, no DB/OpenBao/signing key/database
@@ -213,8 +222,9 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   `AI_PROVIDER_PROBE`, through `start_private`, row 13 of the design 043 gate); `ai:manage` and
   `secret:use` with each secret's access list to save; the `pii` ceiling under the rule of Owner
   decision 2026-11-26-120; credential modes `aws-access-key` and `azure-entra-client-credentials`
-  refused with `AI_CREDENTIAL_MODE_UNAVAILABLE` while Gap 025-001 is open, and the `entraAuthority`
-  setting recorded for when the Entra mode is enabled — FR-025-001..005, 044 —
+  refused with `AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker exists (Gap 025-001; Tasks
+  025-100 and 025-101 enable them through it), and the `entraAuthority` setting recorded for when the
+  Entra mode is enabled — FR-025-001..005, 044 —
   `crates/api-http/src/routes/ai_providers.rs` — HTTP tests incl. cross-tenant opacity, paused provider,
   receipts, `SECRET_NOT_USABLE`, `REVEAL_GRANT_REQUIRED`, `AI_CREDENTIAL_MODE_UNAVAILABLE` for both
   modes.
@@ -268,16 +278,21 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 ## Phase 4: US03 — tool approval (P1)
 
 - [ ] T025-032 [US3] `approval_requests` owner kind `AGENT_TOOL_CALL`, the single shared amendment of
-  feature 014 that 026 cites (coordinator C22): migration, constraint versions, lock-order review with
+  feature 014 that 026 cites (coordinator C22): migration, constraint versions, the escalation columns
+  of Decision 025-019 (`decision_fields`, `escalation_policy`, `escalated_at`, `context_checked_at`,
+  `no_decider_reason`, null for every other owner kind) and their partial index, lock-order review with
   feature 014 (G1289) — FR-025-017 — `crates/infra-postgres/migrations/`,
   `src/primitives.rs` — 014 approval suites still pass; new owner-kind tests.
 - [ ] T025-033 [US3] Open, decide, expire and cancel tool approvals; `refuse`/`fail`; clamped deadline;
-  the decision refusal of Task 025-096 — FR-025-017, 018 — `crates/application/src/agents/approvals.rs`
-  — races decision vs expiry vs cancel (50 rounds), unauthorized/revoked/cross-tenant/initiator denials
-  audited.
-- [ ] T025-034 [US3] Approver view of the tool input with the input schema as carrier, with the
-  `decidable` flag of Task 025-096 — FR-025-017 — `crates/api-http/src/routes/agent_tool_calls.rs` —
-  disclosure matrix per level; no-store; audit; `decidable` false exactly when a field is withheld.
+  the decision refusal of Task 025-096 and the escalation of Task 025-103 — FR-025-017, 018 —
+  `crates/application/src/agents/approvals.rs` — races decision vs expiry vs escalation vs cancel (50
+  rounds), unauthorized/revoked/cross-tenant/initiator denials audited.
+- [ ] T025-034 [US3] Approver redacted view of the tool call with the input schema as carrier: the
+  decision context, the redacted transcript outline and the input with withheld fields masked (path and
+  level only), with the `decidable` flag and the masked-field list of Task 025-096 — FR-025-017 —
+  `crates/api-http/src/routes/agent_tool_calls.rs` — disclosure matrix per level; no length, digest or
+  prefix of a masked field in the body; no-store; audit; `decidable` false exactly when a decision field
+  is withheld.
 - [ ] T025-035 [US3] Studio approval panel for tool calls — FR-025-017, 038 — `frontend/apps/studio/src/features/runs/ToolApproval.tsx` — component and accessibility tests.
 
 ## Phase 5: US04 — budgets and quotas (P1)
@@ -426,8 +441,8 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 
 - [ ] T025-052 [US7] External MCP server resources on 021's resource model: routes, Studio, auth modes
   `none` and `bearer`, secrets (`ai:manage` and `secret:use` to save), the `pii` argument ceiling under
-  the rule of Owner decision 2026-11-26-120; `oauth-client-credentials` refused with
-  `MCP_AUTH_MODE_UNAVAILABLE` — FR-025-034 — `routes/mcp_servers.rs`, `frontend/apps/studio/src/features/ai/`
+  the rule of Owner decision 2026-11-26-120, the `toolClassifications` field of Task 025-102 in the
+  form and the API; `oauth-client-credentials` refused with `MCP_AUTH_MODE_UNAVAILABLE` — FR-025-034 — `routes/mcp_servers.rs`, `frontend/apps/studio/src/features/ai/`
   — HTTP and component tests. The OAuth part waits for constitution 5.1.0 to merge and for design 047's
   token broker.
   Owner-gate: OD-2026-11-26-120, OD-2026-11-26-122, OD-2026-11-25-3
@@ -506,8 +521,16 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   `infra/docker/Dockerfile`, `infra/helm/templates/`, `infra/docker/compose.ai.yaml` — rendered chart
   tests; network policy test on a real cluster.
 - [ ] T025-069 Documentation: runbooks (providers, agent runner, MCP; incident steps for spend, provider
-  outage, leaked token), architecture sections (worker protocol, security, observability) — FR-025-045
-  — `docs/runbooks/{ai-agents,agent-runner,mcp}.md`, `docs/architecture/*.md` — docs contract check.
+  outage, leaked token), architecture sections (worker protocol, security, observability); the bound of
+  the output secret scan published in the form of Architecture decision 0085 rule 12 (Gap 025-004,
+  accepted by the owner in Owner decision 2026-11-27-2): a section "The limit, stated and not hidden"
+  saying that a resolved value shorter than 8 bytes, or transformed other than JSON-escaped, base64 or
+  hexadecimal, is not detected, with no sentence elsewhere claiming otherwise, and the incident steps
+  that purge the run's agent content and then rotate the secret; the approvals runbook section for an
+  approval marked `NO_DECIDER_WITH_CONTEXT` (grant the reveal grant, declare an `escalation` route, or
+  narrow `decisionFields`) — FR-025-017, 020, 045 — `docs/runbooks/{ai-agents,agent-runner,mcp}.md`,
+  `docs/architecture/*.md` — docs contract check; a grep that no document under `docs/` claims the scan
+  detects every secret.
 - [ ] T025-070 Performance report with the dev provider at 1/16/64 concurrent agents, including
   `ai_usage_leases` refills and `ai_usage_daily` contention — NFR-025-007 —
   `tests/performance/ai-agents-mcp/`, `tests/performance/reports/ai-agents-mcp.md` — measured
@@ -622,14 +645,24 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   refusals; a version published before the prefix was reserved, with an ordinary `sagat.ai.model`
   activity and declared secrets, blocks the activation and is never leased to an agent runner (seen
   failing first against the current name-only match).
-- [ ] T025-096 [US3] Blind tool-call approval refused: the approval view reports `decidable`; a
-  decision through `POST /approvals/{approvalId}/decisions` on an `AGENT_TOOL_CALL` request by a decider
-  whose current rights would withhold any field of the input is refused (`403`
-  `APPROVAL_INPUT_WITHHELD`), applies nothing and is audited `ai.approval_input_withheld` —
-  FR-025-017 — `crates/application/src/agents/approvals.rs`, `crates/api-http/src/routes/agent_tool_calls.rs`
-  — tests: an eligible `operator` without the reveal grant on a `pii` transcript is refused and the
-  approval stays pending; with the grant the same decision applies; rights revoked between opening the
-  view and deciding are refused; the race tests of Task 025-033 still pick exactly one outcome.
+- [ ] T025-096 [US3] Redacted approval view and decisions on the fields that matter (rewritten
+  2026-11-27, round 3, Decision 025-019): the approval view of an `AGENT_TOOL_CALL` request returns the
+  decision context, the redacted transcript outline and the tool input with every field the caller's
+  current rights withhold masked by path and level only, plus `decisionFields`, `maskedFields` and
+  `decidable` (false exactly when a decision field is withheld); revealing a masked field goes through
+  the transcript audience (reveal grant) and is audited `payload.pii_revealed`; a decision through
+  `POST /approvals/{approvalId}/decisions` by a decider whose current rights withhold any decision field
+  is refused (`403` `APPROVAL_INPUT_WITHHELD`), applies nothing and is audited
+  `ai.approval_input_withheld`; publication refuses narrowed `decisionFields` on `operation` and
+  database `execute` tools (`DECISION_FIELDS_REQUIRED`) and pointers outside the input schema
+  (`INVALID_DECISION_FIELD`) — FR-025-010, 017 — `crates/application/src/agents/approvals.rs`,
+  `crates/api-http/src/routes/agent_tool_calls.rs`, `crates/infra-ir/src/agent.rs` — tests: an eligible
+  `operator` without the reveal grant on a `pii` transcript with the default `decisionFields` is refused
+  and the approval stays pending; the same operator decides when the author narrowed `decisionFields` to
+  an `internal` field they can read, the decision recording the masked fields; with the grant the
+  default decision applies; rights revoked between opening the view and deciding are refused; the view's
+  body holds no length, digest or prefix of a masked value (a canary of each length from 1 to 64 bytes);
+  the race tests of Task 025-033 still pick exactly one outcome.
 - [ ] T025-097 [US1] Pins recorded at publication and current restrictions: publication writes
   `version_agent_pins` (provider revision per agent node, MCP-server revision and snapshot per `mcp`
   tool); admission copies them into `run_resource_bindings` and `run_mcp_snapshot_pins` and refuses a
@@ -662,18 +695,74 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   exposure at its daily token budget fails the next reservation `AI_BUDGET_EXHAUSTED` before dispatch
   while internal agents of the namespace keep running; the exposure scope's invariant (folded plus
   leased equals the sum of its runs' attempts) holds.
+- [ ] T025-100 [US1] Entra client credentials through design 047's broker (Owner decision
+  2026-11-27-400, Decision 025-017): `azure-entra-client-credentials` accepted at save once the broker
+  exists (`AI_CREDENTIAL_MODE_UNAVAILABLE` until then); the client secret is a slot the broker reads and
+  `ResolveModelCall` never returns; the broker runs the client-credentials grant against the recorded
+  `entraAuthority` only and returns the current access token, which `ResolveModelCall` delivers to the
+  lease-owning runner under the third declared set; the adapter sends it as a bearer token —
+  FR-025-003 — `crates/application/src/agent_capability.rs`, `crates/infra-ai/src/azure.rs`, design
+  047's broker port — tests: the resolve response for an Entra revision carries an access token and no
+  client-secret slot; a token request to a host other than the recorded authority is refused; a revoked
+  `secret:use` refuses the next resolution; the canary battery of Task 025-042 extended to the client
+  secret (it reaches no runner, transcript, log, span or audit).
+  Owner-gate: OD-2026-11-27-400
+- [ ] T025-101 [US1] AWS access keys through design 047's broker (Owner decision 2026-11-27-401,
+  Decision 025-017): `aws-access-key` accepted at save once the broker exists; the broker holds the
+  long-lived key pair, calls AWS STS (`AssumeRole` with the recorded `aws_role_arn`, `GetSessionToken`
+  without one; `aws_session_seconds` 900 by default, 900 to 3,600), mints from that session an Amazon
+  Bedrock short-term API key whose lifetime does not exceed the session's, and `ResolveModelCall`
+  delivers only that key; the runner uses the bearer path of Task 025-011 and holds no SigV4 signer —
+  FR-025-003 — `crates/application/src/agent_capability.rs`, `crates/infra-ai/src/bedrock.rs`, design
+  047's broker port — tests: the resolve response for an AWS revision carries one bearer key with its
+  expiry and neither the access key id's secret nor a session secret key nor a session token; a key
+  past its expiry is never delivered; a session longer than 3,600 seconds is refused at save; the
+  runner's dependency tree holds no SigV4 signer (an architecture check); the canary battery extended
+  to the long-lived and the session secrets.
+  Owner-gate: OD-2026-11-27-401
+- [ ] T025-102 [US7] Pinned MCP tool classifications (Owner decision 2026-11-27-402, Decision 025-018):
+  the MCP-server revision's `toolClassifications` (tool name to `read` or `write`, at most 512, a tool
+  not named is `write`) saved by the `ai:manage` holder and immutable with the revision; publication
+  allows an `mcp` tool `effect: "read"` without an approval policy only when the pinned revision
+  classifies it `read` (`WRITE_TOOL_APPROVAL_REQUIRED` otherwise); a refresh and a publication that find
+  an annotation disagreeing with the pinned classification write `ai.mcp.tool_classification_mismatch`
+  (server, revision, snapshot, tool name; never the description) — FR-025-010, 034, 035 —
+  `crates/infra-ir/src/agent.rs`, `crates/application/src/mcp_servers.rs`,
+  `crates/api-http/src/routes/mcp_servers.rs` — tests: the test MCP server's `delete_records` stating
+  `readOnlyHint: true` on an unclassified tool is refused as `read` and audited; the same tool classified
+  `read` by the administrator is allowed and the mismatch of a later `destructiveHint: true` refresh is
+  audited without changing the published version; a classification change needs a new revision and a
+  republication to take effect.
+- [ ] T025-103 [US3] Escalation and `NO_DECIDER_WITH_CONTEXT` (Owner decision 2026-11-27-403, Decision
+  025-019): the context check at the opening transaction, after every `APPROVAL_INPUT_WITHHELD` refusal
+  and in the approval sweeper every 60 seconds, under the run row then the request row; escalation to the
+  `escalation` route (`escalated_at` set once, `ai.approval_escalated`,
+  `agent_approvals_escalated_total`); `no_decider_reason = NO_DECIDER_WITH_CONTEXT` with the gauge
+  `agent_approvals_without_decider` and the alert `AgentApprovalWithoutDecider` (its promtool cases);
+  the expiry of a marked request ending through `onExpire` with that reason, audited
+  `ai.approval_no_decider`; the Studio approvals inbox shows the escalated and the undecidable states —
+  FR-025-017, 041 — `crates/application/src/agents/approvals.rs`,
+  `crates/infra-postgres/src/primitives.rs` (the sweeper query), `infra/observability/alerts/` — tests: a
+  `pii` agent whose eligible deciders all lack the reveal grant is escalated at open; a route whose
+  members also lack it marks the request and, at the deadline, the `refuse` or `fail` outcome records
+  `NO_DECIDER_WITH_CONTEXT`; a reveal grant given to a route member clears the mark at the next sweep and
+  that member decides; the only grant holder losing the grant leads to escalation within one sweep;
+  decision versus escalation and versus expiry pick one outcome over 50 rounds with held locks, never
+  sleeps.
 
 ## Dependencies and order
 
 Phase 1 (including T025-073, T025-082, T025-083, T025-087 and T025-095) blocks all stories; T025-093,
-T025-094, T025-096, T025-097, T025-098 and T025-099 close with the stories they name (US05, US06, US03,
-US01, US08, US06) and before the gates of Phase 10. US01 (Phase 2)
+T025-094, T025-096, T025-097, T025-098, T025-099, T025-102 and T025-103 close with the stories they
+name (US05, US06, US03, US01, US08, US06, US07, US03) and before the gates of Phase 10; T025-103 needs
+T025-032's columns and T025-096's view. US01 (Phase 2)
 blocks US02–US09. US03, US04 and US05 depend on US02's tool planning (T025-025, T025-026). US06 needs
 Phase 1 and the admission path only; US07 needs the runner (T025-016, T025-017, T025-091). The provider
 and MCP-server resource tasks (T025-006, T025-022, T025-024, T025-052) need 021's resource core; until
 then T025-092's test provider stands in. US08 streaming needs feature 026; T025-028 needs feature 021's
 operations; script and operation exposures need feature 022; T025-058 waits for constitution 5.1.0, approved by
-the owner (Owner decision 2026-11-25-3), to merge and for design 047's broker; T025-090 needs design 040 built. Phase 10 closes after every story
+the owner (Owner decision 2026-11-25-3), to merge and for design 047's broker, as do T025-100 and
+T025-101 (the Entra and AWS broker routes, Decision 025-017); T025-090 needs design 040 built. Phase 10 closes after every story
 it covers.
 
 ## Build slices
@@ -716,7 +805,7 @@ starts only after that slice has merged.
   (`integration_workflow_primitives`).
 - **Slice A3, engine and transactions.** Tasks 025-010, 025-017, 025-018, 025-019, 025-020, 025-025,
   025-026, 025-027, 025-029, 025-030, 025-031, 025-033, 025-036, 025-038, 025-078, 025-084, 025-085,
-  025-093 and 025-094 (child admission parts), 025-096, 025-097, 025-098 (server part).
+  025-093 and 025-094 (child admission parts), 025-096, 025-097, 025-098 (server part), 025-103.
   Touches `crates/application`, `crates/infra-postgres/src/` (stores only), `crates/scheduler`,
   `crates/domain/src/execution/reset.rs`, and `apps/execution-engine` (its composition root, until the
   order point below hands it to lane B). Depends on A2. Verification: `integration_ai_agents_mcp` and
@@ -733,7 +822,7 @@ starts only after that slice has merged.
   `crates/api-http` (authentication and routes), `apps/control-plane`. Depends on A3 and on slice B1's
   Task 025-011 (the MCP codec choice and its pin). Verification: protocol unit tests, security tests,
   `fault_ai_agents_mcp` (`mcp_server.rs`), the run-input gate answers in `enforce` and `report`.
-- **Slice A6, MCP client control side.** Tasks 025-052 (without its OAuth part), 025-054. Touches
+- **Slice A6, MCP client control side.** Tasks 025-052 (without its OAuth part), 025-054, 025-102. Touches
   `crates/application`, `crates/api-http`, `crates/infra-ir`. Depends on A4. Verification: HTTP tests,
   publication pinning tests.
 - **Slice A7, Studio.** Tasks 025-024, 025-035, 025-047 (Studio part), 025-060, 025-063. Touches
@@ -769,7 +858,9 @@ starts only after that slice has merged.
   chart tests, the network policy test, the docs contract check.
 - **Waiting.** Task 025-058 and the OAuth part of 025-052 wait for constitution 5.1.0, approved by the owner
   (Owner decision 2026-11-25-3), to merge and for design 047's broker (Gap 025-001); when both are there they form one slice of lane B (runner side)
-  followed by one of lane A (resource side).
+  followed by one of lane A (resource side). Tasks 025-100 and 025-101 (the Entra and AWS broker routes,
+  Decision 025-017) wait for the same broker and join that pair of slices: the resolve and adapter parts
+  in lane B, the save-time acceptance in lane A.
 
 ### Cross-lane order points
 
@@ -796,19 +887,19 @@ starts only after that slice has merged.
 
 | Requirement group | Tasks | Success criteria |
 |---|---|---|
-| FR-025-001..005 | T025-005, 006, 015, 017, 022, 024, 080, 092, 097 | SC-025-001, SC-025-012 |
+| FR-025-001..005 | T025-005, 006, 015, 017, 022, 024, 080, 092, 097, 100, 101 | SC-025-001, SC-025-012 |
 | FR-025-006..009, 013, 014 | T025-003, 004, 009, 013..021, 082, 083, 085, 091, 095 | SC-025-002, SC-025-003, SC-025-010 |
-| FR-025-010..012, 025 | T025-009, 025..030, 093, 094, 098 | SC-025-004, SC-025-007 |
+| FR-025-010..012, 025 | T025-009, 025..030, 093, 094, 096, 098, 102 | SC-025-004, SC-025-007 |
 | FR-025-015, 016 | T025-036..039, 085, 086, 099 | SC-025-006 |
-| FR-025-017, 018 | T025-031..035, 096 | SC-025-005 |
-| FR-025-019..022 | T025-040..043, 075, 077, 084, 093, 097, 098 | SC-025-007, SC-025-008 |
+| FR-025-017, 018 | T025-031..035, 096, 103 | SC-025-005 |
+| FR-025-019..022 | T025-040..043, 069, 075, 077, 084, 093, 097, 098 | SC-025-007, SC-025-008 |
 | FR-025-023, 024 | T025-012, 016, 017, 057, 067, 068, 073, 083, 084, 091, 095 | SC-025-009, SC-025-010 |
 | FR-025-026..033 | T025-044..051, 074, 076, 081, 089, 094, 099 | SC-025-011 |
-| FR-025-034..036 | T025-052..058, 080, 097 | SC-025-012 |
+| FR-025-034..036 | T025-052..058, 080, 097, 102 | SC-025-012 |
 | FR-025-037 | T025-061, 076, 098 | SC-025-013 |
 | FR-025-038, 039 | T025-024, 035, 047, 060, 062, 063 | SC-025-001, SC-025-016 |
 | FR-025-040, 043 | T025-002, 065, 066, 082, 088 | SC-025-014 |
-| FR-025-041, 042 | T025-002, 059, 064, 087, 090, 098 | SC-025-015 |
+| FR-025-041, 042 | T025-002, 059, 064, 087, 090, 098, 103 | SC-025-015 |
 | FR-025-044 | T025-022, 050, 067 | SC-025-001, SC-025-011 |
 | FR-025-045 | T025-023, 068..072 | SC-025-017 |
 | FR-025-046, 047 | T025-077..079 | SC-025-018 |

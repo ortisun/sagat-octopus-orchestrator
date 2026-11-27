@@ -78,7 +78,10 @@ paths:
       description: >-
         Requires ai:manage and secret:use plus the access list of each referenced secret, as putAiProvider. Same
         revision and receipt rules. auth.mode oauth-client-credentials is refused with 422 MCP_AUTH_MODE_UNAVAILABLE
-        until constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) merges and design 047's broker is built (Gap 025-001). No network call.
+        until constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) merges and design 047's broker is built (Gap 025-001). toolClassifications is the
+        saving ai:manage holder's classification of each tool (read or write; a tool it does not name is write),
+        pinned with the revision; it, never the server's annotations, decides whether an mcp tool may run without
+        approval (Decision 025-018). No network call.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpServerRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}
       x-standard-errors: true
@@ -197,13 +200,18 @@ paths:
     get:
       operationId: getAgentToolCallForApproval
       description: >-
-        Requires approval:read and current eligibility for the request. Returns tool name, kind, effect and the
-        input disclosed per ADR-0033 with the tool's inputSchema as carrier, every field at least the agent's
-        transcript level (withheld nodes for fields above the caller's level; no field is secret, publication
-        refuses SECRET_TOOL_INPUT) and decidable, false when any field was withheld from the caller. A decision
-        through POST /approvals/{approvalId}/decisions by a caller to whom any field would be withheld is
-        refused with 403 APPROVAL_INPUT_WITHHELD, nothing applied, audited ai.approval_input_withheld.
-        Audited as payload.disclosed or payload.pii_revealed.
+        Requires approval:read and current eligibility for the request (the escalation route's once escalated).
+        Returns the redacted view (Decision 025-019): the decision context (tool name, description, kind, target,
+        effect, turn, call index, budgets used), a redacted outline of the transcript (turns, declared tool names
+        and outcomes, every model-written text and every value masked), and the input disclosed per ADR-0033 with
+        the tool's inputSchema as carrier, every field at least the agent's transcript level and every field above
+        the caller's level masked by its path and level only, never its length, a digest or a prefix (no field is
+        secret, publication refuses SECRET_TOOL_INPUT); decisionFields, maskedFields, and decidable, false when a
+        decision field is masked for the caller. Revealing a masked field needs the namespace reveal grant (the
+        transcript audience) and is audited payload.pii_revealed. A decision through POST
+        /approvals/{approvalId}/decisions by a caller to whom a decision field would be withheld is refused with
+        403 APPROVAL_INPUT_WITHHELD, nothing applied, audited ai.approval_input_withheld. Audited as
+        payload.disclosed or payload.pii_revealed.
       parameters: [{name: approvalId, in: path, required: true, schema: {type: string, format: uuid}}]
       responses: {'200': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/AgentToolCallView'}}}}}
       x-standard-errors: true
@@ -265,9 +273,11 @@ components:
           additionalProperties: false
           required: [mode, secrets]
           properties:
-            mode: {enum: [api-key, bearer, aws-access-key, azure-entra-client-credentials], description: 'api-key and bearer deliver a static API key or bearer token (aws-bedrock uses bearer with an Amazon Bedrock API key). aws-access-key (a signing key) and azure-entra-client-credentials (a client secret) are refused with 422 AI_CREDENTIAL_MODE_UNAVAILABLE until design 047''s broker issues access tokens (Gap 025-001).'}
+            mode: {enum: [api-key, bearer, aws-access-key, azure-entra-client-credentials], description: 'api-key and bearer deliver a static API key or bearer token (aws-bedrock uses bearer with an Amazon Bedrock API key). aws-access-key (a signing key) and azure-entra-client-credentials (a client secret) are refused with 422 AI_CREDENTIAL_MODE_UNAVAILABLE until design 047''s broker issues access tokens (Gap 025-001); once it does, their secrets go to the broker only and the runner receives an access token: an Entra access token from the client-credentials grant, or an Amazon Bedrock short-term API key minted from a short-lived STS session (Decision 025-017).'}
             secrets: {type: object, maxProperties: 4, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}, description: Slot name -> logical secret name (OpenBao-backed, feature 017). Never a value.}
-            entraAuthority: {type: string, format: uri, maxLength: 256, description: 'HTTPS Entra authority host, required for azure-entra-client-credentials once that mode is enabled; confirmed by the saving administrator, never discovered; the only host a token request goes to.'}
+            entraAuthority: {type: string, format: uri, maxLength: 256, description: 'HTTPS Entra authority host, required for azure-entra-client-credentials once that mode is enabled; confirmed by the saving administrator, never discovered; the only host the broker''s token request goes to.'}
+            awsRoleArn: {type: string, maxLength: 2048, description: 'Optional role for aws-access-key once that mode is enabled; the broker calls AWS STS AssumeRole with it, or GetSessionToken without it.'}
+            awsSessionSeconds: {type: integer, minimum: 900, maximum: 3600, default: 900, description: 'Lifetime of the STS session the broker requests for aws-access-key; the Bedrock short-term API key minted from it never outlives it.'}
         models: {type: array, minItems: 1, maxItems: 64, items: {$ref: '#/components/schemas/AiModelEntry'}}
         maxPromptClassification: {enum: [public, internal, pii]}
         limits: {type: object, additionalProperties: false, properties: {maxConcurrentCalls: {type: integer, minimum: 1, maximum: 256}, attemptTimeoutMs: {type: integer, minimum: 1000, maximum: 900000}}}
@@ -295,6 +305,7 @@ components:
         status: {enum: [ACTIVE, PAUSED]}
         url: {type: string, format: uri, maxLength: 512}
         maxArgumentClassification: {enum: [public, internal, pii], description: 'Most sensitive level the model may send to this server as tool arguments; no default. Publication refuses an mcp tool whose agent transcript level is above it.'}
+        toolClassifications: {type: object, maxProperties: 512, propertyNames: {maxLength: 128}, additionalProperties: {enum: [read, write]}, description: 'Tool name -> read or write, set by the saving ai:manage holder and pinned with the revision; a tool not named is write. An mcp tool may run without an approval policy only when the pinned revision classifies it read; the snapshot annotations readOnlyHint and destructiveHint are hints, and a disagreement with this classification is audited ai.mcp.tool_classification_mismatch at refresh and at publication (Decision 025-018).'}
         protocolPreference: {enum: ['2026-07-28', '2025-11-25'], default: '2026-07-28'}
         auth:
           type: object
@@ -309,7 +320,7 @@ components:
             resource: {type: string, format: uri, maxLength: 512, description: RFC 8707 resource indicator; defaults to the server's canonical URI.}
             scopes: {type: array, maxItems: 16, items: {type: string, maxLength: 128}}
         limits: {type: object, additionalProperties: false, properties: {callTimeoutMs: {type: integer, minimum: 1000, maximum: 300000}, maxResultBytes: {type: integer, minimum: 1024, maximum: 4194304}}}
-    McpServer: {type: object, properties: {name: {type: string}, revision: {type: integer}, status: {type: string}, url: {type: string}, maxArgumentClassification: {type: string}, auth: {type: object, description: 'Mode, client id, issuer, token endpoint, resource, scopes and logical secret names; never a value.'}, currentSnapshotId: {type: [string, 'null'], format: uuid}, oauthMetadataMismatch: {type: boolean, description: 'True when the latest refresh discovered an issuer or token endpoint other than the recorded ones; calls are refused until the revision is updated.'}}}
+    McpServer: {type: object, properties: {name: {type: string}, revision: {type: integer}, status: {type: string}, url: {type: string}, maxArgumentClassification: {type: string}, toolClassifications: {type: object, additionalProperties: {enum: [read, write]}}, auth: {type: object, description: 'Mode, client id, issuer, token endpoint, resource, scopes and logical secret names; never a value.'}, currentSnapshotId: {type: [string, 'null'], format: uuid}, oauthMetadataMismatch: {type: boolean, description: 'True when the latest refresh discovered an issuer or token endpoint other than the recorded ones; calls are refused until the revision is updated.'}}}
     McpServerList: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/McpServer'}}}}
     McpToolSnapshot:
       type: object
@@ -319,7 +330,7 @@ components:
         discoveredIssuer: {type: [string, 'null']}
         discoveredTokenEndpoint: {type: [string, 'null']}
         createdAt: {type: string, format: date-time}
-        tools: {type: array, maxItems: 1024, items: {type: object, properties: {name: {type: string}, title: {type: string}, description: {type: string}, inputSchema: {type: object}, descriptionSha256: {type: string}, inputSchemaSha256: {type: string}, outputSchemaSha256: {type: [string, 'null']}, closedInput: {type: boolean, description: False when the schema is outside the closed vocabulary; such a tool cannot be allowed in an agent.}}}}
+        tools: {type: array, maxItems: 1024, items: {type: object, properties: {name: {type: string}, title: {type: string}, description: {type: string}, inputSchema: {type: object}, descriptionSha256: {type: string}, inputSchemaSha256: {type: string}, outputSchemaSha256: {type: [string, 'null']}, closedInput: {type: boolean, description: False when the schema is outside the closed vocabulary; such a tool cannot be allowed in an agent.}, annotations: {type: object, description: 'Untrusted hints as the server stated them (readOnlyHint, destructiveHint); never decide whether the tool needs approval.'}, classification: {enum: [read, write], description: 'The classification of the refreshed revision (write when it does not name the tool).'}, classificationMismatch: {type: boolean, description: True when an annotation disagrees with the classification; audited ai.mcp.tool_classification_mismatch.}}}}
     PutMcpExposureRequest:
       type: object
       additionalProperties: false
@@ -376,8 +387,16 @@ components:
         toolName: {type: string}
         kind: {type: string}
         effect: {enum: [read, write]}
-        input: {description: Classified disclosure result (feature-016 shape with disclosed and withheld nodes).}
-        decidable: {type: boolean, description: False when any field was withheld from the caller; a decision by that caller is refused with APPROVAL_INPUT_WITHHELD.}
+        description: {type: string, description: The tool's declared description (internal).}
+        target: {type: string, description: The declared target (activity, script, operation, child workflow or MCP server and tool).}
+        budgetsUsed: {type: object, description: Turns, tool calls, tokens, estimated cost and wall time used so far.}
+        transcriptOutline: {type: array, maxItems: 256, description: 'Redacted outline: per turn, the declared tool names (or UNKNOWN_TOOL) and their outcomes; every model-written text and every input and result value masked.', items: {type: object, properties: {turn: {type: integer}, toolCalls: {type: array, items: {type: object, properties: {call: {type: integer}, name: {type: string}, status: {type: string}}}}}}}
+        input: {description: Classified disclosure result (feature-016 shape with disclosed and masked nodes; a masked node carries its path and level only).}
+        decisionFields: {type: array, items: {type: string}, description: JSON pointers of the fields a decider must see in clear; every input field unless the author narrowed it.}
+        maskedFields: {type: array, items: {type: object, properties: {path: {type: string}, level: {enum: [internal, pii]}}}, description: The fields masked for the caller.}
+        decidable: {type: boolean, description: False when a decision field is masked for the caller; a decision by that caller is refused with APPROVAL_INPUT_WITHHELD.}
+        escalated: {type: boolean, description: True once the request moved to the escalation route because no eligible decider could see the decision fields.}
+        noDeciderReason: {type: [string, 'null'], enum: [NO_DECIDER_WITH_CONTEXT, null], description: Set while nobody eligible can see the decision fields; at the deadline onExpire applies with this reason.}
     AgentProgress:
       description: >-
         Additive, payload-free field of runtime-graph agent nodes (merged into the existing graph node schema),

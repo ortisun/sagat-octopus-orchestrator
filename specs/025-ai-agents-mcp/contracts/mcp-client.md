@@ -9,7 +9,9 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
 - An external server resource names an HTTPS URL (no userinfo, no query string carrying
   credentials), a protocol preference (`2026-07-28` first, `2025-11-25` fallback), a required
   `maxArgumentClassification` (`public`, `internal` or `pii`: the most sensitive data the model may send
-  to this third party as arguments), an authentication mode and limits. Saving makes no network call.
+  to this third party as arguments), `toolClassifications` (the classification `read` or `write` of each
+  tool by name, set by the saving `ai:manage` holder and pinned with the revision; a tool it does not
+  name is `write`, Decision 025-018), an authentication mode and limits. Saving makes no network call.
 - Refresh is a durable private run (origin `MCP_TOOL_REFRESH`): the runner calls `server/discover`
   (2026-07-28) or `initialize` (2025-11-25, then discards any session id after the refresh), then
   `tools/list` with pagination, bounded to 1,024 tools, 16 KiB per description and 64 KiB per input
@@ -24,6 +26,13 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
   the design 043 subset plus closure that the 043 validator compiles) is stored with
   `closedInput: false` and cannot be allowed in an agent; a tool with an invalid `x-mcp-header`
   annotation is excluded, as the specification requires.
+- The snapshot keeps each tool's `readOnlyHint` and `destructiveHint` as the server stated them: untrusted
+  hints, shown to the administrator and the author, never a decision. A refresh that stores a tool whose
+  annotation disagrees with the classification of the revision it refreshed (`readOnlyHint: true` on a
+  tool classified, or defaulted, `write`; `destructiveHint: true` on a tool classified `read`) writes
+  `ai.mcp.tool_classification_mismatch` (server, revision, snapshot, tool name; never the description)
+  in the snapshot's transaction; a publication that pins such a pair writes it again. The classification
+  stands either way.
 
 ## Use in an agent
 
@@ -34,8 +43,8 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
   the author reviewed nor the digests the drift check compares against. Publication copies the tool's
   input schema into the declaration it validates against, and requires `effect` (default `write`;
   a `write` tool needs `approval` or `approval: "none"`; `effect: "read"` without an approval policy is
-  accepted only when the pinned snapshot's annotations state `readOnlyHint: true` and not
-  `destructiveHint: true`, and the untrusted annotations never loosen the rule further). At admission
+  accepted only when the pinned server revision classifies the tool `read`; the snapshot's annotations
+  never decide it, so a server that falsely marks a tool read-only cannot remove a person's approval). At admission
   and at every resolution the transcript level is checked again against the stricter of the pinned and
   the current server revision's `maxArgumentClassification`, so a ceiling lowered after publication
   applies before the next call. Publication refuses the tool when the server

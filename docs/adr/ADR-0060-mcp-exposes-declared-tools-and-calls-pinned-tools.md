@@ -6,7 +6,9 @@ security reviews); accepted on 2026-11-26 by the agent preparing feature 025 for
 delegation (Owner decision 2026-11-24-4), recorded as Owner decision 2026-11-26-124; revised the same day
 against `develop` (`3f22b612`) after an independent audit of the feature 025 set; revised on 2026-11-27
 after the security review of that date (`specs/025-ai-agents-mcp/reviews/2026-11-27-security.md`,
-Decision 025-016), which tightened decisions 1, 2, 4, 6 and 7 and left their direction unchanged.
+Decision 025-016), which tightened decisions 1, 2, 4, 6 and 7 and left their direction unchanged;
+revised again on 2026-11-27 (round 3) under Owner decision 2026-11-27-402: decision 6 states the pinned
+tool classification of Decision 025-018.
 **Refines / supersedes:** Applies the ADR-0031 declared-disclosure pattern, ADR-0033 levels, the
 `EgressCeiling` of Architecture decision 0071 decision 8 and the `pii`-egress rule decided for Owner
 question 1081 to a new surface; adds a row to the run-input gate of design 043 (Architecture decisions
@@ -92,8 +94,11 @@ to change once clients depend on it:
    and admission copies; before each call the runner compares the server's current definition
    with the pinned digests and refuses a changed tool (`AI_TOOL_CHANGED`). A ceiling lowered after
    publication applies at the next admission and resolution. An `mcp` tool may be declared `read`
-   without approval only when its pinned snapshot states it read-only; untrusted annotations only ever
-   tighten that rule. A server revision MUST
+   without approval only when the pinned server revision classifies it `read`
+   (`toolClassifications`, set by the administrator who saved the revision; an unclassified tool is
+   `write`). The server's annotations are untrusted hints that never decide it; a disagreement between
+   an annotation and the pinned classification is audited at refresh and at publication (Decision
+   025-018). A server revision MUST
    declare `maxArgumentClassification`; publication MUST refuse an `mcp` tool whose server ceiling is
    below the agent's transcript level (ADR-0059 decision 7), because the model can copy anything in its
    transcript into arguments. The ceiling is the domain's `EgressCeiling`. A `pii` ceiling follows the
@@ -153,5 +158,5 @@ declared done: the MCP conformance and security tests listed in
 [tasks.md](../../specs/025-ai-agents-mcp/tasks.md), the contracts
 [mcp-server.md](../../specs/025-ai-agents-mcp/contracts/mcp-server.md) and
 [mcp-client.md](../../specs/025-ai-agents-mcp/contracts/mcp-client.md), and decisions D1289,
-D1296, D1301–D1306, D1316, D1317, D1637, D1638, D025-001, D025-006, D025-008 and D025-016 and gap G025-001 in
+D1296, D1301–D1306, D1316, D1317, D1637, D1638, D025-001, D025-006, D025-008, D025-016 and D025-018 and gap G025-001 in
 [research.md](../../specs/025-ai-agents-mcp/research.md).

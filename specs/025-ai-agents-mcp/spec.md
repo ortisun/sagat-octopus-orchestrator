@@ -10,6 +10,8 @@
 
 **Revised again**: 2026-11-27, after the security review of that date (`reviews/2026-11-27-security.md`: 9 Majors, 11 Nits, every one fixed in this set; Decision 025-016)
 
+**Revised again (round 3)**: 2026-11-27, with the owner's acceptance of Gap 025-004 (Owner decision 2026-11-27-2) and the coordinating session's decisions under the owner's delegation (Owner decisions 2026-11-27-400 to 2026-11-27-403): Owner question 025-001 answered no, the Entra and AWS modes routed through design 047's broker (Decision 025-017), MCP tool classifications pinned by the administrator (Decision 025-018), and the redacted approval view with escalation (Decision 025-019)
+
 **Input**: LLM provider resources (Anthropic, OpenAI-compatible, AWS Bedrock, Azure); a durable AI
 agent step whose model calls and tool calls are durable attempts run by a managed executor, with
 tools (published scripts, activities, managed operations, child workflows, MCP tools), structured
@@ -55,8 +57,12 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   design 047's token broker, under the third declared set of Principle V that the owner approved for
   constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and
   its current access token); until 5.1.0 merges and the broker issues access tokens, those modes are
-  refused at save (Gap 025-001). Whether the first set instead covers a declared resource's client
-  secret or signing key is Owner question 025-001, not decided here.
+  refused at save (Gap 025-001). The first set does not cover a declared resource's client secret or
+  signing key (Owner question 025-001, answered no by Owner decision 2026-11-27-400, Decision 025-017):
+  for `azure-entra-client-credentials` the broker runs the client-credentials grant and the runner
+  receives only the current access token; for `aws-access-key` the broker exchanges the long-lived key
+  for a short-lived AWS STS session and mints from it an Amazon Bedrock short-term API key, which the
+  runner receives as a bearer token (Owner decision 2026-11-27-401).
 - Effects stay at-least-once (ADR-0004). A model call has no provider idempotency key: a lost
   response is asked again and paid twice. A tool call carries a stable key.
 - Approvals use feature 014 (FR-014-007, FR-014-008); values follow ADR-0033; the transcript has its
@@ -165,8 +171,10 @@ three results committed.
 
 ### US03 — Require a person's approval before a sensitive tool runs (Priority: P1)
 
-The `issue_refund` tool requires approval by the `operator` role. An eligible person sees the tool
-input, as far as their classification rights allow, and decides.
+The `issue_refund` tool requires approval by the `operator` role. An eligible person sees a redacted
+view of the call (the decision context, a redacted outline of the transcript and the tool input, with
+every field their classification rights do not disclose masked) and decides when they can see every
+field the tool's approval policy names as needed for the decision.
 
 **Why this priority**: a model must not cause a sensitive effect alone.
 
@@ -185,11 +193,22 @@ authorized decision, and race a decision against expiry; exactly one outcome win
 3. **Given** a revoked role, another tenant or the excluded initiator, **when** they decide, **then**
    nothing is applied and the denial is audited without disclosure.
 4. **Given** an approver without `payload:read-internal` or the reveal grant, **when** they open the
-   tool-call view, **then** fields above their level are withheld, every field being at least the
-   agent's transcript level; a tool input field annotated `secret` is refused at publication.
-5. **Given** an eligible approver to whom any field of the tool input would be withheld, **when** they
-   decide, **then** the decision is refused with `APPROVAL_INPUT_WITHHELD`, nothing is applied and the
-   denial is audited: nobody approves arguments they cannot see.
+   tool-call view, **then** they see the decision context, a redacted outline of the transcript and the
+   tool input, with every field above their level masked (its path and level only, never its length, a
+   digest or a prefix), every field being at least the agent's transcript level; revealing a masked
+   field needs the namespace reveal grant and is audited `payload.pii_revealed`; a tool input field
+   annotated `secret` is refused at publication.
+5. **Given** an eligible approver to whom a field named in the tool's `decisionFields` (every input
+   field unless the author narrowed it) would be withheld, **when** they decide, **then** the decision
+   is refused with `APPROVAL_INPUT_WITHHELD`, nothing is applied and the denial is audited: nobody
+   approves the arguments that matter without seeing them. An approver of a tool whose author narrowed
+   `decisionFields` to `["/amount"]` decides on the redacted view when they can see `amount`.
+6. **Given** an agent whose transcript level is `pii` and an approval policy whose eligible deciders
+   all lack the reveal grant, **when** the approval opens, **then** it is escalated to the policy's
+   `escalation` route and audited `ai.approval_escalated`; when nobody there can see the decision fields
+   either, or no route is declared, the approval stays pending and visible (the gauge
+   `agent_approvals_without_decider` and its alert), and at its deadline it ends through `onExpire`
+   with the recorded reason `NO_DECIDER_WITH_CONTEXT`, audited: it never expires unnoticed.
 
 ### US04 — Keep spend inside declared budgets and quotas (Priority: P1)
 
@@ -314,6 +333,12 @@ that call with `AI_TOOL_CHANGED` without sending it.
    level), **when** a run is started or an already running agent reaches its next model or MCP call,
    **then** admission is refused (`AI_DESTINATION_RESTRICTED`) or the call fails with
    `CLASSIFICATION_EGRESS_REFUSED` before dispatch, without republication.
+7. **Given** an external MCP server whose tool `delete_records` falsely states `readOnlyHint: true`
+   and an MCP-server revision whose administrator did not classify that tool (so it is `write`), **when**
+   an author declares it `effect: "read"` without an approval policy, **then** publication is refused
+   with `WRITE_TOOL_APPROVAL_REQUIRED`; the disagreement between the annotation and the pinned
+   classification is audited `ai.mcp.tool_classification_mismatch` at refresh and at publication, and
+   a call of the tool needs a person's approval.
 
 ### US08 — Follow an agent while it works (Priority: P2)
 
@@ -392,6 +417,12 @@ may apply.
   `MCP_UNSUPPORTED_RESULT` to the model.
 - A provider deleted while a pinned run waits on approval: the tombstone keeps the revision; the
   next resolution fails closed.
+- The only reveal-grant holder among an approval's eligible deciders loses the grant while it is
+  pending: the next sweep (at most 60 seconds later) finds no decider with context and escalates it;
+  a decision that holder sends after the loss is refused `APPROVAL_INPUT_WITHHELD`.
+- An MCP server's refresh changes a tool's annotation from `readOnlyHint: true` to
+  `destructiveHint: true`: published versions keep their pinned snapshot and revision, the mismatch is
+  audited, and nothing becomes looser.
 
 ## Requirements *(mandatory)*
 
@@ -435,9 +466,17 @@ fails before work.
   access key pair, whose secret access key is a long-lived signing key, with or without a role) and
   `azure-entra-client-credentials` (an Entra client secret) are refused at save with
   `AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker issues access tokens to the runner (Gap
-  025-001): no client secret or signing key ever reaches the agent runner. When the Entra mode is
-  enabled, the revision records the Entra authority host (HTTPS, confirmed by the saving administrator,
-  never discovered) and the token request goes only there. Their disclosure fits Principle V's first declared set (ordinary task execution):
+  025-001): no client secret or signing key ever reaches the agent runner (Owner question 025-001,
+  answered no by Owner decision 2026-11-27-400, Decision 025-017). Once the broker exists, both modes
+  are delivered through it and the runner receives only an access token: for
+  `azure-entra-client-credentials` the broker holds the client secret and runs the client-credentials
+  grant against the recorded Entra authority host (HTTPS, confirmed by the saving administrator, never
+  discovered), and the token request goes only there; for `aws-access-key` the broker holds the
+  long-lived key pair, calls AWS STS (`AssumeRole` when the revision records a role, `GetSessionToken`
+  otherwise; a session of 900 seconds by default and at most 3,600) and from that session mints an
+  Amazon Bedrock short-term API key, which the runner sends as a bearer token on the adapter's existing
+  `bearer` path, so the runner holds neither the long-lived key nor the session's signing key (Owner
+  decision 2026-11-27-401). Their disclosure fits Principle V's first declared set (ordinary task execution):
   the immutable task definition of a model-call or MCP-call derived step is the agent node of the
   published version plus the provider revision and the MCP-server revision that version pins, so the
   logical secrets those pinned revisions name are the declared secrets of that task definition (a probe
@@ -526,9 +565,11 @@ fails before work.
   refused with `WRITE_TOOL_APPROVAL_REQUIRED`). A `child` tool declared `effect: "read"` needs an
   approval policy (the child workflow can write; `WRITE_TOOL_APPROVAL_REQUIRED`). An `mcp` tool names a
   server resource and a tool of its pinned snapshot, and may be declared `effect: "read"` without an
-  approval policy only when that snapshot's annotations state `readOnlyHint: true` and do not state
-  `destructiveHint: true`; annotations, being untrusted, can only make this rule stricter, never turn a
-  `write` into a `read` nor remove an approval requirement. A tool input field annotated `secret` is
+  approval policy only when the pinned MCP-server revision classifies that tool `read`
+  (`toolClassifications`, Requirement 025-034); a tool the revision does not classify is `write`. The
+  snapshot's annotations (`readOnlyHint`, `destructiveHint`) are untrusted hints: they never turn a
+  `write` into a `read` nor remove an approval requirement, and a disagreement between an annotation and
+  the pinned classification is audited (Decision 025-018). A tool input field annotated `secret` is
   refused at publication (`SECRET_TOOL_INPUT`): the model never holds a secret to write.
 - **FR-025-011 — Tool call validation**: An undeclared tool or input failing its schema MUST NOT
   execute; the model gets a bounded error result. Tool inputs are validated by the platform's run-input
@@ -591,13 +632,30 @@ fails before work.
   tool call in the transaction committing the model call, with feature-014 eligibility,
   decision-time authorization, deduplicated receipts, initiator exclusion and first-commit
   resolution against expiry and cancellation (D1297). `onReject`/`onExpire` are `refuse` or `fail`.
-  The approver's view applies ADR-0033 with the tool's input schema as carrier, every field at least
-  the transcript level (a looser annotation is refused at publication, D1292); the deadline is
-  clamped to the remaining agent wall time. A tool-call approval is decidable only by a decider whose
-  current rights disclose every field of the input (no tool input field is `secret`, Requirement
-  025-010): at decision time, a decider to whom any field would be withheld is refused with `FORBIDDEN`
-  reason `APPROVAL_INPUT_WITHHELD`, nothing is applied, and the denial is audited; so an agent whose
-  transcript level is `pii` has its tool calls approved only by holders of the namespace reveal grant.
+  The approver's view is a redacted view under ADR-0033 with the tool's input schema as carrier, every
+  field at least the transcript level (a looser annotation is refused at publication, D1292): the
+  decision context (run, workflow version, agent node, turn and call index, the tool's declared name,
+  description, kind, target and effect, and the budgets used), a redacted outline of the transcript
+  (the turns, the declared names of the tool calls and their outcomes, with every model-written text and
+  every tool input and result value masked) and the tool input with each field the decider's current
+  rights disclose shown and every other field masked (its path and level only, never its length, a
+  digest or a prefix). Revealing a masked field needs the namespace reveal grant and is audited
+  `payload.pii_revealed`. The deadline is clamped to the remaining agent wall time. The tool's approval
+  policy names the fields a decider must see in clear (`decisionFields`, JSON pointers into the input
+  schema; every input field by default). An author may narrow `decisionFields`, even to none, for a tool
+  that may run with `approval: "none"`; for a tool that may not (`operation` tools, database `execute`
+  tools) narrowing is refused at publication (`DECISION_FIELDS_REQUIRED`). At decision time, a decider to
+  whom a decision field would be withheld is refused with `FORBIDDEN` reason `APPROVAL_INPUT_WITHHELD`,
+  nothing is applied, and the denial is audited (no tool input field is `secret`, Requirement 025-010).
+  When the approval opens, after every `APPROVAL_INPUT_WITHHELD` refusal and on every pass of the
+  approval sweeper (every 60 seconds), the platform checks whether at least one eligible decider
+  (feature 014 eligibility, the initiator excluded) currently sees every decision field; when none does,
+  the approval is escalated to the policy's `escalation` route (an eligibility policy of the same shape),
+  audited `ai.approval_escalated` and counted. When nobody on that route can see them either, or the
+  policy declares no route, the approval stays pending and visible (the gauge
+  `agent_approvals_without_decider` and its alert), and at its deadline it ends through `onExpire` with
+  the recorded reason `NO_DECIDER_WITH_CONTEXT`, audited: an approval nobody can decide never expires
+  unnoticed (Decision 025-019).
 - **FR-025-018 — Cancellation and deadlines**: Cancellation and the agent deadline MUST stop new turns
   and tool calls, ask in-flight model calls to stop through heartbeats, cancel pending approvals and
   apply each tool kind's cancellation semantics. Deadline, decision, expiry, cancellation and
@@ -646,7 +704,11 @@ fails before work.
   the base64 (standard and URL-safe, all three byte alignments) and hexadecimal (both cases) forms of
   each value. A secret shorter than 8 bytes, or transformed any other way (compressed, encrypted,
   split, re-encoded twice), is not detected: that is a stated bound of the guarantee, not a claim
-  (Gap 025-004).
+  (Gap 025-004, accepted by the owner as a documented known limit, Owner decision 2026-11-27-2). The
+  limit is stated and not hidden, in the form of Architecture decision 0085 rule 12: the platform MUST
+  NOT claim otherwise in its documentation, and the runbook MUST say how a run's agent content is purged
+  and that the secret is then rotated. The primary defence stays that the agent runner never receives a
+  secret the task definition does not declare (Requirement 025-003).
 - **FR-025-021 — Retention**: Transcripts, tool inputs and results, agent outputs and request staging
   blobs MUST be retained content under the tenant content quota and the storage classification
   manifest, registered as content stores in 020's registry and purged with the run's content under
@@ -784,8 +846,11 @@ fails before work.
 - **FR-025-034 — External MCP server resources**: `ai:manage` holders MUST be able to register,
   revise, pause and delete external MCP servers (HTTPS URL, protocol preference, a required
   `maxArgumentClassification` of `public`, `internal` or `pii` (`pii` under the same reveal-grant rule as
-  FR-025-005), authentication none or static bearer secret, limits), as a 021 resource type (Owner
-  decision 2026-11-26-122). The static bearer secret is a declared secret of the task definition as in
+  FR-025-005), authentication none or static bearer secret, limits, and `toolClassifications`: the
+  classification `read` or `write` of each tool by name, set by the saving `ai:manage` holder and pinned
+  with the revision; a tool it does not name is `write`), as a 021 resource type (Owner decision
+  2026-11-26-122). The classification, never the server's annotations, decides whether an `mcp` tool may
+  run without approval (Requirement 025-010, Decision 025-018). The static bearer secret is a declared secret of the task definition as in
   Requirement 025-003. OAuth client credentials with a resource indicator rest on the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token), and are refused at save until
   5.1.0 merges and design 047's broker is built
   (`MCP_AUTH_MODE_UNAVAILABLE`, Gap 025-001); when enabled, the revision records the issuer and token
@@ -797,7 +862,12 @@ fails before work.
   MCP-server revision, and admission copies them into `run_mcp_snapshot_pins` (Requirement 025-002), so
   a later refresh changes nothing a published version reads or compares against; at call time a
   changed definition fails with `AI_TOOL_CHANGED` without calling. Descriptions and annotations are
-  untrusted content.
+  untrusted content; the snapshot keeps the annotations `readOnlyHint` and `destructiveHint` as hints.
+  A refresh, and a publication, that finds a tool whose annotation disagrees with the classification of
+  the revision it pins (`readOnlyHint: true` on a tool classified or defaulted `write`, or
+  `destructiveHint: true` on one classified `read`) records an audit event
+  `ai.mcp.tool_classification_mismatch` with the server, revision, snapshot and tool name, and the
+  publication proceeds under the pinned classification.
 - **FR-025-036 — MCP call execution**: An MCP tool call MUST be the reserved activity `sagat.ai.mcp`
   (a managed step of `ManagedKind::AiMcp`) run by the agent runner with `ResolveMcpCall` under the same
   two phases and Principle V authorities as Requirement 025-009, at-least-once, bounded in time and
@@ -843,6 +913,8 @@ fails before work.
   refreshes MUST emit OTel spans (journal-derived per ADR-0017, or runner spans), fixed-label metrics
   (no tenant, run, model or tool ids), redacted logs, and audit records committed with their decision
   for catalog changes, credential resolution, budget exhaustion, tool denials, transcript reads,
+  approval escalations and approvals ended without a decider (`ai.approval_escalated`,
+  `ai.approval_no_decider`), MCP tool classification mismatches (`ai.mcp.tool_classification_mismatch`),
   exposures, token lifecycle and MCP calls. Every new audit action needs its row in the audit-to-OCSF
   mapping of design 040 (`docs/designs/040-ocsf-event-standard.md`, Technical Plan 1: one arm per
   action in `crates/domain/src/audit_ocsf.rs` once that design is built).
@@ -885,7 +957,14 @@ fails before work.
 025 owns the single additive amendment of 014's `approval_requests` (owner kind `AGENT_TOOL_CALL`,
 derived owner id, nullable routes for that kind, data-model.md §4); feature 026 cites it, and its
 notifications and decision links apply to every owner kind, including tool calls (coordinator C22).
-Task T025-032.
+Task T025-032. Feature 014 has no escalation ("no quorum, delegation or escalation",
+`specs/014-workflow-primitives/research.md`); the escalation of a tool-call approval nobody can decide
+with context (Requirement 025-017, Decision 025-019) is part of this same amendment and applies only to
+the owner kind `AGENT_TOOL_CALL`: nullable columns `escalation_policy` (the eligibility policy of the
+`escalation` route, recorded from the published version), `escalated_at`, `context_checked_at` and
+`no_decider_reason` (only `NO_DECIDER_WITH_CONTEXT`), written by the opening transaction, the decision
+path and the approval sweeper. One eligible decision still settles a request; escalation changes who is
+eligible, never how many decide. Tasks T025-096 and T025-103.
 
 #### Amendment to feature 016
 
@@ -955,14 +1034,14 @@ All criteria are future evidence; none is met by this document.
 | SC-025-002 | Real PostgreSQL, agent runner and dev provider: an agent run returns a validated structured result; a crash after the provider answered and before acknowledgement yields one committed turn and two charged attempts | FR-025-006..009, 013..015 |
 | SC-025-003 | Crash at every commit point of activation, model completion, tool completion, approval decision and deadline leaves no orphan step, no duplicate turn and no lost acknowledged transition | FR-025-008, 012, 017, 018 |
 | SC-025-004 | Tool calls of every kind run through their own executor with the stable key; duplicate delivery and lost broker hints change nothing; unknown write outcomes reach reconciliation or manual review | FR-025-010..012, 025 |
-| SC-025-005 | Tool-call approval: unauthorized, revoked, cross-tenant and initiator decisions denied and audited; a decider to whom any input field would be withheld is refused `APPROVAL_INPUT_WITHHELD` and nothing is applied; decision versus expiry and versus cancellation pick exactly one outcome over 50 rounds each | FR-025-017, 018 |
+| SC-025-005 | Tool-call approval: unauthorized, revoked, cross-tenant and initiator decisions denied and audited; the redacted view masks every field the decider's rights withhold (path and level only); a decider to whom a decision field would be withheld is refused `APPROVAL_INPUT_WITHHELD` and nothing is applied; narrowed `decisionFields` on an `operation` or database `execute` tool are refused at publication; an approval no eligible decider can decide with context is escalated, and with no decider on the escalation route ends at its deadline with the recorded reason `NO_DECIDER_WITH_CONTEXT`, audited; decision versus expiry, versus escalation and versus cancellation pick exactly one outcome over 50 rounds each | FR-025-017, 018 |
 | SC-025-006 | Budget, quota and ceiling exhaustion refuse before dispatch; every retry reserves in its claim (lost response then retry keeps settled + reserved ≤ limit for the agent and the daily row); parallel completions schedule exactly one next turn; killing a runner releases concurrency when its leases expire | FR-025-015, 016 |
-| SC-025-007 | `pii`, `secret`, unmarked and non-validating values are refused at publication or before dispatch per the provider's and MCP servers' levels, and again after a ceiling is lowered without republication; looser `result`, approval-view, child-input, workflow-output and child-output annotations below an inherited level are refused (a child under an active-version policy at its admission); a `secret` tool input field is refused; secret (verbatim, JSON-escaped, base64 and hexadecimal) and MCP-argument canaries appear in no prompt, MCP request, transcript, journal, log, span, audit, stream or response; `write` tools without approval or acknowledgement, `child` tools declared `read` without approval, `mcp` tools declared `read` without a read-only snapshot annotation, and database `execute` tools without a policy are refused | FR-025-010, 014, 017, 019..021, 026 |
+| SC-025-007 | `pii`, `secret`, unmarked and non-validating values are refused at publication or before dispatch per the provider's and MCP servers' levels, and again after a ceiling is lowered without republication; looser `result`, approval-view, child-input, workflow-output and child-output annotations below an inherited level are refused (a child under an active-version policy at its admission); a `secret` tool input field is refused; secret (verbatim, JSON-escaped, base64 and hexadecimal) and MCP-argument canaries appear in no prompt, MCP request, transcript, journal, log, span, audit, stream or response; `write` tools without approval or acknowledgement, `child` tools declared `read` without approval, `mcp` tools declared `read` without approval on a tool the pinned MCP-server revision does not classify `read` (whatever the snapshot's annotations say, a mismatch being audited), and database `execute` tools without a policy are refused | FR-025-010, 014, 017, 019..021, 026 |
 | SC-025-008 | Transcript endpoint: each combination of the three rights, revocation of the reveal grant between requests, no-store headers and per-read audit; audit failure returns no bytes; the `payload-disclosures` and `payload-inspections` endpoints refuse agent payloads; 256 undeclared tool requests leave only `UNKNOWN_TOOL` markers on run-read surfaces | FR-025-022, 041 |
 | SC-025-009 | Metadata, loopback, link-local, private and redirect destinations refused for providers and MCP servers, a `302` on the probe and on the refresh included (no credential reaches the redirect target); the event-stream reader enforces bytes and deadlines; a namespace absent from the runner's configuration is denied | FR-025-023, 036 |
 | SC-025-010 | Ordinary workers, sandbox, database and lake runners cannot claim or resolve agent-runner activities; the agent runner cannot claim ordinary tasks, is refused by the step-log ingest, by `ResolveSecrets` for every managed lease and never receives a database credential, a client secret or a signing key; an ordinary activity named `sagat.ai.*` is refused at publication, blocks the recording of `ai-agents-v1` when it predates it, and is never leased to the agent runner; stale leases, expired sessions and a publisher who lost `secret:use` are refused | FR-025-003, 009, 024 |
 | SC-025-011 | MCP server tested with an MCP client library at 2026-07-28 and 2025-11-25: empty default list, single-audience tokens and REST refusal of MCP tokens, uniform metadata answers, insufficient scope, scoped tokens and revocation (also during a bounded wait), idempotent retry per credential and exposure (another token's key never replays), tasks re-authorized on every `tasks/get`, foreign and uncallable exposures answered as unknown tools, batches refused, unattended child versions refused at exposure and at child admission, the per-caller agent-run limit and an exposure's daily token budget | FR-025-026..033 |
-| SC-025-012 | MCP client against the test server: snapshot pinning at publication (a later refresh changes nothing a published version compares against), drift refusal, egress denial, unknown outcome to manual review, unsupported results and `MCP_TOOL_ERROR` as tool errors (text forwarded only at transcript level `pii`), the `oauth-client-credentials`, `azure-entra-client-credentials` and `aws-access-key` modes refused while Gap 025-001 is open (and, once enabled, refusal on a changed token endpoint) | FR-025-003, 034..036 |
+| SC-025-012 | MCP client against the test server: snapshot pinning at publication (a later refresh changes nothing a published version compares against), drift refusal, egress denial, unknown outcome to manual review, unsupported results and `MCP_TOOL_ERROR` as tool errors (text forwarded only at transcript level `pii`), the `oauth-client-credentials`, `azure-entra-client-credentials` and `aws-access-key` modes refused while Gap 025-001 is open (and, once design 047's broker is built, refusal on a changed token endpoint and a runner that receives only an access token: an Entra access token, or an Amazon Bedrock short-term API key minted from a short-lived STS session) | FR-025-003, 034..036 |
 | SC-025-013 | With feature 026, a 16-turn streaming agent stays within its reserved-channel budget, a resumed stream matches the committed transcript and superseded attempts are marked; without 026, publication refuses streaming | FR-025-037 |
 | SC-025-014 | All six SDKs (Rust included) build byte-identical agent definitions and pass the shared runtime scenarios | FR-025-040, 043 |
 | SC-025-015 | Telemetry carries only closed label values; spans and logs carry no prompt, response, argument, credential or provider message; every audit action is written with its decision | FR-025-041, 042 |
@@ -980,8 +1059,9 @@ All criteria are future evidence; none is met by this document.
 - **022**: standalone steps gate script and operation exposures (D1315).
 - **026**: Workflow Streams (FR-026-013..021, `AppendStreamEvents`, reserved `sagat.` channels) gate
   token streaming; `executeRun` semantics (FR-026-007..009) are reused by the MCP wait (G1282).
-- **014**: approvals are reused through an additive owner kind (G1289); scoped instance identity is
-  not used, so agents stay root-only.
+- **014**: approvals are reused through an additive owner kind (G1289), with the escalation columns of
+  that same amendment for tool calls (Decision 025-019); scoped instance identity is not used, so agents
+  stay root-only.
 - **016** levels, carriers and reveal grants and **017** OpenBao facade, credential pins, private
   runner policy and private definitions are reused as they are.
 - **013** (federated login, draft) may later issue MCP tokens; until then the configured OIDC issuer
@@ -997,8 +1077,9 @@ All criteria are future evidence; none is met by this document.
   `sdks/SPEC.md` section 9 when its contract merges (Owner decision 2026-11-15-8, G1280). **043** owns
   the run-input gate and validator that MCP admission and agent schemas reuse. **038** owns the claim
   and transition statement budget that agent claims and completions are measured against. **040** owns
-  the audit-to-OCSF mapping. **047** owns the OAuth token broker that OAuth MCP servers wait for
-  (Gap 025-001). **044** (not yet written) owns the procedural model (Gap 025-002). Model ids are the
+  the audit-to-OCSF mapping. **047** owns the OAuth token broker that OAuth MCP servers wait for, and
+  the broker routes of the `azure-entra-client-credentials` and `aws-access-key` provider modes (Gap
+  025-001, Decision 025-017). **044** (not yet written) owns the procedural model (Gap 025-002). Model ids are the
   provider's; the platform interprets them only against the revision's allowlist.
 
 ## Out of scope
@@ -1011,15 +1092,19 @@ Constraints; since 5.0.0 an open marketplace stays out and only the curated hub 
 
 ## Owner questions
 
-All three are decided under the owner's delegation (Owner decision 2026-11-24-4): Owner question 1280
+The first three are decided under the owner's delegation (Owner decision 2026-11-24-4): Owner question 1280
 (data sent to providers) by Owner decision 2026-11-26-120, Owner question 1281 (role grants) by Owner
 decision 2026-11-26-121 and Owner question 1282 (resource model) by Owner decision 2026-11-26-122; see
 [research.md](research.md#5-owner-questions), with decisions D1280–D1319, D1635–D1638 and
 D025-001 onward, and gaps G1280–G1297, G1635 and G025-001 onward. See the
 [requirements checklist](checklists/requirements.md).
 
-One question is open and is the owner's, not a delegate's: Owner question 025-001 (raised 2026-11-27 by
-the security review's Major 9) asks whether Principle V's first declared set may cover the client
-secret or signing key of a declared feature-021 resource (an Entra client secret, an AWS secret access
-key), which constitution 5.1.0's third declared set excludes for resources. Until the owner answers,
-the modes that need them are refused (Gap 025-001); the set does not depend on the answer.
+Owner question 025-001 (raised 2026-11-27 by the security review's Major 9) asked whether Principle
+V's first declared set may cover the client secret or signing key of a declared feature-021 resource
+(an Entra client secret, an AWS secret access key), which constitution 5.1.0's third declared set
+excludes for resources. It is decided, under the owner's delegation, by Owner decision 2026-11-27-400:
+no. The two modes reach the runner only as access tokens issued by design 047's broker (Owner
+decisions 2026-11-27-400 and 2026-11-27-401, Decision 025-017), and until that broker exists they are
+refused (Gap 025-001). The one security residual risk the review left, the bound of the output secret
+scan (Gap 025-004), is accepted by the owner as a documented known limit (Owner decision
+2026-11-27-2).

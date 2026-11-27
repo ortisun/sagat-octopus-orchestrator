@@ -23,11 +23,14 @@ credential, provider or executor message.
 | An `mcp` tool's server `maxArgumentClassification` is below the agent's transcript level | `VALIDATION_FAILED` (422) | `MCP_ARGUMENT_CLASSIFICATION_EXCEEDED` with `details.pointer` | false |
 | A `result`, approval-view tool input or child input field is annotated below the transcript level; a workflow `outputSchema` field, a child node `outputSchema` field or a `child` tool result carrier field is annotated below the level it inherits from an agent output or a child output (Requirement 025-019) | `VALIDATION_FAILED` (422) | `CLASSIFICATION_LOOSENED` (existing, FR-016-004) with `details.pointer` | false |
 | A tool input field annotated `secret` | `VALIDATION_FAILED` (422) | `SECRET_TOOL_INPUT` with `details.pointer` | false |
-| A `write` tool without `approval`; an `operation` tool or a database `execute` tool with `approval: "none"`, or a database `execute` tool declared `read`; a `child` tool declared `read` without an approval policy; an `mcp` tool declared `read` without an approval policy whose pinned snapshot does not state `readOnlyHint: true` (or states `destructiveHint: true`) | `VALIDATION_FAILED` (422) | `WRITE_TOOL_APPROVAL_REQUIRED` | false |
+| A `write` tool without `approval`; an `operation` tool or a database `execute` tool with `approval: "none"`, or a database `execute` tool declared `read`; a `child` tool declared `read` without an approval policy; an `mcp` tool declared `read` without an approval policy that the pinned MCP-server revision does not classify `read` (its `toolClassifications`; an unclassified tool is `write`, whatever the snapshot's annotations state; Decision 025-018) | `VALIDATION_FAILED` (422) | `WRITE_TOOL_APPROVAL_REQUIRED` | false |
 | Exposure (or 026 public link) target version is unattended: an agent write tool acknowledged `approval: "none"` in it or in a child workflow it can start, at any depth | `VALIDATION_FAILED` (422) | `UNATTENDED_WRITE_TOOL` | false |
 | A run start whose pinned provider or MCP server now has a current ceiling below an agent's transcript level, or whose pinned model left the current allowlist | `CONFLICT` (409) | `AI_DESTINATION_RESTRICTED` with `details.pointer` of the agent node | false |
-| A tool-call approval decision by a decider to whom a field of the tool input would be withheld | `FORBIDDEN` (403) | `APPROVAL_INPUT_WITHHELD`; nothing applied, audited `ai.approval_input_withheld` | false |
-| A provider saved with credential mode `aws-access-key` or `azure-entra-client-credentials` before design 047's broker issues access tokens (Gap 025-001) | `VALIDATION_FAILED` (422) | `AI_CREDENTIAL_MODE_UNAVAILABLE` | false |
+| A tool-call approval decision by a decider to whom a decision field of the tool input (`decisionFields`, every field by default) would be withheld | `FORBIDDEN` (403) | `APPROVAL_INPUT_WITHHELD`; nothing applied, audited `ai.approval_input_withheld`; the context check of Decision 025-019 runs again | false |
+| An approval policy that narrows `decisionFields` on a tool that may not run with `approval: "none"` (an `operation` tool or a database `execute` tool) | `VALIDATION_FAILED` (422) | `DECISION_FIELDS_REQUIRED` with `details.pointer` | false |
+| A `decisionFields` pointer that names no field of the tool's input schema | `VALIDATION_FAILED` (422) | `INVALID_DECISION_FIELD` with `details.pointer` | false |
+| A provider saved with credential mode `aws-access-key` or `azure-entra-client-credentials` before design 047's broker issues access tokens (Gap 025-001; once it does, the modes are accepted and the runner receives only the broker's access token, Decision 025-017) | `VALIDATION_FAILED` (422) | `AI_CREDENTIAL_MODE_UNAVAILABLE` | false |
+| `awsSessionSeconds` outside 900 to 3,600 | `VALIDATION_FAILED` (422) | `INVALID_DATA_POLICY` | false |
 | An ordinary activity, worker registration or version naming a `sagat.ai.` activity; recording `ai-agents-v1` while such a version exists | `VALIDATION_FAILED` (422) | `RESERVED_ACTIVITY_NAME` (with the versions listed for the operator command) | false |
 | MCP server saved with `auth.mode` `oauth-client-credentials` before constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) has merged and design 047's broker is built (Gap 025-001) | `VALIDATION_FAILED` (422) | `MCP_AUTH_MODE_UNAVAILABLE` | false |
 | OAuth MCP server without recorded issuer and token endpoint (once the OAuth mode is enabled) | `VALIDATION_FAILED` (422) | `MCP_OAUTH_ENDPOINT_REQUIRED` | false |
@@ -59,7 +62,7 @@ code is a `worker`-origin entry of `sdks/error-catalog.json` (Task 025-087).
 | `AI_OUTPUT_INVALID` | agent | no | no valid structured answer within repair turns |
 | `AI_OUTPUT_TRUNCATED` | agent | no | `max_tokens` without a complete answer or tool request |
 | `AI_MODEL_REFUSED` | agent | no | provider refusal stop reason |
-| `AI_TOOL_DENIED` | agent | no | approval rejected or expired with `fail` |
+| `AI_TOOL_DENIED` | agent | no | approval rejected or expired with `fail`; `details.reason` `NO_DECIDER_WITH_CONTEXT` when the approval expired while no eligible decider, on the policy or its `escalation` route, could see its decision fields (Decision 025-019) |
 | `CLASSIFICATION_EGRESS_REFUSED` (existing catalog code) | model or MCP call | no | a value above the provider's `maxPromptClassification` or the server's `maxArgumentClassification` (the stricter of the pinned and the current revision's), or one that does not validate against its carrier, would be sent |
 | `CLASSIFICATION_LOOSENED` (existing) | child node or `child` tool call | no | a child under an active-version policy whose version records output levels stricter than the parent's carrier; no child created; the model receives `TOOL_FAILED` with this code |
 | `UNATTENDED_WRITE_TOOL` | child node or `child` tool call | no | under a run whose root MCP or a 026 public link admitted, the child version is unattended; no child created; the model receives `TOOL_FAILED` with this code |
@@ -87,7 +90,9 @@ code is a `worker`-origin entry of `sdks/error-catalog.json` (Task 025-087).
 
 Fixed reasons, never executor text: `UNKNOWN_TOOL` (also the fixed marker that names an undeclared
 request on every run-read surface, in place of the name the model wrote), `INVALID_INPUT` (with the 043 validator's
-value-free rule and field only), `LIMIT_REACHED`, `APPROVAL_REJECTED`, `APPROVAL_EXPIRED`,
+value-free rule and field only), `LIMIT_REACHED`, `APPROVAL_REJECTED`, `APPROVAL_EXPIRED` (the
+same reason when the approval ended with `NO_DECIDER_WITH_CONTEXT`, which is recorded on the approval
+and the tool call, not sent to the model),
 `TOOL_FAILED` (with the failure code only, and for `CHILD_INPUT_INVALID` the value-free rule and
 field), `MCP_UNSUPPORTED_RESULT`, `AI_TOOL_CHANGED` and `MCP_TOOL_ERROR` (see
 `model-turn.schema.json` `toolResults`). `MCP_TOOL_ERROR` is an external server's `isError: true`

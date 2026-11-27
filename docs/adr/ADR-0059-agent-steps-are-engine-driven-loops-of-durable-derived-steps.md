@@ -6,7 +6,10 @@ security reviews); accepted on 2026-11-26 by the agent preparing feature 025 for
 delegation (Owner decision 2026-11-24-4), recorded as Owner decision 2026-11-26-123; revised the same day
 against `develop` (`3f22b612`) after an independent audit of the feature 025 set; revised on 2026-11-27
 after the security review of that date (`specs/025-ai-agents-mcp/reviews/2026-11-27-security.md`,
-Decision 025-016), which tightened decisions 5, 7 and 8 and left their direction unchanged.
+Decision 025-016), which tightened decisions 5, 7 and 8 and left their direction unchanged; revised
+again on 2026-11-27 (round 3) under Owner decisions 2026-11-27-400 to 2026-11-27-403: decision 5 states
+the broker routes of Decision 025-017 and decision 8 the pinned tool classification and the redacted
+approval view with escalation of Decisions 025-018 and 025-019.
 **Refines / supersedes:** Refines ADR-0010 (derived steps gain model-call and tool-call kinds),
 Architecture decision 0071 (its derived-id grammar of decision 5, its egress ceiling of decision 8 and
 its managed kinds and runner profiles of decision 1 gain the agent forms, provider and MCP-server
@@ -91,8 +94,12 @@ and eventually answers. Four forces make the execution model hard to reverse:
    lease. MCP servers authenticated by OAuth, and the provider modes that need a client secret or a
    signing key (`azure-entra-client-credentials`, `aws-access-key`), reach tokens only through design
    047's token broker, under the third declared set of Principle V that the owner approved for
-   constitution 5.1.0 (Owner decision 2026-11-25-3), not yet merged, which excludes a resource's client
-   secret and signing key; they are refused until it merges and the broker issues access tokens. The
+   constitution 5.1.0 (Owner decision 2026-11-25-3), which excludes a resource's client secret and
+   signing key; they are refused until it merges and the broker issues access tokens. The first set
+   never covers those secrets (Owner decision 2026-11-27-400): the broker runs the Entra
+   client-credentials grant, or exchanges the AWS key for a short-lived STS session and mints from it
+   an Amazon Bedrock short-term API key, and the runner receives only that access token (Decision
+   025-017). The
    runner follows no redirect (`max_redirects = 0` for every provider and MCP request, the probe
    included) and reads its namespace egress policy from operator-owned configuration before every
    attempt. The agent runner sends no step logs (design 041) and the transcript is
@@ -142,12 +149,20 @@ and eventually answers. Four forces make the execution model hard to reverse:
 8. **Sensitive tools wait for a person through feature 014.** A tool approval is an
    `approval_requests` row of owner kind `AGENT_TOOL_CALL`, decided through the existing endpoint with
    decision-time authorization, deduplicated receipts, initiator exclusion and first-commit
-   resolution against expiry and cancellation. A decision is applied only when the decider's current
-   rights disclose every field of the tool input (a tool input field cannot be `secret`); nobody
-   approves arguments they cannot see. A `write` tool MUST declare an approval policy or the
+   resolution against expiry and cancellation. The approver sees a redacted view (the decision context,
+   a redacted outline of the transcript and the tool input with every field their rights withhold
+   masked by path and level only); revealing a masked field needs the reveal grant. A decision is
+   applied only when the decider's current rights disclose every field the tool's approval policy names
+   in `decisionFields` (every field by default; never narrowed for a tool that may not run with
+   `approval: "none"`; a tool input field cannot be `secret`); nobody approves the arguments that matter
+   without seeing them. An approval no eligible decider can decide with context is escalated to the
+   policy's `escalation` route, and with nobody there it stays pending and visible and ends at its
+   deadline with the recorded reason `NO_DECIDER_WITH_CONTEXT`, never unnoticed (Decision 025-019). A `write` tool MUST declare an approval policy or the
    explicit acknowledgement `approval: "none"`; an `operation` tool and a database `execute` tool MUST
    declare a policy; a `child` tool declared `read` MUST declare a policy, and an `mcp` tool may be
-   `read` without one only when its pinned snapshot states it read-only. A version with an acknowledged
+   `read` without one only when the pinned MCP-server revision classifies it `read`; the server's
+   annotations are hints, and their disagreement with that classification is audited (Decision
+   025-018). A version with an acknowledged
    unattended write tool, in itself or in any child workflow it can start, MUST NOT be exposed through
    MCP or a feature-026 public link, and a child admission under a run those surfaces admitted MUST
    refuse such a child version.
@@ -175,8 +190,9 @@ and eventually answers. Four forces make the execution model hard to reverse:
 - Each turn costs several transactions and journal events; the performance report must measure
   activation, turn scheduling and resolution latency before any capacity is stated.
 - `NodeId::parse_stored` and every reader of derived ids learn the agent forms; `ManagedKind` and
-  `BindingProfile` gain AI variants; `approval_requests` gains an owner kind (a coordinated change with
-  feature 014's open lock-order work).
+  `BindingProfile` gain AI variants; `approval_requests` gains an owner kind and, for that kind only,
+  the escalation columns of Decision 025-019 (a coordinated change with feature 014's open lock-order
+  work).
 - A new machine role and executor add operational cost (image, network policy, runbook), in exchange
   for a separate credential blast radius: the agent runner never holds a database credential.
 - The worker protocol takes the next free minor of the register in `sdks/SPEC.md` section 9 (1.7 is
@@ -200,6 +216,6 @@ declared done: the fault matrix and verification plan of
 [plan.md](../../specs/025-ai-agents-mcp/plan.md), six-SDK conformance
 ([contracts/conformance.md](../../specs/025-ai-agents-mcp/contracts/conformance.md)), the
 classification, secret and MCP-argument canary battery, and the measured performance report.
-Decisions D1280–D1319, D1635–D1638 and D025-001 to D025-016, gaps G1280–G1297, G1635 and
-G025-001 to G025-004, and Owner question 025-001 are in
+Decisions D1280–D1319, D1635–D1638 and D025-001 to D025-019, gaps G1280–G1297, G1635 and
+G025-001 to G025-004, and Owner question 025-001 (decided) are in
 [research.md](../../specs/025-ai-agents-mcp/research.md).

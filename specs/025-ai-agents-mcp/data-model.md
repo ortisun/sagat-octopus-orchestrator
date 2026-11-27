@@ -3,7 +3,9 @@
 Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
 2026-11-24-1); Architecture decisions 0059 and 0060 accepted (delegate, Owner decisions 2026-11-26-123
 and 2026-11-26-124); not started. Nothing below exists yet. Revised 2026-11-26 against `develop` at
-`3f22b612`.
+`3f22b612`; revised 2026-11-27 (round 3) for Decisions 025-017 to 025-019: the MCP-server revision's
+`tool_classifications`, the escalation columns of `approval_requests`, and the credential modes that
+wait for design 047's broker.
 
 Every table is tenant-keyed: the primary key starts with `tenant_id`, every foreign key is composite
 with `tenant_id` (and `namespace_id` where the row is namespace-scoped), and every statement filters by
@@ -52,8 +54,8 @@ for it; "head" and "revision" are 021's head and revision rows.
 
 | Type | Settings and fields | Constraints, classification |
 |---|---|---|
-| `llm_*` (providers) | head: `name` (`^[a-z][a-z0-9-]{2,63}$`), `status`; revision: `kind` (`anthropic`, `openai-compatible`, `aws-bedrock`, `azure-openai`), settings (closed per kind: HTTPS base URL, region, API version, deployment map, prompt caching, and for `azure-openai` in the Entra mode once enabled the `entra_authority` HTTPS host, confirmed by the saving administrator and the only host a token request goes to), `credential_mode` (`api-key`, `bearer`; `aws-access-key` and `azure-entra-client-credentials` refused at save until Gap 025-001 closes), credential secrets (slot name → logical secret name, at most 4), `models` (≤ 64 entries: id, alias, maxOutputTokens, contextTokens, capabilities, prices in integer micro-units per million tokens and ISO 4217 currency), `max_prompt_classification` (`EgressCeiling`: `public`/`internal`/`pii`; required at the API), limits, `actor`, `request_id` | 021's revision immutability and receipt rules; unknown settings and credentials in settings or URLs refused; settings, models and limits are `content` |
-| `mcp_server` | revision: `url` (HTTPS, no userinfo, no query secrets), `auth_mode` (`none`, `bearer`; `oauth-client-credentials` refused at save until Gap 025-001 closes), credential secrets, `protocol_preference` (`2026-07-28`, `2025-11-25`), `max_argument_classification` (`EgressCeiling`, required at the API), `oauth` (for the OAuth mode once enabled: `issuer`, `token_endpoint` (HTTPS), client id, resource, scopes; recorded and confirmed by the saving `ai:manage` holder, never replaced by discovery), limits; head: `current_snapshot_id` (025's pointer, below) | as above; `url`, `oauth`, limits are `content` |
+| `llm_*` (providers) | head: `name` (`^[a-z][a-z0-9-]{2,63}$`), `status`; revision: `kind` (`anthropic`, `openai-compatible`, `aws-bedrock`, `azure-openai`), settings (closed per kind: HTTPS base URL, region, API version, deployment map, prompt caching, and for `azure-openai` in the Entra mode once enabled the `entra_authority` HTTPS host, confirmed by the saving administrator and the only host a token request goes to), `credential_mode` (`api-key`, `bearer`; `aws-access-key` and `azure-entra-client-credentials` refused at save until design 047's broker exists, Gap 025-001; once it does, their secrets are delivered to the broker only and the runner receives an access token: an Entra access token, or an Amazon Bedrock short-term API key minted from an STS session of `aws_session_seconds`, 900 by default, 900 to 3,600, with the optional `aws_role_arn`, Decision 025-017), credential secrets (slot name → logical secret name, at most 4), `models` (≤ 64 entries: id, alias, maxOutputTokens, contextTokens, capabilities, prices in integer micro-units per million tokens and ISO 4217 currency), `max_prompt_classification` (`EgressCeiling`: `public`/`internal`/`pii`; required at the API), limits, `actor`, `request_id` | 021's revision immutability and receipt rules; unknown settings and credentials in settings or URLs refused; settings, models and limits are `content` |
+| `mcp_server` | revision: `url` (HTTPS, no userinfo, no query secrets), `auth_mode` (`none`, `bearer`; `oauth-client-credentials` refused at save until Gap 025-001 closes), credential secrets, `protocol_preference` (`2026-07-28`, `2025-11-25`), `max_argument_classification` (`EgressCeiling`, required at the API), `tool_classifications` (a map from tool name, at most 128 characters, to `read` or `write`, at most 512 entries, set by the saving `ai:manage` holder; a tool it does not name is `write`; immutable with the revision, so a version that pins the revision pins the classification, Decision 025-018), `oauth` (for the OAuth mode once enabled: `issuer`, `token_endpoint` (HTTPS), client id, resource, scopes; recorded and confirmed by the saving `ai:manage` holder, never replaced by discovery), limits; head: `current_snapshot_id` (025's pointer, below) | as above; `url`, `oauth`, `tool_classifications`, limits are `content` |
 
 025's own catalog tables:
 
@@ -61,7 +63,7 @@ for it; "head" and "revision" are 021's head and revision rows.
 |---|---|---|
 | `mcp_server_heads` | PK `(tenant_id, resource_id)`; `namespace_id`, `current_snapshot_id`, `oauth_metadata_mismatch` | FK to 021's resource head; SELECT/INSERT/UPDATE (pointer and flag only); protected |
 | `mcp_tool_snapshots` | PK `(tenant_id, snapshot_id)`; `resource_id`, `resource_revision`, `protocol_version`, `tool_count`, `snapshot_sha256`, `discovered_issuer`, `discovered_token_endpoint` (OAuth servers only, for comparison), `refreshed_by_run`, `created_at` | immutable; ≤ 1,024 tools; SELECT/INSERT |
-| `mcp_snapshot_tools` | PK `(tenant_id, snapshot_id, name)`; `title`, `description` (≤ 16 KiB), `description_sha256`, `input_schema jsonb` (≤ 64 KiB), `input_schema_sha256`, `output_schema_sha256`, `closed_input`, `annotations jsonb` (untrusted, ≤ 4 KiB) | immutable; `description`, `input_schema`, `annotations` content |
+| `mcp_snapshot_tools` | PK `(tenant_id, snapshot_id, name)`; `title`, `description` (≤ 16 KiB), `description_sha256`, `input_schema jsonb` (≤ 64 KiB), `input_schema_sha256`, `output_schema_sha256`, `closed_input`, `annotations jsonb` (untrusted hints, ≤ 4 KiB; never decide whether a tool needs approval, Decision 025-018) | immutable; `description`, `input_schema`, `annotations` content; a refresh that stores a tool whose `readOnlyHint` or `destructiveHint` disagrees with the classification of the revision it refreshed writes `ai.mcp.tool_classification_mismatch` in the same transaction |
 | `mcp_exposures`, `mcp_exposure_revisions` | head with `tool_name` (`^[a-zA-Z0-9_-]{1,64}$`, within MCP's name rules and the tool-name rules of current model APIs; unique per namespace among non-deleted), `status`; revision: `target_kind` (`WORKFLOW`; `SCRIPT`, `OPERATION` gated by 022), `target_ref`, `version_policy` (`ACTIVE`, `PINNED`), `pinned_version`, `title`, `description`, `result_projection` (expression ≤ 1 KiB), `result_schema jsonb` (closed, ≤ 64 KiB), `max_result_classification`, `disclosure` (`declared-mcp-result-v1`), `wait_ms`, `max_daily_tokens` (nullable; at most the namespace's daily token limit), `actor`, `request_id` | ALWAYS-immutable revisions; partial UNIQUE `(tenant_id, namespace_id, tool_name) WHERE status <> 'DELETED'`; descriptions, schema, projection content |
 | `mcp_tokens` | PK `(tenant_id, token_id)`; `namespace_id`, `token_sha256 bytea(32)`, `minter`, `label` (≤ 64), `exposure_ids uuid[]` (≤ 64; the exposure identifiers the requested names resolved to at mint, so a deleted and recreated exposure of the same name is outside the scope), `mint_request_id`, `mint_request_sha256`, `expires_at`, `revoked_at`, `created_at` | UNIQUE `token_sha256`; UNIQUE `(tenant_id, namespace_id, minter, mint_request_id)` (a mint replayed with the same key and digest returns this row's metadata without the token; another digest conflicts); CHECK `expires_at - created_at <= 90 days`; UPDATE only `revoked_at`; the plaintext token never stored, in a receipt or anywhere; rows deleted 90 days after expiry or revocation |
 
@@ -127,7 +129,17 @@ maintenance pass, not by a trigger on the shared row (Decision 025-010).
 - `approval_requests`: `owner_kind text NOT NULL DEFAULT 'NODE'` (`NODE`, `AGENT_TOOL_CALL`); the
   owner-node pattern accepts the tool-call derived id only for `AGENT_TOOL_CALL`; route columns are
   nullable only for that kind; the outcome-consistency check is versioned per kind. Feature 014's
-  rows are unchanged (G1289).
+  rows are unchanged (G1289). For `AGENT_TOOL_CALL` only (CHECK: null for every other kind), the same
+  amendment adds the escalation of Decision 025-019, which feature 014 does not have: `decision_fields
+  text[]` (JSON pointers copied from the published tool's policy; every input field by default),
+  `escalation_policy jsonb` (the `escalation` route's eligibility policy copied from the published
+  version, or null), `escalated_at timestamptz` (set once, by the transaction that moves the request to
+  that route), `context_checked_at timestamptz` (the last context check: opening, refusal or sweeper
+  pass), and `no_decider_reason text` (null or `NO_DECIDER_WITH_CONTEXT`; cleared when a decider with
+  context is found). The expiry of a request whose `no_decider_reason` is set records that reason with
+  its outcome. The sweeper selects pending `AGENT_TOOL_CALL` requests whose `context_checked_at` is
+  older than 60 seconds through a partial index on `(tenant_id, context_checked_at) WHERE owner_kind =
+  'AGENT_TOOL_CALL' AND status = 'PENDING'`. One eligible decision still settles a request.
 - `runs.origin` gains `AI_PROVIDER_PROBE`, `MCP_TOOL_REFRESH`, `AUTHORING_ASSISTANT` (private
   retained definitions, 017 pattern); all three are created by `start_private`
   (`crates/application/src/runs/ad_hoc.rs`) and so pass row 13 of the design 043 run-input gate.

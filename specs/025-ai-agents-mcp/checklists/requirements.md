@@ -16,8 +16,16 @@ below is ticked on the corrected text.
 Revised on 2026-11-27 after the security review of that date (`reviews/2026-11-27-security.md`, 9
 Majors and 11 Nits): every finding is fixed in the set, none accepted (Decision 025-016); the items
 below that the fixes touch were re-checked against the revised text and keep their ticks, with the new
-evidence named in them. One owner question is open (Owner question 025-001); it blocks nothing in
-scope, because the modes it concerns are refused until it or Gap 025-001 is closed.
+evidence named in them. One owner question was open (Owner question 025-001); it blocked nothing in
+scope, because the modes it concerns are refused until Gap 025-001 is closed.
+
+Revised again on 2026-11-27 (round 3): Owner question 025-001 is decided (no, Owner decision
+2026-11-27-400; the Entra and AWS modes reach the runner only as access tokens from design 047's
+broker, Decision 025-017); the owner accepted Gap 025-004 as a documented known limit (Owner decision
+2026-11-27-2); MCP tool annotations are hints under a classification the administrator pins (Decision
+025-018); and a tool-call approval shows a redacted view and escalates when nobody can decide it with
+context (Decision 025-019). The items these touch were re-checked and keep their ticks with the new
+evidence named in them.
 
 ## Content Quality
 
@@ -40,8 +48,8 @@ scope, because the modes it concerns are refused until it or Gap 025-001 is clos
 - [x] No [NEEDS CLARIFICATION] markers remain — the three owner questions (Owner questions 1280 to
   1282) are decided (Owner decisions 2026-11-26-120 to 2026-11-26-122); the one open dependency, OAuth
   MCP servers and the provider modes that need a client secret or a signing key, is a recorded gap (Gap
-  025-001) with its parts marked as waiting and refused, and the owner question it raises (Owner
-  question 025-001) is recorded as the owner's, with the set complete without its answer.
+  025-001) with its parts marked as waiting and refused, and the owner question it raised (Owner
+  question 025-001) is decided (Owner decision 2026-11-27-400).
 - [x] Requirements are testable and unambiguous — every requirement names its observable outcome or
   error code and is traced to a task and a success criterion (tasks.md, Traceability).
 - [x] Success criteria are measurable — each names the automated proof and the rounds or counts.
@@ -52,7 +60,8 @@ scope, because the modes it concerns are refused until it or Gap 025-001 is clos
 - [x] All acceptance scenarios are defined — happy and failure scenarios per story.
 - [x] Edge cases are identified — parallel completion, races, rate limits, model substitution, drift,
   lost MCP responses, deletion under a pinned run, unattended writes in child workflows, undeclared
-  tool names as a covert channel, batches, a ceiling lowered after publication, a redirected probe.
+  tool names as a covert channel, batches, a ceiling lowered after publication, a redirected probe, an
+  MCP server that falsely marks a tool read-only, an approval nobody can decide with context.
 - [x] Scope is clearly bounded — Out of scope section; root-only, graph-model-only agents; text
   modality; OAuth MCP servers waiting for Gap 025-001.
 - [x] Dependencies and assumptions identified — features 001–018, 035, 038, 041 and 043 (merged or
@@ -82,7 +91,9 @@ scope, because the modes it concerns are refused until it or Gap 025-001 is clos
   refuses managed leases; no redirect is followed; OAuth MCP servers and the provider modes that need a
   client secret or a signing key are refused until constitution 5.1.0, whose third declared set the
   owner approved (Owner decision 2026-11-25-3), merges and design 047's broker issues access tokens
-  (Gap 025-001; Owner question 025-001).
+  (Gap 025-001); once it does, the runner receives only the access token, never the client secret, the
+  long-lived AWS key or a session signing key (Owner question 025-001 answered no, Decision 025-017,
+  Tasks 025-100 and 025-101).
 - [x] Tenant boundary, typed errors without new `Error.code`, managed-step codes in the SDK error
   catalog, OTel with fixed labels, audit with the decision and its OCSF mapping (Gap 025-003).
 - [x] Finite defaults and hard ceilings for every new resource (plan.md); zero is not unlimited.
@@ -93,14 +104,18 @@ scope, because the modes it concerns are refused until it or Gap 025-001 is clos
   (G1285), prompt injection (G1286), cost estimates (G1287), unbilled error responses (G1294),
   registries owned by other drafts (G1635), OAuth MCP servers and the client-secret and signing-key
   provider modes (G025-001), the procedural envelope (G025-002), the OCSF mapping (G025-003), the bound
-  of the output secret scan (G025-004).
+  of the output secret scan (G025-004, accepted by the owner as a documented known limit, Owner
+  decision 2026-11-27-2, published in the form of Architecture decision 0085 rule 12 by Task 025-069).
 - [x] Model-written values never classified below the transcript level, in the agent's result and in
   every workflow or child output carrier they reach (inherited output levels, Task 025-093);
   destination ceilings for providers and MCP servers (`EgressCeiling`) applied at publication and again
   at admission and every resolution against the current revision (Task 025-097); `write` tools need
   approval or an explicit acknowledgement, the unattended refusal is transitive over child workflows
-  (Task 025-094), and a tool-call approval is decided only by someone who can see every input field
-  (Task 025-096).
+  (Task 025-094), an `mcp` tool runs without approval only when the pinned MCP-server revision
+  classifies it `read`, the server's annotations being hints whose disagreement is audited (Task
+  025-102), and a tool-call approval is decided only by someone who can see every decision field on
+  the redacted view, an approval nobody can decide being escalated and, failing that, ended with the
+  recorded reason `NO_DECIDER_WITH_CONTEXT` (Tasks 025-096 and 025-103).
 - [x] MCP server: receipts and task handles belong to the credential identity and the exposure;
   credential and rights are rechecked before a result leaves; batches are refused; remote callers are
   bounded per caller and per exposure (Tasks 025-048, 025-099).

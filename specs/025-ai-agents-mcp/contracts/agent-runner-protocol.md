@@ -68,7 +68,8 @@ V's first declared set, ordinary task execution (Decision 025-001):
 
 - only a static API key or bearer token: the provider modes `aws-access-key` and
   `azure-entra-client-credentials`, which would hand the runner a signing key or a client secret, are
-  refused at save until design 047's broker issues access tokens (Gap 025-001);
+  refused at save until design 047's broker issues access tokens (Gap 025-001), and the first set never
+  covers their secrets (Owner question 025-001 answered no, Owner decision 2026-11-27-400);
 - all or nothing: every slot of the pinned revision, or none;
 - only while the caller's current membership, its binding (`BindingProfile::Agent` for the task's
   reserved activity), the pool-delivery policy of every secret and the publisher's `secret:use` on
@@ -91,7 +92,14 @@ the two provider modes above, are outside it: they reach access tokens only thro
 broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0
 (Owner decision 2026-11-25-3), not yet merged; `auth_mode` `oauth-client-credentials` is refused at save
 until 5.1.0 merges and the broker is built (Gap 025-001), and the OAuth fields of `McpEndpoint` below
-are reserved for that case.
+are reserved for that case. Once the broker exists, the two provider modes are delivered through it
+(Decision 025-017): the client secret and the long-lived AWS key pair are read by the broker only; for
+`azure-entra-client-credentials` the broker runs the client-credentials grant against the recorded
+Entra authority, and for `aws-access-key` it calls AWS STS (`AssumeRole` with the recorded role,
+`GetSessionToken` without one; 900 seconds by default, at most 3,600) and mints from that session an
+Amazon Bedrock short-term API key; `ResolveModelCall` returns that access token, with its expiry, in the
+`bearer` slot, and the runner sends it as a bearer token. The runner makes no token request, holds no
+SigV4 signer, and never receives the client secret, the long-lived key or the session's signing key.
 
 ## New calls
 
@@ -124,8 +132,9 @@ message AiEndpoint {
   string api_version = 4;       // azure-openai
   string deployment = 5;        // azure-openai deployment of model_id
   bool prompt_caching = 6;
-  // Reserved for azure-entra-client-credentials once Gap 025-001 closes: the Entra authority host
-  // recorded in the revision; the token request goes only there.
+  // Reserved for azure-entra-client-credentials once design 047's broker exists: the Entra
+  // authority host recorded in the revision, for the runner's spans only; the broker, never the
+  // runner, sends the token request there and the runner receives the access token (Decision 025-017).
   string entra_authority = 7;
 }
 message AiLimits {
