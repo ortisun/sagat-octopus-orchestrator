@@ -1895,6 +1895,11 @@ Two lanes that can run at the same time; where they touch the same file the orde
   OpenBao is accepted by the Collector and sent by the engine within the reload period, the old token refused once
   removed; the canary test of Task 015-20 extended to the token's value in every log, span and audit record.
   Refs: Requirement 015-006, Requirement 015-016
+- [ ] T015-48 The documentation of Task 015-22 states that design 042 keeps no per-tenant HMAC key: since Owner decision
+  2026-11-27-424 its keys and `distinct` values are digests computed in the process, so the Overview's "design 042's
+  per-tenant HMAC key, which stays in the database" and Owner question 015-008's row describe a key that does not exist
+  (Owner decision 2026-11-27-448); no Transit or key/value custody is added for it.
+  Refs: Requirement 015-012
 
 ### Verification Plan
 

@@ -319,9 +319,15 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   most); a mark that would pass the ceiling fails the element with `KEY_LIMIT` as well. Held bytes are bounded per tenant
   by a quota of their own, `operator_held_bytes`, 1 GiB (1,073,741,824 bytes) by default, which an operator may change
   like any quota: an element that would pass it ends with `FAILED`/`QUOTA_EXCEEDED` and holds nothing, a final outcome,
-  not the dispatcher's wait for room. The number of chains (`operator_chains`, 50 per tenant), the sum of `maxKeys`
-  (`operator_keys`, 100,000 per tenant) and the sum of `maxMarks` (`operator_marks`, 1,000,000 per tenant) are tenant
-  quotas checked at publication and at `switch`. Window durations are 1 second to 24 hours; a `distinct` horizon is at
+  not the dispatcher's wait for room. Held values also count against the tenant's retained content
+  (`tenant_content_bytes`), which the existing delta triggers enforce at commit: a refusal there is the dispatcher's
+  wait for room (the event stays `PENDING` with its attempt count unchanged and is offered again), not a final outcome,
+  and while it waits it holds the windows that cover it until `D + maxHoldMs` like any pending event (FR-042-017). The
+  number of chains (`operator_chains`, 50 per tenant), the sum of `maxKeys` (`operator_keys`, 100,000 per tenant) and
+  the sum of `maxMarks` (`operator_marks`, 1,000,000 per tenant) are tenant quotas checked at publication and at
+  `switch`: under the per-scope advisory lock of `crates/infra-postgres/src/quotas.rs` (`lock`), the transaction sums
+  the tenant's registered chains and their limits after its own registration and refuses with `QUOTA_EXCEEDED` when a
+  sum passes its limit. Window durations are 1 second to 24 hours; a `distinct` horizon is at
   most 7 days.
 - **FR-042-022** Chain state is purged by a bounded pass that takes the chain row `FOR SHARE`: a key row that has no
   `OPEN` or `SEALED` window and whose last element is older than `keyIdleMs` (its usage slot released); a mark at its
@@ -335,19 +341,26 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   (FR-042-019), and the chain row goes once nothing is left.
 - **FR-042-023** Every row carries tenant and namespace and every statement is scoped by them. Listing chains and
   windows needs `event:read`; a flush, a window retry and a delivery retry need `run:start` and `run:operate`; a
-  discard needs `run:operate`. The caller of a flush or a retry is recorded on the window (`requested_by`) or the
-  delivery and is the starter of the run it causes. Every such act is audited. Another tenant's chain, window or event
+  discard needs `run:operate`. Every such act is audited with its caller; the caller of a flush or a window retry is
+  also kept on the window (`requested_by`) only so that the start's `RunStarted` audit record says "requested by X at
+  T". The starter of every run a window starts is the engine, as for today's trigger starts, so a caller never becomes
+  the initiator of a run created later, after their rights may have changed. Another tenant's chain, window or event
   is indistinguishable from a missing one (`404` with the same body) and the attempt is audited as a probe.
 - **FR-042-024** Held element values and `distinct` values are event data, personal data as a whole for feature 016.
   Element values are held in a column of the chain's own table, classified as content, counted in the tenant's retained
   bytes, and deleted in the transaction that starts the window's run (or discards it); they never go to the append-only
-  `payloads` table. No key text is stored: a key and a `distinct` value are stored only as the SHA-256 of their canonical
-  form (FR-042-011), keyed into their rows, classified as personal data and deleted with them; no digest leaves the
-  database in an API response, a log, a metric, a span attribute, an audit record or an error. The API names a key and
-  a window by random surrogate ids (`key_id`, `window_id`); a caller who needs to know which key a window holds reveals
-  one of its member events through the existing event read with `reveal=pii`, which needs the namespace reveal grant
-  and writes `payload.pii_revealed` or the denial (feature 016). None of these values appears in a log, a metric, a span
-  attribute, an audit record or an error.
+  `payloads` table. No key text is stored: a key and a `distinct` value are stored only as a digest of their canonical
+  form (FR-042-011, section 4), keyed into their rows, deleted with them; no digest leaves the database in an API
+  response, a log, a metric, a span attribute, an audit record or an error. The API names a key and a window by random
+  surrogate ids (`key_id`, `window_id`). Whatever tells events apart by their key or their `distinct` value is itself
+  personal data: a window's `keyId`, the list of its member events, a delivery's `windowId` and the reason `distinct` of
+  a `SUPPRESSED` delivery. These are returned only to a request that asks `reveal=pii`, through the same projector as
+  an event read (`crates/application/src/event_payloads.rs`), which needs `payload:read-internal` and the namespace
+  reveal grant and writes `payload.pii_revealed` or `payload.reveal_denied` (feature 016). Without it a window shows its
+  state, counts, instants, flags and run id, and a `SUPPRESSED` delivery shows the reason `operator`, which does not tell
+  `distinct`, `skip`, `take` or a stage `filter` apart. So a caller without the grant cannot group events by key, nor
+  publish a guessed value and compare the window or the reason it gets. None of these values appears in a log, a metric,
+  a span attribute, an audit record or an error.
 
 - **FR-042-031** Every way an event's delivery to a chained trigger can end has one outcome, on both paths:
 
@@ -372,7 +385,8 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   without a chain, of a wait, of design 043's refused delivery, and for every row an older writer inserts. `outcome` is
   checked to be one of `STARTED`, `HELD`, `SUPPRESSED`, `FAILED`; `error_code` one of `EXPRESSION_ERROR`,
   `OPERATOR_KEY_INVALID`, `KEY_LIMIT`, `QUOTA_EXCEEDED`, `TRIGGER_REMOVED`; a reason column the closed values `filtered`,
-  `distinct`, `skip`, `take`, `window_full`, `duplicate_member`.
+  `distinct`, `skip`, `take`, `window_full`, `duplicate_member`. The stored reason and `window_id` are shown only under
+  `reveal=pii` (FR-042-024); otherwise the reason of a `SUPPRESSED` delivery reads `operator` and `windowId` is absent.
 - **FR-042-032** The run input of a trigger chain is one JSON object of a shape fixed per emission kind. The summary is
   `{"windowId": uuid, "keyId": uuid or null (keyless chain), "openedAt": RFC 3339 UTC, "sealedAt": RFC 3339 UTC,
   "count": integer, "firstReceivedAt": RFC 3339 UTC, "lastReceivedAt": RFC 3339 UTC, "late": boolean, "overflow":
@@ -395,21 +409,30 @@ deleted with the inbox row by its foreign key. So today one event is one run; de
   chain can emit, with `value` null and every instant the epoch (`OPERATOR_INPUT_SCHEMA`); design 043's check of the real
   input at the start stays.
 - **FR-042-033** A delivery retry applies one event again to one trigger. It accepts only a `FAILED` delivery of the
-  named trigger, addressed by namespace, source, event id and trigger id; it needs `run:start` and `run:operate`. One
-  transaction locks the inbox row, checks that the delivery exists and is `FAILED` (otherwise `409`,
-  `DELIVERY_NOT_RETRYABLE`), deletes it and applies the event to that trigger alone with the dispatcher's application
-  method, recording the caller as `requested_by`; it never returns the inbox row to `PENDING` and never touches another
-  consumer of the event. No inbox row in the caller's scope (purged, never admitted, another tenant's) answers the
-  uniform `404` and writes the probe audit. The act is audited `operator.delivery_retried`.
+  named trigger, addressed by namespace, source, event id and trigger id; it needs `run:start` and `run:operate`. A
+  control plane that does not use `trigger-operators-v1` (FR-042-034) refuses it with the switch's typed error
+  (`OPERATOR_UNSUPPORTED`). One transaction locks the inbox row `FOR NO KEY UPDATE` (which serialises retries and blocks
+  the purge, and does not conflict with the `FOR KEY SHARE` a dispatcher's delivery insert takes through the foreign key,
+  so a retry and a re-dispatch of the same event cannot deadlock), checks that the delivery is `FAILED` (otherwise
+  `409`, `DELIVERY_NOT_RETRYABLE`), deletes it and applies the event to that trigger alone with the dispatcher's
+  application method; it never returns the inbox row to `PENDING` and never touches another consumer of the event. No
+  inbox row in the caller's scope (purged, never admitted, another tenant's), or no delivery row of the named trigger,
+  answers the uniform `404` and writes the probe audit. The act is audited `operator.delivery_retried` with its
+  caller; the run it may cause is started by the engine (FR-042-023).
 - **FR-042-034** The two switches are capabilities of the instance registry under design 053 (Requirements 053-006 and
   053-007). The engine's trigger switch is `SAGAT_TRIGGER_OPERATORS_ENABLED`, beside the control plane's
-  `SAGAT_COLLECTION_OPERATORS_ENABLED`; a process uses `trigger-operators-v1` only when `ServingGate::uses` says so. A
-  dispatcher that does not use it never starts a run for a chained trigger: that trigger's dispatch of the event rolls
-  back without counting an attempt (FR-042-031) and its pass does nothing. Publication and `switch` of a version with a
-  chained `forEach` or a trigger chain take the capability's fence of form (a) of Requirement 053-006 (an owner-owned
-  definer function per capability that takes the requirement row `FOR KEY SHARE` and answers whether it is `active`, as
-  `lease_withdrawal_required()` does) in their transaction. The control plane refuses to start with the trigger switch on
-  until Task 042-22's start is built, as D042-103 did for collections.
+  `SAGAT_COLLECTION_OPERATORS_ENABLED`; a process uses `trigger-operators-v1` only when `ServingGate::uses` says so
+  (design 053 adds `uses`, Task 053-5; until it merges only `ServingGate::requires` exists, and slices 2 to 5 wait for
+  it, section 10). The capability gates only what creates new chain state: a new apply, a delivery retry, a new
+  publication or `switch`. A dispatcher that does not use it never starts a run for a chained trigger: that trigger's
+  dispatch of the event rolls back without counting an attempt (FR-042-031). Sealing, starting, the `TRIGGER_REMOVED`
+  refusal, the expiry and the purge are not gated: the `operator_windows` pass runs them in every binary that has the
+  code, whatever the switch, so a deactivation can drain and held values reach their deletion. Publication and `switch`
+  of a version with a chained `forEach` or a trigger chain take the capability's fence of form (a) of Requirement
+  053-006 in their transaction: an owner-owned definer function per capability that takes the requirement row `FOR KEY
+  SHARE` and answers whether it is `active`. The `FOR KEY SHARE` is design 053's (Requirement 053-006): the code's
+  `lease_withdrawal_required()`, the precedent, takes `FOR SHARE` until Task 053-5 changes it. The control plane refuses
+  to start with the trigger switch on until Task 042-22's start is built, as D042-103 did for collections.
 
 **Surfaces**
 
@@ -530,6 +553,12 @@ The owner questions are answered (next section). Technical questions, registered
 - **G042-016** The owner row OD-2026-11-13-15 has the Status "Decided; not built", which `scripts/check-design-docs.py`
   does not read as `Decided`, so it cannot open a gate. The tasks it gated cite Owner decision 2026-11-27-432, which
   records the same answers; the owner may correct his row, after which the gates may cite it again.
+- **G042-017** A key or a `distinct` value is kept as a digest (section 4). A reader of the database or of a backup can
+  recover a low-entropy one (an order number, an email address) by trying values; once the event's inbox row is gone and
+  no run input holds the value, the digest is its only trace, for as long as its row lives (a key row until idle past
+  `keyIdleMs` with no `OPEN` or `SEALED` window, a mark at most 7 days, a window's digest 7 days after it became final).
+  The tenant and the chain in the digest's input stop linkage across tenants and chains and precomputed tables, not a
+  targeted guess. A security residual risk for the owner (Decision 042-180).
 
 ## Owner decisions needed
 
@@ -563,7 +592,7 @@ that covers them (Gap 042-016).
 | `admissionGraceMs` (Owner decision 2026-11-26-135) | Withdrawn: a window is sealed past the transaction horizon of its deadline (ADR-0153, Owner decision 2026-11-26-136) | On PostgreSQL 16 no timeout bounds an admission transaction, so no fixed grace is a proof |
 | The start's dependency on feature 022 (Owner decision 2026-11-27-420) | Tasks 042-3 and 042-22 start after feature 022's admission port merges | A second creator would bypass 022's limits |
 | Every stateful emission is a window (Owner decision 2026-11-27-421) | The apply never creates a run | The apply's delivery row and today's start would write the same row |
-| The HMAC key (Owner decision 2026-11-27-422, superseded by 2026-11-27-424) | No keyed hash and no definer function: plain SHA-256 digests that never leave the database | A database reader already holds the events and the held values, so a keyed hash protected nothing more |
+| The HMAC key (Owner decision 2026-11-27-422, superseded by 2026-11-27-424) | No keyed hash and no definer function for it: SHA-256 digests over the tenant, the chain and the value, which never leave the database (refined by Decision 042-180) | The keyed hash's key lived in the same database, so it did not stop a database reader; the residual of a low-entropy value is stated in Gap 042-017 |
 | Gap 042-006 (Owner decision 2026-11-27-423) | Reopened, then narrowed by design 053's stopped upgrade into 0.3.0 | A binary from before the registry does not register |
 | Window inputs (Owner decision 2026-11-27-427) | Bounded by the inline run-input ceiling; blob inputs deferred (Gap 042-015) | The CUJs fit in 256 KiB; a blob path is a design of its own |
 | ADR-0155 (Owner decision 2026-11-27-428) | Accepted: window identity, session merging, the unfenced start, plain digests, the usage row, the capped hold | It corrects decisions of ADR-0086 and ADR-0153 that the reviews of 2026-11-27 found unsound |
@@ -839,14 +868,21 @@ serves the backlog hold; it costs one index entry per admitted event, kept while
 waits for room with its attempt count unchanged), and is measured in the statement budget of Task 042-19 (one more
 index write on admission, no more statements).
 
-**Digests, not keyed hashes.** A key and a `distinct` value are stored only as the SHA-256 of their canonical form
-(FR-042-011; the absent key is the digest of the JSON `null`). No key text is stored. The digests are never returned by
-an API, written to a log, a metric, a span or an audit record, or put in an error; they are classified as personal data
-and deleted with their rows. The threat model: the API never shows a digest, so a low-entropy key cannot be reversed
-through it; a reader of the database could reverse one by trying values, but that reader already holds the events
-themselves and the held values, so a keyed hash with its key kept from the runtime role would protect nothing more. No
-`pgcrypto`, no key table and no `SECURITY DEFINER` function of this design computes them; the apply computes them in
-the process.
+**Digests, not keyed hashes.** A key and a `distinct` value are stored only as a digest: SHA-256 over the
+length-prefixed parts `tenant_id`, `chain_id` and the canonical bytes of the value (FR-042-011; the absent key is the
+canonical `null`), each part preceded by its length as eight big-endian bytes, as `start_key` builds its digest
+(`crates/application/src/dispatch.rs`). The tenant and the chain in the input mean that one value gives different
+digests in two tenants or two chains, so digests cannot link tenants and one table of precomputed digests serves one
+chain only. No key text is stored. The digests are never returned by an API, written to a log, a metric, a span or an
+audit record, or put in an error, and they are deleted with their rows. The threat model, stated as it is: the API
+never shows a digest, so no caller can reverse one through it; a reader of the database or of a backup can recover a
+low-entropy key or `distinct` value (an order number, an email address) from its digest by trying values, and once
+the event's inbox row is gone (its dedupe window ended) and, for a suppressed element, no run input holds it, the
+digest is the only trace of that value. That trace lasts only as long as its row: a key row until it is idle past
+`keyIdleMs` with no `OPEN` or `SEALED` window, a mark until its horizon (at most 7 days), a window's `key_digest` until
+the window is purged 7 days after it became final. This is a residual risk (Gap 042-017), not a guarantee. No
+`pgcrypto`, no key table and no `SECURITY DEFINER` function of this design computes the digests; the apply computes them
+in the process.
 
 `value` and `fan_out_values` are deleted (set to `NULL` and their bytes released from the tenant's usage) in the
 transaction that starts the window's run, or the last index's run after `flatMap`, or discards or refuses it, except a
@@ -863,13 +899,20 @@ transactions, which hold no other operator row; this is what lets the start writ
 6, ADR-0155).
 
 Grants to `sagat_app` in the migration's grant block; the down migration refuses while a row exists;
-`storage-classification.json` gets an entry per variable-size column (digests, member value, fan-out values, error code)
-and the content tables the quota-delta triggers (`.claude/skills/migration`), so held bytes count against the tenant's
-retained bytes and against `operator_held_bytes`. The capability fences of FR-042-034 are two owner-owned definer
-functions, `collection_operators_required()` and `trigger_operators_required()`, of the shape of
+`storage-classification.json` gets an entry per variable-size column, with its class among the four the file defines:
+the member `value` and the `fan_out_values` are `content` (counted in the tenant's retained bytes by the quota-delta
+triggers, `.claude/skills/migration`); the digest columns (`key_digest`, `value_digest`, 32 bytes each, fixed size) are
+`protected_system` with the bound of their fixed length, and are personal data deleted with their rows (FR-042-024);
+`error_code` and `reason` are `protected_system` (closed vocabularies). **The held-bytes counter.** `operator_held_usage
+(tenant_id, held_bytes)` holds one row per tenant. It is maintained only by an owner-owned trigger function,
+`operator_held_usage_delta()`, `SECURITY DEFINER` with `search_path` pinned to `pg_catalog, pg_temp` and every name
+schema-qualified, which fires on every insert, update of `value` or `fan_out_values` and delete of
+`operator_window_members` and `operator_windows` and adds the change of held bytes; `sagat_app` has `SELECT` on the
+counter and no write. The apply checks it at step 5 (section 5). The capability fences of FR-042-034 are two
+owner-owned definer functions, `collection_operators_required()` and `trigger_operators_required()`, of the shape of
 `lease_withdrawal_required()` (`search_path` pinned to `pg_catalog, pg_temp`, every name schema-qualified, revoked from
-`PUBLIC`, executable by `sagat_app`), each taking its requirement row `FOR KEY SHARE`; they are the only definer functions
-of this design and are in the privilege audit's allow-list.
+`PUBLIC`, executable by `sagat_app`), each taking its requirement row `FOR KEY SHARE`. These three are the only definer
+functions of this design and are in the privilege audit's allow-list.
 
 ### 5. Trigger chains: applying an event (slices 2 and 3)
 
@@ -890,8 +933,12 @@ decision 7: chain, usage, key, windows; then slot 8b):
    and the flags; seal at once when `count` or `onFull: emit` says so (and, with `flatMap`, evaluate `select` and record
    the fan-out, FR-042-020); for any other chain, write the emission as a new window sealed at once with its one member;
 5. when the element adds held bytes, take the tenant's `operator_held_bytes` lock (the advisory lock of
-   `crates/infra-postgres/src/quotas.rs`, slot 8b, last) and check the quota; when it would be passed, the
-   transaction rolls back to a savepoint taken before step 3 and records `FAILED`/`QUOTA_EXCEEDED`, so nothing is held;
+   `crates/infra-postgres/src/quotas.rs`, slot 8b, last) and check, under it, the committed `operator_held_usage` row
+   plus this transaction's own held bytes against `operator_held_bytes`, and the committed tenant content usage plus
+   this transaction's pending content delta against the tenant content quota; when either would be passed, the
+   transaction rolls back to a savepoint taken before step 3 and records `FAILED`/`QUOTA_EXCEEDED`, so nothing is held.
+   A refusal that only the commit-time flush of the tenant content quota finds (a concurrent transaction of the tenant
+   committed in between) is the dispatcher's wait for room, not a final outcome (FR-042-021);
 6. insert the `event_deliveries` row for `trigger:{id}` with the outcome; on a conflict, roll back: the admission was
    already applied.
 
@@ -944,8 +991,10 @@ SHARE`, the key row and the `OPEN` window `FOR UPDATE`, records `requested_by` a
 and the backlog hold (an event not yet applied becomes late and opens a new window; the runbook says so); a discard
 locks an `OPEN` or `REFUSED` window the same way, deletes its held values and sets `DISCARDED`; a window retry locks a
 `REFUSED` window with `START_EXPIRED`, records `requested_by`, sets `SEALED`, resets `attempts` and `next_attempt_at` and
-sets `start_expires_at` 24 hours ahead. The start reads `requested_by` and makes that caller the starter of the run;
-otherwise the starter is the engine, as for today's trigger starts.
+sets `start_expires_at` 24 hours ahead. Each act writes its own audit record with its caller. The start's run has the
+engine as its starter, as today's trigger starts do; when the window carries `requested_by`, the start's `RunStarted`
+audit record adds "requested by X at T", so the caller is traced without becoming the initiator of a run created later.
+Delivery retries are not recorded on the window: the caller is in `operator.delivery_retried` only.
 
 Nothing is held in memory between ticks. The lag of the pass is the age of the oldest due window past every hold, that
 is, due and either not held or past `D + maxHoldMs`: `scheduler_lag_seconds{pass="operator_windows"}`, set by
@@ -1028,18 +1077,22 @@ buffered as `WAITING` runs and granted by a fenced pass). This design is upstrea
 | Method and path | Answer |
 |---|---|
 | `GET /operator-chains` | chains: `chainId`, `workflowId`, `triggerId`, `state`, `keyCount`, `maxKeys`, `openWindows` |
-| `GET /operator-chains/{chainId}/windows?state=` | windows, paged: `windowId`, `keyId`, `state`, `count`, `openedAt`, `deadline`, `late`, `overflow`, `runId`, `startedCount`, `fanOut`, `lastErrorCode` |
-| `GET /operator-chains/{chainId}/windows/{windowId}` | one window with its members by reference (`source`, `eventId`, `receivedAt`), never their values |
+| `GET /operator-chains/{chainId}/windows?state=` | windows, paged: `windowId`, `state`, `count`, `openedAt`, `deadline`, `late`, `overflow`, `runId`, `startedCount`, `fanOut`, `lastErrorCode`; `keyId` only with `reveal=pii` (FR-042-024) |
+| `GET /operator-chains/{chainId}/windows/{windowId}` | one window; with `reveal=pii`, also its `keyId` and its members by reference (`source`, `eventId`, `receivedAt`), never their values |
 | `POST /operator-chains/{chainId}/windows/{windowId}:flush` | `202` with the window; `409 WINDOW_NOT_OPEN` otherwise |
 | `POST /operator-chains/{chainId}/windows/{windowId}:discard` | `200` with the window; `409 WINDOW_NOT_DISCARDABLE` unless `OPEN` or `REFUSED` |
 | `POST /operator-chains/{chainId}/windows/{windowId}:retry` | `202` with the window; `409 WINDOW_NOT_RETRYABLE` unless `REFUSED` with `START_EXPIRED` |
 | `POST /events/{source}/{eventId}/deliveries/{triggerId}:retry` | `202` with the delivery; `409 DELIVERY_NOT_RETRYABLE` unless `FAILED` |
-| `GET /events/{source}/{eventId}` (existing) | gains, per delivery, `outcome`, `errorCode`, `reason` and `windowId` |
+| `GET /events/{source}/{eventId}` (existing) | gains, per delivery, `outcome`, `errorCode` and `reason` (`operator` for every operator suppression); with `reveal=pii`, the stored reason and `windowId` |
 
-A chain, window or event that is missing or another tenant's answers `404` with the same body, audited as a probe.
+A chain, window or event that is missing or another tenant's answers `404` with the same body, audited as a probe. A
+`reveal=pii` request goes through the event read's projector and writes `payload.pii_revealed` or
+`payload.reveal_denied`, one record per request.
 
 - **Audit**: `operator.window_flushed`, `operator.window_discarded`, `operator.window_retried`,
-  `operator.window_refused`, `operator.delivery_retried`, `operator.key_limit` (one per chain and minute, with a count).
+  `operator.window_refused`, `operator.delivery_retried`, `operator.key_limit` (one per chain and minute, with a count),
+  each with its caller where a person acted; `RunStarted` of a window's run adds "requested by X at T" when the window
+  was flushed or retried.
 - **Metrics** (no tenant, namespace, chain or key label):
 
   | Name | Type | Labels (closed) | Meaning | Emitted by |
@@ -1086,18 +1139,24 @@ refuses while a live registered process lacks the capability.
 - *Descriptors.* `collection-operators-v1`: fence form (a) on publication and `switch` of a version with a chained
   `forEach` (`collection_operators_required()`); drain check: no active version has a chained `forEach` and no chained
   blob scope is open. `trigger-operators-v1`: fence form (a) on publication and `switch` of a version with a trigger
-  chain (`trigger_operators_required()`); drain check: no `operator_chains` row is `ACTIVE` or `DRAINING` and no window
-  is `OPEN` or `SEALED`. The apply and the pass write only for an existing chain, so they need no fence of their own: a
-  chain cannot be created after phase 2 of the deactivation, and the drain check refuses the removal while one exists.
+  chain (`trigger_operators_required()`); drain check: no `operator_chains` row is `ACTIVE` or `DRAINING`, no window is
+  `OPEN` or `SEALED`, no window or member holds a value (a `START_EXPIRED` window included), and no `operator_keys` or
+  `operator_marks` row is left. The apply and the delivery retry write only for an existing chain and are gated on
+  `uses`; the pass's sealing, starting, refusing, expiry and purge are not gated, so they finish the draining in every
+  binary that has the code: a chain cannot be created after phase 2 of the deactivation, and the drain check refuses
+  the removal while any state is left.
 - *Late activation.* A process that was not live at the activation can serve for about one heartbeat before the
   registry refuses it. A control plane without the capability refuses chained publications on its own switch; an engine
   without it does not use the capability (`ServingGate::uses` is false), so its dispatcher leaves a chained trigger's
-  event pending without counting an attempt and starts no run per event (FR-042-034).
+  event pending without counting an attempt and starts no run per event (FR-042-034); its `operator_windows` pass still
+  seals, starts and purges what exists.
 - *Deactivation.* By the two phases of Requirement 053-007: phase 1 stops new publications and activations (the fence
   answers inactive), the chains drain (their triggers removed or their versions replaced by unchained ones) and the
-  windows reach a final state; phase 2 takes the tables of the drain check in share mode, runs it and removes the
-  requirement. The writer that meets the fence retries once with the capability treated as inactive and is refused with
-  the switch's typed error.
+  windows reach a final state, sealed, started, refused or purged by the pass, which phase 1 does not stop; phase 2
+  takes the requirement row as Requirement 053-007 prescribes for form (a) (it waits for every fence call that holds
+  the row `FOR KEY SHARE`; the table locks in share mode are form (b)'s, which this design does not use), runs the
+  drain check and removes the requirement. The writer that meets the fence retries once with the capability treated as
+  inactive and is refused with the switch's typed error.
 
 A binary older than the registry does not register; for it the stopped upgrade into 0.3.0 is the only guard (Gap
 042-006). Rolling the binary back below a recorded requirement is unsupported (ADR-0082); the operator deactivates first.
@@ -1213,9 +1272,11 @@ ADR-0087.
   per second across 10,000 keys with the pass's lag under 2 seconds at the 99th percentile, the new-key and held-bytes
   serialisation measured (T042-33).
 - **NFR-042-002 Security**: the only `SECURITY DEFINER` functions are the two capability fences of FR-042-034, of the
-  shape of `lease_withdrawal_required()`; no new role; the runtime role gets only the grants the statements need,
-  checked by the privilege audit; no key text is stored and no digest leaves the database; the cross-tenant battery
-  covers every new endpoint and table.
+  shape of `lease_withdrawal_required()`, and the trigger function `operator_held_usage_delta()` that maintains the
+  held-bytes counter (section 4), each with `search_path` pinned to `pg_catalog, pg_temp`; no new role; the runtime role
+  gets only the grants the statements need (no write on `operator_held_usage`), checked by the privilege audit; no key
+  text is stored, digests are tenant- and chain-separated and no digest leaves the database; what links events by key
+  is returned only under `reveal=pii` and audited; the cross-tenant battery covers every new endpoint and table.
 - **NFR-042-003 Operability**: the runbooks say what each metric and code means, the 0.3.0 upgrade rule, what a held
   window is, how to flush or discard one, that the horizon is cluster-wide and how to find the transaction that holds
   it; the three alerts of section 9 ship with slice 3.
@@ -1263,7 +1324,10 @@ re-read is the third revision of this design. The cut order of section 10 applie
   B); Task 042-15's domain module and `trigger_chain` (lane A) merge before its apply (lane B); the migration of Task
   042-13 (lane B) merges before lane A's REST resources (Task 042-34) are wired to lane B's services, which lane B
   exposes as application methods first (Tasks 042-18 and 042-57); Tasks 042-3 and 042-22 (lane B) start after feature
-  022's throughput branch merges (section 8); Tasks 042-40 to 042-42 close both lanes.
+  022's throughput branch merges (section 8); Tasks 042-13, 042-15, 042-18, 042-54 and 042-56 start after design 053's
+  Task 053-5 merges (the `draining` state, `ServingGate::uses`, the capability descriptors, phase 2 of Requirement 053-007
+  and `lease_withdrawal_required()` moved to `FOR KEY SHARE`), since the fences, the gating of FR-042-034 and the drain
+  checks are built on them; Tasks 042-40 to 042-42 close both lanes.
 
 - [ ] T042-1 Confirm that OD-2026-11-13-15, OD-2026-11-13-17 and OD-2026-11-27-432 are rows of `docs/owner-decisions.md`
   on `develop`, that the `Status` cell of every row a task here cites in `Owner-gate:` reads exactly `Decided` and that
@@ -1320,8 +1384,10 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Refs: FR-042-005, FR-042-007, NFR-042-003
 - [ ] T042-13 Write the migration of section 4 (tables, nullable columns of `workflow_triggers` and `event_deliveries`
   with their `CHECK`s, indexes including `inbox_events_pending_match_idx`, grants, classification entries, quota
-  triggers, the quota resources `operator_held_bytes`, `operator_chains`, `operator_keys` and `operator_marks` with their
-  defaults in `quota_limits` and `quota_ceilings`, `trigger-operators-v1` in the registry's closed capability checks,
+  triggers, the counter `operator_held_usage` and its owner-owned trigger function `operator_held_usage_delta()` (no
+  write grant to `sagat_app`), the quota resources `operator_held_bytes`, `operator_chains`, `operator_keys` and
+  `operator_marks` with their defaults in `quota_limits` and `quota_ceilings`, `trigger-operators-v1` in the registry's
+  closed capability checks,
   the fence function `trigger_operators_required()`, a down that refuses data loss) with the migration checklist;
   register the apply's and the seal's rows in ADR-0050 decision 7 (slot 3: chain, usage, key, windows; 8b the held-bytes
   lock) with the slot test of the apply and the seal in the harness `tests/support/lock_order.rs`.
@@ -1351,13 +1417,21 @@ re-read is the third revision of this design. The cut order of section 10 applie
   arriving one after another, each idle past `keyIdleMs`, are all served.
   Refs: FR-042-015, FR-042-021, FR-042-022
   Owner-gate: OD-2026-11-27-426, OD-2026-11-27-433
-- [ ] T042-17 Expose each delivery's `outcome`, `errorCode`, `reason` and `windowId` on the event resource.
-  Refs: FR-042-025, FR-042-031
+- [ ] T042-17 Expose each delivery's `outcome`, `errorCode` and `reason` on the event resource, the operator reasons
+  shown as `operator` unless the request asks `reveal=pii`, which returns the stored reason and `windowId` through the
+  event read's projector and writes `payload.pii_revealed` or `payload.reveal_denied`; tests: a caller without the
+  reveal grant sees `operator` and no `windowId` and its `reveal=pii` request is denied and audited; the
+  publish-and-confirm case (a Developer without the grant publishes an event with a guessed key or `distinct` value and
+  reads its delivery) learns nothing that tells a match from a miss.
+  Refs: FR-042-024, FR-042-025, FR-042-031
 - [ ] T042-18 Enforce `maxKeys` at key creation through the usage row with the final `KEY_LIMIT` outcome, the
   per-minute count row and its collapsed audit; the delivery retry of FR-042-033 as an application method (only a
-  `FAILED` delivery of the named trigger; a targeted apply in one transaction; `409 DELIVERY_NOT_RETRYABLE`; the uniform
-  `404` with the probe audit when no inbox row is in scope), with tests that a retry touches no other trigger and no
-  wait, never returns the event to `PENDING`, and is refused for a `HELD` delivery; its REST action is lane A's (Task
+  `FAILED` delivery of the named trigger; a targeted apply in one transaction under the inbox row `FOR NO KEY UPDATE`;
+  `409 DELIVERY_NOT_RETRYABLE`; the uniform `404` with the probe audit when no inbox row is in scope or no delivery row
+  of that trigger exists; `OPERATOR_UNSUPPORTED` when the process does not use the capability; the caller only in the
+  audit record), with tests that a retry touches no other trigger and no wait, never returns the event to `PENDING`, is
+  refused for a `HELD` delivery, answers `404` for a trigger without a delivery row, and does not deadlock with a
+  re-dispatch of the same event that holds the key row (a barrier between the two); its REST action is lane A's (Task
   042-34).
   Refs: FR-042-021, FR-042-023, FR-042-033
   Owner-gate: OD-2026-11-27-432, OD-2026-11-27-429
@@ -1429,8 +1503,9 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Refs: FR-042-028
 - [ ] T042-38 Studio: the key, stage and chain-limit editor on a trigger with the publication rules.
   Refs: FR-042-027
-- [ ] T042-39 Studio: the window list, the lag, the event page's delivery outcomes, flush and discard; keys and windows
-  named by their ids, never a key text (O042-008, refined).
+- [ ] T042-39 Studio: the window list, the lag, the event page's delivery outcomes, flush and discard; windows named by
+  their ids, never a key text; `keyId`, members and the stored reasons shown only after an explicit reveal (O042-008,
+  refined; FR-042-024).
   Refs: FR-042-027, FR-042-024
   Owner-gate: OD-2026-11-27-432, OD-2026-11-27-424
 - [ ] T042-40 Write the events runbook section (the horizon is cluster-wide and how to find its holder; flush, discard
@@ -1480,10 +1555,12 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Refs: FR-042-012
 - [ ] T042-52 Back off the re-entry of a collection that waits for storage quota and count re-entries by reason.
   Refs: FR-042-009
-- [ ] T042-53 Keys and `distinct` values as digests: the canonical form of FR-042-011 hashed with SHA-256 in the
-  process, the absent key as the digest of `null`, no key text in any column; a test that no digest and no key text
-  reaches an API response, a log, a span, a metric label, an audit record or an error, and that the key-text column the
-  third revision planned does not exist.
+- [ ] T042-53 Keys and `distinct` values as digests: SHA-256 over the length-prefixed tenant, chain and canonical bytes
+  (FR-042-011, section 4) computed in the process, the absent key as the canonical `null`, no key text in any column;
+  tests that one value gives different digests in two tenants and in two chains, that no digest and no key text reaches
+  an API response, a log, a span, a metric label, an audit record or an error, that `keyId` and window members are
+  returned only under `reveal=pii` with its audit, and that the key-text column the third revision planned does not
+  exist; `storage-classification.json` entries with the classes of section 4.
   Refs: FR-042-024, NFR-042-002
   Owner-gate: OD-2026-11-27-424
 - [ ] T042-54 Add the capabilities to the instance registry (`Capability::ALL`; `collection-operators-v1` in the small
@@ -1491,8 +1568,10 @@ re-read is the third revision of this design. The cut order of section 10 applie
   (section 10), the fences of form (a) on publication and `switch` with their descriptors and drain checks, and the
   dispatcher's behaviour without the capability (FR-042-034); tests of both refusals, of an activation refused while a
   live process lacks the capability, of a removal refused while a chain or chained version exists, a held-lock test of a
-  publication racing the removal in both orders, and a test that a dispatcher without the capability starts no run for
-  a chained trigger.
+  publication racing the removal in both orders, a test that a dispatcher without the capability starts no run for a
+  chained trigger while its pass still seals, starts and purges, and a deactivation test with a `SEALED` window of a
+  removed trigger and a `START_EXPIRED` window whose phase 2 is refused until the pass has refused the first, purged the
+  second seven days later (a fixed clock) and removed every key and mark row.
   Refs: FR-042-003, FR-042-034
   Owner-gate: OD-2026-11-26-136
 - [ ] T042-55 Seal past the transaction horizon: `operator_windows.seal_horizon`, recorded by a statement whose deadline
@@ -1511,9 +1590,10 @@ re-read is the third revision of this design. The cut order of section 10 applie
   Owner-gate: OD-2026-11-27-431
 - [ ] T042-57 The manual acts as application and store methods: list chains and windows, flush (`OPEN` only, bypassing
   both holds), discard (`OPEN` or `REFUSED`), window retry (`REFUSED` with `START_EXPIRED` only, `start_expires_at`
-  reset), `requested_by` recorded and used as the run's starter, each with its `409` code and its audit action, and
-  tests of each state precondition and of a flush racing an apply in both orders; their REST actions are lane A's (Task
-  042-34).
+  reset), `requested_by` recorded for the start's audit line only (the run's starter is the engine), each with its
+  `409` code and its audit action with its caller, and tests of each state precondition, of a flush racing an apply in
+  both orders, and that a flushed window's run is started by the engine with "requested by" in its `RunStarted` audit
+  record; their REST actions are lane A's (Task 042-34).
   Refs: FR-042-018, FR-042-019, FR-042-023, FR-042-026
 - [ ] T042-58 Fitness checks in `scripts/check-architecture.py`, each with a negative fixture: the statement that writes
   `seal_horizon` uses `now()` and never `clock_timestamp()`; no transaction that locks an `operator_chains`,
@@ -1588,4 +1668,11 @@ comparable to the first delivery of feature 018, in two lanes.
   `D + maxHoldMs` over every pending event, with `maxHoldMs` above the claim lease; a window identified by a random id
   and started unfenced, its guarded write in the run's transaction; plain digests and no key text instead of a keyed
   hash and its definer function; a targeted delivery retry; the capabilities under design 053; normative run inputs and
-  delivery outcomes; the fan-out checked at the seal and partial when it must be; inline window inputs; ADR-0155.
+  delivery outcomes; the fan-out checked at the seal and partial when it must be; inline window inputs; ADR-0155. Its
+  security re-read (`docs/designs/042-stream-operators.reviews/2026-11-27/reread/security.md`, Decision 042-180) added:
+  `keyId`, window members, a delivery's `windowId` and the operator reasons returned only under `reveal=pii`; the pass's
+  sealing, starting and purge run whatever the switch, and the drain check waits for no held value, key or mark; the
+  held-bytes counter and its trigger function, and the commit-time refusal of the tenant content quota as a wait;
+  digests over the tenant, the chain and the value, with their stated residual (Gap 042-017); the delivery retry under
+  `FOR NO KEY UPDATE`, `404` for a missing delivery and refused without the capability; the engine as the starter of
+  every window's run, the caller kept in the audit; the order point on design 053.

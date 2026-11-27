@@ -53,9 +53,12 @@ The round-1 reviews of the third revision of design 042 (2026-11-27,
    of its transaction, never with `clock_timestamp()`. The backlog hold covers every `PENDING` inbox event of a source
    and type the chain matches, whatever its attempt count. The horizon wait and the backlog hold both end at
    `D + maxHoldMs`; `maxHoldMs` is 180 seconds by default and at least 90 (the claim lease of 60 seconds and a margin).
-6. **Digests.** A key and a `distinct` value are stored only as the SHA-256 of their canonical form, never returned by an
-   API, a log, a metric, a span, an audit record or an error; no key text is stored. No keyed hash, key table or
-   definer function computes them.
+6. **Digests.** A key and a `distinct` value are stored only as a SHA-256 digest over the length-prefixed tenant, chain
+   and canonical bytes of the value (as `start_key` builds its digest), never returned by an API, a log, a metric, a
+   span, an audit record or an error; no key text is stored. No keyed hash, key table or definer function computes
+   them. What links events by key (a window's key id and members, a delivery's window id, the reason `distinct`) is
+   returned only under `reveal=pii` and audited. A database or backup reader can still recover a low-entropy value by
+   trying values for as long as its row lives: a stated residual (design 042, Gap 042-017).
 
 **Recorded deviation of ADR-0050 decision 7.** The start writes its window row, a slot-3 row for the apply and the seal,
 after the run it creates (slot 6) and after 022's rows (slots 7 and 8). No cycle: a `SEALED` window is written only by
