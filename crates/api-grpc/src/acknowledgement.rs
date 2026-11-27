@@ -120,6 +120,15 @@ pub(crate) fn failure_status(failure: AcknowledgementFailure) -> Status {
     }
 }
 
+/// The status of a call that failed before it reached the service (its deadline passed while it waited for a place of its
+/// connection, or the lookups of its authentication did not reach the store), counted as the service counts its own:
+/// `worker_task_acknowledgement_failures_total{reason}`.
+pub(crate) fn handler_failure(failure: AcknowledgementFailure) -> Status {
+    metrics::counter!("worker_task_acknowledgement_failures_total", "reason" => failure.label())
+        .increment(1);
+    failure_status(failure)
+}
+
 fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }

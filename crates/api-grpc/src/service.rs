@@ -585,6 +585,39 @@ where
         Ok(authenticated)
     }
 
+    /// [`Self::authenticate`] for `AcknowledgeTasks` (feature 006, Task 006-049): once the token verified, the lookups run
+    /// under the call's deadline, and a store they do not reach, or a deadline they run past, answers `UNAVAILABLE` with
+    /// `ACKNOWLEDGEMENT_STORE_UNREACHABLE` (the safe direction: it decides no early give-up), counted `store`.
+    pub(crate) async fn authenticate_acknowledgement<T>(
+        &self,
+        request: &Request<T>,
+        deadline: CallDeadline,
+    ) -> Result<Authenticated, Status> {
+        let token = self.bearer(request)?;
+        let authenticated = sagat_api_http::authenticate_bearer_within(
+            &self.core,
+            token,
+            tokio::time::Instant::from_std(deadline.instant()),
+        )
+        .await
+        .map_err(|failure| match failure {
+            sagat_api_http::AuthenticationFailure::Refused(error) => api(&error),
+            sagat_api_http::AuthenticationFailure::LookupsUnavailable(_) => {
+                crate::acknowledgement::handler_failure(
+                    acknowledgement::AcknowledgementFailure::StoreUnreachable,
+                )
+            }
+        })?;
+        let _ = DENIAL.try_with(|note| {
+            *note
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                Some(authenticated.session.principal.clone());
+        });
+        Ok(authenticated)
+    }
+
     fn bearer<'a, T>(&self, request: &'a Request<T>) -> Result<&'a str, Status> {
         let mut values = request.metadata().get_all("authorization").iter();
         let (Some(value), None) = (values.next(), values.next()) else {
@@ -1148,7 +1181,15 @@ where
             );
         let trace = trace_of(&request);
         observe(&self.core, "AcknowledgeTasks", trace, async {
-            let auth = self.authenticate(&request).await?;
+            // a call that waited for a place of its connection past its deadline is not begun (Task 006-049)
+            if deadline.passed() {
+                return Err(crate::acknowledgement::handler_failure(
+                    acknowledgement::AcknowledgementFailure::Deadline,
+                ));
+            }
+            let auth = self
+                .authenticate_acknowledgement(&request, deadline)
+                .await?;
             let message = request.get_ref();
             if !message.worker_id.is_empty() {
                 worker_id(&message.worker_id)?;

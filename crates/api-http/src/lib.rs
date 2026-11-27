@@ -55,7 +55,8 @@ pub use concurrency::{TenantAtCapacity, TenantConcurrency, TenantPermit};
 pub use core::Core;
 pub use exec::{Exec, ExecState};
 pub use extract::{
-    Authenticated, Budgets, authenticate_bearer, authenticate_bearer_with, parse_bearer,
+    Authenticated, AuthenticationFailure, Budgets, authenticate_bearer, authenticate_bearer_with,
+    authenticate_bearer_within, parse_bearer,
 };
 pub use governance::{GovState, Governance};
 pub use limits::{

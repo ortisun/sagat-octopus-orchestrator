@@ -296,3 +296,46 @@ async fn an_identity_without_worker_execute_is_refused_and_audited() {
     let denials = denials_of(&p, "ada", 1).await;
     assert_eq!(denials.len(), 1, "{denials:?}");
 }
+
+/// Task 006-049 (`stream-completion.md`, "The server's acknowledgement", step 1): once the token verified, the
+/// authentication's lookups run under the call's deadline. With every connection of the pool held and `acquire_timeout` at
+/// 10 s, the call is answered `UNAVAILABLE` with `ACKNOWLEDGEMENT_STORE_UNREACHABLE` within 4.5 s, not at the pool's
+/// timeout; released, the same call is answered.
+#[tokio::test]
+async fn the_lookups_of_a_verified_token_find_the_pool_full_and_answer_store_unreachable_in_time() {
+    let mut options = Options {
+        hand_back_ceiling: 8,
+        pool_acquire_timeout: Duration::from_secs(10),
+        ..Options::default()
+    };
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.lease_withdrawal = Some(every_requirement_of_1_8());
+    let p = platform_with(options).await;
+    let (mut worker, lease) = leased(&p, "ada", 8).await;
+    // the pool the platform's store and authentication use (`db.pool` is the tests' own handle)
+    let pool = &p.api.api_pool;
+    let mut held = Vec::new();
+    for _ in 0..pool.options().get_max_connections() {
+        held.push(pool.acquire().await.expect("a connection of the pool"));
+    }
+    let started = std::time::Instant::now();
+    let refused = acknowledge(&mut worker, vec![acknowledgement(&lease)])
+        .await
+        .expect_err("no store reached");
+    let took = started.elapsed();
+    assert_eq!(refused.code(), Code::Unavailable, "{refused:?}");
+    assert_eq!(
+        machine_code(&refused),
+        "ACKNOWLEDGEMENT_STORE_UNREACHABLE",
+        "{refused:?}"
+    );
+    assert!(took < Duration::from_millis(4500), "{took:?}");
+    drop(held);
+    let answer = acknowledge(&mut worker, vec![acknowledgement(&lease)])
+        .await
+        .expect("answered once the pool has room");
+    assert_eq!(
+        answer.results[0].verdict,
+        AcknowledgementVerdict::Acknowledged as i32
+    );
+}

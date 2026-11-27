@@ -235,6 +235,9 @@ pub struct Options {
     pub limits: HttpLimits,
     /// Server-side cap per statement for the API's database pool.
     pub statement_timeout: Duration,
+    /// How long a caller of the API's database pool waits for a connection (5 s; the acknowledgement's tests of a full
+    /// pool set 10 s, the deployed default, so that only the call's own deadline can answer them in time).
+    pub pool_acquire_timeout: Duration,
     /// Connection-level limits of the HTTP server.
     pub server: ServerConfig,
     /// Connect the API as the least-privilege runtime role instead of the database owner.
@@ -320,6 +323,7 @@ impl Default for Options {
             limits: HttpLimits::default(),
             // Generous: the suites also run on loaded machines, and the tests about timeouts set their own.
             statement_timeout: Duration::from_secs(10),
+            pool_acquire_timeout: Duration::from_secs(5),
             server: ServerConfig::default(),
             // `SAGAT_TEST_AS_RUNTIME_ROLE=1` connects the API of every test as the runtime role.
             runtime_role: super::as_runtime_role(),
@@ -400,7 +404,7 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         };
         let mut pool_config = PoolConfig::new(api_url);
         pool_config.max_connections = 8;
-        pool_config.acquire_timeout = Duration::from_secs(5);
+        pool_config.acquire_timeout = options.pool_acquire_timeout;
         pool_config.statement_timeout = options.statement_timeout;
         connect(&pool_config).await.expect("api pool")
     };
