@@ -162,6 +162,41 @@ Without the generic host: `new WorkerHost(options)`, then `RegisterActivity` / `
 - For a collection body, `ActivityExecutionContext.Item` is the captured JSON item and `Index` is its stable input index. Both are
   `null` for root and non-collection work; the handler input remains the run input.
 
+### Step logs
+
+`context.Logger` writes to the host's logging as before and, when the server accepted worker protocol 1.7 and its policy
+says capture is on, keeps each call at or above the capture level as a line of the run's log
+(`GET /runs/{runId}/logs`; [sdks/SPEC.md](../SPEC.md) section 6.9). Nothing new on `ILogger`: the message is the formatter's
+result, the structured values of the call and of the scopes begun on `context.Logger` are the line's fields, and the
+`Exception` argument's `ToString()` is its exception text:
+
+```csharp
+host.RegisterActivity<Charge, Receipt>("payments.charge", async (input, context, ct) =>
+{
+    using var order = context.Logger.BeginScope(new Dictionary<string, object?> { ["order"] = input.OrderId });
+    context.Logger.LogInformation("charging {Amount} {Currency}", input.Amount, "EUR");
+    try
+    {
+        return await provider.ChargeAsync(input, ct);
+    }
+    catch (ProviderException error)
+    {
+        context.Logger.LogError(error, "the provider refused attempt {Attempt}", context.Attempt);
+        throw;
+    }
+});
+```
+
+`Trace`, `Debug`, `Information`, `Warning` and `Error` are the five levels (`Critical` is captured as `Error`, `None` is not
+captured); `options.Worker.StepLogs.Capture` turns capture off and `options.Worker.StepLogs.Level` changes its level
+(`Information` by default; `None` or a value that is not a level is `ValidationFailed` when the host is created). The host's
+own logger level changes nothing of what is captured, and capture changes nothing of what the host logs. Before a line
+leaves the process, every secret value the process has resolved is replaced by `[REDACTED]` (in the message, the field keys
+and values, the numbers and the exception text); a message or an exception is cut at 8,192 bytes and the fields at 32 keys
+and 2,048 bytes. A logger call never waits for the network and never throws: lines travel in batches while the activity
+runs, and the last ones on its report, which waits at most 2 seconds for a batch still on its way. Lines the SDK had to
+drop are counted by the counter `sagat.worker.steplogs.dropped`, tagged with `sagat.steplogs.reason`.
+
 ## Build a workflow
 
 ```csharp
@@ -292,8 +327,8 @@ against a real platform (the conformance suite runs over loopback `http`).
   still reaches the handler), and with an empty or invalid `traceparent` the SDK sets none. Worker attempts use the fixed
   span name `sagat.worker.task`; tags carry identifiers only.
 - **Metrics**: a `Meter` named `SagatOctopusOrchestrator.Sdk`: `sagat.worker.tasks.taken`, `.completed`, `.failed`, `.stale`,
-  `.dropped`, `sagat.worker.heartbeats`, `.polls`, `.reconnects` (counters) and `sagat.worker.activity.duration` (histogram, s),
-  tagged with `sagat.worker`.
+  `.dropped`, `sagat.worker.heartbeats`, `.polls`, `.reconnects`, `sagat.worker.steplogs.dropped` (counters; the last counts step-log
+  records by `sagat.steplogs.reason`, once per attempt) and `sagat.worker.activity.duration` (histogram, s), tagged with `sagat.worker`.
 
 ## Serialization
 
@@ -310,8 +345,9 @@ duration that is not a whole number of milliseconds (`TimeSpan.FromTicks(15_000)
 SemVer. Before 1.0 a minor version may change the .NET API; the **wire** contract does not move with it: REST is additive within
 `/v1` and the worker protocol is additive within `1.x` (the host negotiates; a newer SDK against an older server runs at the
 server's version, an older SDK ignores fields it does not know). After 1.0 a breaking change of the API is a major version.
-`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.5`) the newest worker protocol minor the SDK speaks.
-When the server negotiates `1.4` or older, lease-bound requests omit scoped identity.
+`SdkInfo.Version` is the version, `SdkInfo.ProtocolVersion` (`1.7`) the newest worker protocol minor the SDK offers: step logs
+(design 041) at 1.7, scoped identity at 1.5. When the server negotiates `1.4` or older, lease-bound requests omit scoped identity;
+below `1.7` nothing is captured.
 
 ## Runtime version matrix
 

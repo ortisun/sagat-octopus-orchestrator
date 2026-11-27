@@ -79,7 +79,7 @@ public sealed class WorkerHostTests : IAsyncLifetime
         Assert.Equal(["a.undo", "b.second", "c.lookup"], request.Capabilities.Activities);
         Assert.Empty(request.Capabilities.Pools);
         Assert.Equal(7, request.Capabilities.MaxInflight);
-        Assert.Equal("1.5", request.Capabilities.ProtocolVersion);
+        Assert.Equal("1.7", request.Capabilities.ProtocolVersion);
         Assert.Equal("Bearer tok", register.Headers.GetValue("authorization"));
         Assert.Equal("1.2", host.ProtocolVersion);
         Assert.True(host.IsRunning);

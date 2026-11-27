@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Grpc.Core.Interceptors;
+using Microsoft.Extensions.Logging;
 
 namespace SagatOctopusOrchestrator.Sdk;
 
@@ -189,6 +190,13 @@ public sealed class WorkerOptions
     [JsonIgnore]
     public IList<Interceptor> Interceptors { get; } = [];
 
+    /// <summary>
+    /// Step-log capture (worker protocol 1.7, SPEC section 6.9): what an activity writes to <see cref="Workers.ActivityExecutionContext.Logger"/> at or
+    /// above <see cref="StepLogOptions.Level"/> is kept with its run, when the server's policy says capture is on. On, at
+    /// <see cref="LogLevel.Information"/>, by default.
+    /// </summary>
+    public StepLogOptions StepLogs { get; } = new();
+
     internal void CopyFrom(WorkerOptions other)
     {
         Name = other.Name;
@@ -200,6 +208,8 @@ public sealed class WorkerOptions
         ProtocolVersion = other.ProtocolVersion;
         HeartbeatInterval = other.HeartbeatInterval;
         ReplaceAll(Interceptors, other.Interceptors);
+        StepLogs.Capture = other.StepLogs.Capture;
+        StepLogs.Level = other.StepLogs.Level;
     }
 
     private static void ReplaceAll<T>(IList<T> target, IList<T> source)
@@ -210,6 +220,20 @@ public sealed class WorkerOptions
             target.Add(item);
         }
     }
+}
+
+/// <summary>Step-log capture of the activities of a worker host (<see cref="WorkerOptions.StepLogs"/>, SPEC section 6.9).</summary>
+public sealed class StepLogOptions
+{
+    /// <summary>Whether the attempts of the host capture what their logger writes. True by default; the server's policy can still turn it off.</summary>
+    public bool Capture { get; set; } = true;
+
+    /// <summary>
+    /// The lowest level captured: <see cref="LogLevel.Trace"/> to <see cref="LogLevel.Critical"/>, <see cref="LogLevel.Information"/> by default.
+    /// A call below it takes no sequence; the host's own logging is not changed by it. <see cref="LogLevel.None"/> is refused (set
+    /// <see cref="Capture"/> to false to capture nothing).
+    /// </summary>
+    public LogLevel Level { get; set; } = LogLevel.Information;
 }
 
 /// <summary>The task receive transport of a worker host.</summary>

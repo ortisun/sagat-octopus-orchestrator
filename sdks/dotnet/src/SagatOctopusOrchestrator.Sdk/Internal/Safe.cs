@@ -24,10 +24,12 @@ internal static class Safe
 #pragma warning restore CA1031
     }
 
-    internal static void Add(Counter<long> counter, in TagList tags)
+    internal static void Add(Counter<long> counter, in TagList tags) => Add(counter, 1, tags);
+
+    internal static void Add(Counter<long> counter, long value, in TagList tags)
     {
         var copy = tags;
-        Run(() => counter.Add(1, copy));
+        Run(() => counter.Add(value, copy));
     }
 
     internal static void Record(Histogram<double> histogram, double value, in TagList tags)

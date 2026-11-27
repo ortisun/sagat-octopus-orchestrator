@@ -82,12 +82,15 @@ public sealed class JsonFidelityTests
                 continue;
             }
 
-            // ... the canonical text is the same number, spelled as ECMAScript spells it: the token itself when it is already in that form ...
+            // ... the canonical text is the same number, spelled as ECMAScript spells it: the token itself when it is already in that form,
+            // and without its fraction when it is a whole number written with a zero fraction (the step-log scenarios write 1e15 as
+            // 1000000000000000.0, so that a runner logs it as a double: sdks/SPEC.md section 6.9) ...
             var canonical = Canonical(parsed);
             Assert.Equal(double.Parse(token, CultureInfo.InvariantCulture), double.Parse(canonical, CultureInfo.InvariantCulture));
+            var spelled = token.EndsWith(".0", StringComparison.Ordinal) ? token[..^2] : token;
             if (!token.Contains('e', StringComparison.Ordinal))
             {
-                Assert.Equal(token, canonical);
+                Assert.Equal(spelled, canonical);
             }
 
             // ... and so is the same value held in a .NET number.
@@ -96,7 +99,7 @@ public sealed class JsonFidelityTests
                 var typed = token.Contains('.', StringComparison.Ordinal)
                     ? JsonSerializer.Serialize(double.Parse(token, CultureInfo.InvariantCulture))
                     : JsonSerializer.Serialize(long.Parse(token, CultureInfo.InvariantCulture));
-                Assert.Equal(token, typed);
+                Assert.Equal(spelled, typed);
             }
         }
 
