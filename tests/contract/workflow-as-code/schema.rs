@@ -354,10 +354,11 @@ fn a_code_version_bounds_its_declared_state_and_a_graph_version_cannot() {
             "a code version with state.maxBytes {bytes}"
         );
     }
+    let closed = json!({"type": "object", "properties": {}, "additionalProperties": false});
     let graph = with(
         graph_document(),
         "/state",
-        json!({"schema": {"type": "object"}, "initial": "{}", "maxBytes": 4096}),
+        json!({"schema": closed.clone(), "initial": "{}", "maxBytes": 4096}),
     );
     assert!(
         !document().is_valid(&graph),
@@ -366,7 +367,10 @@ fn a_code_version_bounds_its_declared_state_and_a_graph_version_cannot() {
     let graph = with(
         graph_document(),
         "/state",
-        json!({"schema": {"type": "object"}, "initial": "{}"}),
+        json!({"schema": closed, "initial": "{}"}),
     );
-    assert!(document().is_valid(&graph), "a graph version keeps its state");
+    assert!(
+        document().is_valid(&graph),
+        "a graph version keeps its state"
+    );
 }

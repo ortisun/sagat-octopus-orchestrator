@@ -19,7 +19,7 @@ sagat doctor                     # must report a worker protocol maximum of 1.N+
 #   worker-deployments-v1 dispatch-priority-v1 heartbeat-checkpoints-v1 async-completion-v1 push-dispatch-v1 warm-scripts-v1
 ```
 
-`1.N+2` is 1.12 at the time of writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
+`1.N+2` is 1.13 at the time of writing (1.12 before design 044 took 1.10, Decision 044-255) (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
 
 Example workers live in `examples/worker-deployments/` *(new)*: a TypeScript worker for `payments.charge` and
 `payments.refund` whose build id comes from `SAGAT_BUILD_ID`, a pinned `settlement` workflow, an auto-upgrade

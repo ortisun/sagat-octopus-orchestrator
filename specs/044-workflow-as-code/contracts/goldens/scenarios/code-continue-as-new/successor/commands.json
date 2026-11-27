@@ -23,7 +23,17 @@
   "declarations": {
     "state": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "charged": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 64
+          }
+        },
+        "additionalProperties": false
       },
       "initial": "{}"
     }

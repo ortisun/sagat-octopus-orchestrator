@@ -323,6 +323,17 @@ class Scope(unittest.TestCase):
         self.commit()
         self.assertEqual(self.chosen(), set())
 
+    def test_a_directory_joined_onto_a_contracts_directory_is_a_read_of_every_file_beneath_it(self):
+        # The same corpus, reached by joining its directory name onto the contracts directory.
+        self.readers()
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{}\n")
+        self.write("tests/contract/a/goldens.rs",
+                   f'fn corpus() {{ walk(root().join("{self.CONTRACTS}").join("goldens")); }}\n')
+        self.base = self.commit("a reader that joins a corpus")
+        self.write(f"{self.CONTRACTS}/goldens/scenarios/s/history.jsonl", "{\"changed\": true}\n")
+        self.commit()
+        self.assertEqual(self.chosen(), {"contract_a"})
+
     def test_a_file_named_under_another_contracts_directory_is_not_a_read_of_this_one(self):
         self.readers()
         self.write("tests/contract/a/errors.rs", 'const TABLE: &str = "specs/014-other/contracts/README.md";\n')
@@ -603,6 +614,17 @@ class Scope(unittest.TestCase):
         self.commit()
         decision = self.decide()
         self.assertEqual((decision["frontend"], decision["scripts"]), ("true", "true"))
+
+    def test_a_contract_an_sdk_test_reads_selects_that_sdk(self):
+        # The TypeScript fake server serves the golden corpus of design 044 (Decision 044-262); every SDK compares its
+        # packaged worker.proto with the canonical one, so a contract-only change still runs those SDK tests.
+        self.write("specs/044-workflow-as-code/contracts/goldens/scenarios/s/commands.json", "{}\n")
+        self.commit()
+        self.assertEqual(self.decide()["sdks"], "typescript")
+        self.base = self.commit("nothing")
+        self.write("specs/001-platform-foundation/contracts/worker.proto", "syntax = \"proto3\"; // changed\n")
+        self.commit()
+        self.assertEqual(set(self.decide()["sdks"].split()), {"typescript", "python", "go", "dotnet", "java", "rust"})
 
     def test_a_change_elsewhere_flags_neither(self):
         self.write("crates/leaf/src/lib.rs", "// changed\n")

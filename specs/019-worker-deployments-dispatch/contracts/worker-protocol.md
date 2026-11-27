@@ -4,7 +4,8 @@ The three wire slices take three consecutive minors (D1069): **`1.N`** deploymen
 state and `DispatchFacts`; **`1.N+1`** checkpoints (`Checkpoint`, heartbeat and failure details, `DetailsStatus`);
 **`1.N+2`** `DetachStep` and `async_completion_allowed`. Corrected 2026-11-24 (D019-002): `1.N` is the next free minor of
 the register of `sdks/SPEC.md` §9 when this contract merges, which is 1.10 at the time of writing (1.7 is design 041,
-1.8 delivery acknowledgement, 1.9 design 045), so the three minors are 1.10, 1.11 and 1.12. Each minor is a superset of
+1.8 delivery acknowledgement, 1.9 design 045), so the three minors are 1.10, 1.11 and 1.12; since 2026-11-27 they are
+1.11, 1.12 and 1.13, because design 044 took 1.10 (Decision 044-255 of `specs/044-workflow-as-code/research.md`). Each minor is a superset of
 every earlier minor, and the server accepts it only when its store declares that slice's path (the `protocol_ceiling`
 pattern of `crates/application/src/worker.rs`), the slice's evidence has passed and its fleet requirement is recorded
 (`worker-deployments-v1` and `dispatch-priority-v1` for `1.N`, `heartbeat-checkpoints-v1` for `1.N+1`,

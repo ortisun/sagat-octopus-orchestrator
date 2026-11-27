@@ -6586,10 +6586,12 @@ func (x *HistoryMarkerRecorded) GetValue() *HistoryPayload {
 
 // A value a command carries: inline canonical JSON (RFC 8785) or a blob written under this run's workflow
 // lease (purpose COMMAND_VALUE). Whatever the carrier, the chain hashes its descriptor
-// {"sha256", "size"} of the value's RFC 8785 bytes (Technical Plan 6.2). A re-emitted deferral may name any
-// value its deferral holds by `descriptor_sha256` and `descriptor_size` alone, whether the deferral carried it
-// inline or as a blob (Decision 044-259): the deferral record holds every value of the deferred command until the
-// command is accepted or the run ends, and the server resolves the descriptor to it after the body digest matched.
+// {"sha256", "size"} of the value's RFC 8785 bytes (Technical Plan 6.2). A re-emitted `complete` may name its
+// output by `descriptor_sha256` and `descriptor_size` alone, whether its deferral carried it inline or as a blob: a
+// deferred `complete` holds its output until it is accepted or the run ends, and the held output is the one accepted,
+// also when the re-emission carries it again (Decision 044-259). A continue-as-new's input and state are always inline,
+// re-emission included: a descriptor alone there is COMMAND_INVALID. Descriptor fields sent beside a carrier must be
+// the carrier's (D of the inline bytes, or the blob's recorded digest and size); a disagreement is COMMAND_INVALID.
 type CommandValue struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Carrier:
@@ -7752,7 +7754,8 @@ type FailWorkflowTaskRequest struct {
 	Traceparent    string                   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	// NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
 	// so a change of scope alone is reported with what differs (Decision 044-244). Checked against ^s-[1-9][0-9]{0,9}$
-	// and dropped otherwise (the report keeps its cause); the expected scope is the server's own record (Decision 044-250).
+	// and dropped otherwise, and dropped as well when actual_kind is neither an activity nor a script (the report keeps
+	// its cause); the expected scope is the server's own record (Decision 044-250).
 	ActualSagaScope string `protobuf:"bytes,14,opt,name=actual_saga_scope,json=actualSagaScope,proto3" json:"actual_saga_scope,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

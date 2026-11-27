@@ -66,28 +66,12 @@
           },
           "bodySha256": "78a8d29de16b474109af2b363882fc022b5b9c05c93c0702d250e6d8e6c443da",
           "journalKind": "step.released"
-        },
-        {
-          "commandNumber": 3,
-          "kind": "saga_close",
-          "target": "s-1",
-          "node": "s-1",
-          "typed": {
-            "sagaClose": {
-              "target": "s-1"
-            }
-          },
-          "body": {
-            "scope": "s-1"
-          },
-          "bodySha256": "dea4836a5ac0899704753041f65a28ebdf39daefc684fe8e7f8fb8e306c2bf6d",
-          "journalKind": "saga.completed"
         }
       ],
       "outcome": "WORKFLOW_TASK_ACCEPTED",
       "completedSeq": 3,
-      "chainAfterHex": "a587d1d0e52ab98c4f13d362da8dea16488418dc80af64a47648151c10e0c096",
-      "commandCountAfter": 3
+      "chainAfterHex": "64c630cf53ad74d347fff1ff358b657c431373b12b960df84e127ad92f8520f9",
+      "commandCountAfter": 2
     },
     {
       "k": 2,
@@ -98,8 +82,8 @@
       },
       "failedAttempts": [
         {
-          "startedSeq": 9,
-          "nowUs": 1767225600001233,
+          "startedSeq": 8,
+          "nowUs": 1767225600001096,
           "worker": "B",
           "cause": "CAUSE_NONDETERMINISM",
           "report": {
@@ -123,17 +107,17 @@
   ],
   "invisibleJournal": [
     {
-      "seq": 7,
+      "seq": 6,
       "journalKind": "step.leased",
       "node": "c-2"
     },
     {
-      "seq": 10,
+      "seq": 9,
       "journalKind": "workflow_task.failed",
       "cause": "CAUSE_NONDETERMINISM"
     },
     {
-      "seq": 11,
+      "seq": 10,
       "journalKind": "step.needs_review",
       "node": "~workflow",
       "code": "NONDETERMINISM"
@@ -146,7 +130,7 @@
       "target": "hotel.book",
       "commandNumber": 2,
       "issuedSeq": 2,
-      "outcomeSeq": 8
+      "outcomeSeq": 7
     }
   ]
 }

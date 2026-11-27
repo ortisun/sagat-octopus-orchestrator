@@ -1125,10 +1125,72 @@ fn one_end_per_step_with_its_origin(
 }
 
 /// One run of a scenario: its history, its activations and windows, and its chain recomputed from its commands.
+/// Decision 044-257: a lease's `stateMaxBytes` is the version's `state.maxBytes`, 65,536 when the version declares
+/// state without it, and absent (0) when it declares none; every set-state and carried state fits it.
+fn the_lease_carries_the_versions_state_bound(commands: &Value, at: &str) {
+    let state = &commands["declarations"]["state"];
+    if !state.is_null() {
+        let errors: Vec<String> = ir_state()
+            .iter_errors(state)
+            .map(|error| format!("{} at {}", error, error.instance_path()))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "{at}: declarations.state is the IR's state: {errors:?}"
+        );
+    }
+    let expected = if state.is_null() {
+        0
+    } else {
+        state["maxBytes"].as_u64().unwrap_or(65_536)
+    };
+    let carried = commands["lease"]["stateMaxBytes"].as_u64().unwrap_or(0);
+    assert_eq!(
+        carried, expected,
+        "{at}: the lease's stateMaxBytes is the version's state.maxBytes"
+    );
+    for activation in array(&commands["activations"]) {
+        for command in commands_of(activation) {
+            let value = match text(command, "kind") {
+                "set_state" => &command["typed"]["setState"],
+                "continue_as_new" => &command["typed"]["continueAsNew"]["state"],
+                _ => continue,
+            };
+            if value.is_null() {
+                continue;
+            }
+            let size = canonical(value).len() as u64;
+            assert!(
+                size <= expected,
+                "{at}: a declared or carried state of {size} bytes is over the bound {expected}"
+            );
+        }
+    }
+}
+
+/// The IR's `$defs/state`, with every definition in reach.
+fn ir_state() -> &'static jsonschema::Validator {
+    static VALIDATOR: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
+    VALIDATOR.get_or_init(|| {
+        let schema = read_json("specs/001-platform-foundation/contracts/workflow.schema.json");
+        let wrapper = json!({
+            "$schema": schema["$schema"],
+            "$ref": "#/$defs/state",
+            "$defs": schema["$defs"],
+        });
+        jsonschema::validator_for(&wrapper).expect("the state definition compiles")
+    })
+}
+
+fn commands_of(activation: &Value) -> &[Value] {
+    activation["commands"].as_array().map_or(&[], Vec::as_slice)
+}
+
 fn check_run(dir: &Path, enums: &Enums, profiles: &Profiles, cancelled: &mut BTreeSet<String>) {
     let at = dir.display().to_string();
     let commands = read(&dir.join("commands.json"));
     i_json_integers(&commands, &at);
+    the_lease_carries_the_versions_state_bound(&commands, &at);
     let chain_file = read(&dir.join("chain.json"));
     let history = std::fs::read_to_string(dir.join("history.jsonl"))
         .unwrap_or_else(|error| panic!("{at}: history.jsonl: {error}"));

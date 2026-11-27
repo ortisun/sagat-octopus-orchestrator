@@ -16,17 +16,30 @@
   "declarations": {
     "state": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "items": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
       },
       "initial": "{}",
       "maxBytes": 4096,
       "queries": {
         "status": {
           "argsSchema": {
-            "type": "object"
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
           },
           "resultSchema": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 64
           },
           "expression": "state.status",
           "disclosure": "declared-business-result-v1"

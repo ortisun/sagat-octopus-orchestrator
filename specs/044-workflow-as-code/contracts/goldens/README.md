@@ -94,9 +94,10 @@ among them) can differ on a tie and must not be used.
   was applied), and the engine's `RUN_ENDED` and `RUN_CONTINUED` (Decision 044-251).
 
 A deferred command is chained when it is accepted, with the number it takes then; until then its deferral record holds
-`hex(SHA(C(B)))`. A re-emission may name each of its values by its descriptor alone, whatever carrier the deferral used:
-the server resolves the descriptor to the value its deferral holds (Decision 044-259). The goldens show the carrier of
-the first emission; the fake server of `sdks/typescript/test/` also accepts the descriptor alone in a re-emission.
+`hex(SHA(C(B)))`. A re-emitted `complete` may name its output by its descriptor alone, whatever carrier its deferral
+used, or carry it again with the same descriptor; a re-emitted continue-as-new carries its input and state inline
+(Decision 044-259). The goldens show the carrier of the first emission; the fake server of `sdks/typescript/test/`
+accepts the other forms the rule allows.
 
 ## The lease of a run
 

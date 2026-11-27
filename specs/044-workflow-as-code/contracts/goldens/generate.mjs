@@ -496,6 +496,13 @@ const acknowledgeCancellation = () => ({
 // I-JSON (RFC 7493), which RFC 8785 assumes: a command refuses an integer outside +-(2^53 - 1) anywhere (COMMAND_INVALID).
 // Every double of magnitude 2^53 or more is an integer, so no command or scenario value may reach it.
 const SAFE = 2 ** 53 - 1;
+// A closed object schema of the IR (`$defs/resultSchema`): every declared schema of the corpus is one.
+const closed = (properties, required) => ({
+  type: 'object',
+  properties,
+  additionalProperties: false,
+  ...(required ? { required } : {}),
+});
 // A code version's `state.maxBytes` when it declares state without one (Decision 044-257).
 const STATE_MAX_BYTES_DEFAULT = 65536;
 function checkIntegers(value, where) {
@@ -866,6 +873,17 @@ class Run {
     if (this.carriedState !== undefined && C(this.carriedState).length > stateMaxBytes) {
       throw new Error(`${this.scenario}/${this.label}: the carried state is over the version's state.maxBytes`);
     }
+    for (const activation of this.activations) {
+      for (const command of activation.commands ?? []) {
+        if (command.kind === 'set_state' && C(command.typed.setState).length > stateMaxBytes) {
+          throw new Error(`${this.scenario}/${this.label}: a set-state over the version's state.maxBytes (${stateMaxBytes})`);
+        }
+        const carried = command.kind === 'continue_as_new' ? command.typed.continueAsNew.state : undefined;
+        if (carried !== undefined && carried !== null && C(carried).length > stateMaxBytes) {
+          throw new Error(`${this.scenario}/${this.label}: a carried state over the version's state.maxBytes (${stateMaxBytes})`);
+        }
+      }
+    }
     const lease = { ...(this.lease ?? {}), ...(stateMaxBytes ? { stateMaxBytes } : {}) };
     if (Object.keys(lease).length) commands.lease = lease;
     if (this.declarations) commands.declarations = this.declarations;
@@ -1167,11 +1185,15 @@ workflow report(input):
 scenario('code-updates', (name) => {
   const r = new Run(name, 'main', { workflowType: 'credit-line', input: { accountId: 'acc-3', limit: 100 } });
   r.declarations = {
-    updates: {
-      raiseLimit: {
-        argsSchema: { type: 'object', properties: { amount: { type: 'integer' } }, required: ['amount'] },
-        disclosure: 'declared-business-result-v1',
-        resultSchema: { type: 'object', properties: { limit: { type: 'integer' } }, required: ['limit'] },
+    state: {
+      schema: closed({}),
+      initial: '{}',
+      updates: {
+        raiseLimit: {
+          argsSchema: closed({ amount: { type: 'integer' } }, ['amount']),
+          disclosure: 'declared-business-result-v1',
+          resultSchema: closed({ limit: { type: 'integer' } }, ['limit']),
+        },
       },
     },
   };
@@ -1259,11 +1281,15 @@ workflow creditLine(input):
 scenario('code-update-with-start', (name) => {
   const r = new Run(name, 'main', { workflowType: 'basket', input: { basketId: 'b-12' } });
   r.declarations = {
-    updates: {
-      addItem: {
-        argsSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] },
-        disclosure: 'declared-business-result-v1',
-        resultSchema: { type: 'object', properties: { items: { type: 'integer' } }, required: ['items'] },
+    state: {
+      schema: closed({}),
+      initial: '{}',
+      updates: {
+        addItem: {
+          argsSchema: closed({ sku: { type: 'string', maxLength: 64 } }, ['sku']),
+          disclosure: 'declared-business-result-v1',
+          resultSchema: closed({ items: { type: 'integer' } }, ['items']),
+        },
       },
     },
   };
@@ -1309,13 +1335,13 @@ scenario('code-declared-state', (name) => {
   const r = new Run(name, 'main', { workflowType: 'fulfilment', input: { orderId: 'ord-77' } });
   r.declarations = {
     state: {
-      schema: { type: 'object' },
+      schema: closed({ status: { type: 'string', maxLength: 64 }, items: { type: 'integer' } }),
       initial: '{}',
       maxBytes: 4096,
       queries: {
         status: {
-          argsSchema: { type: 'object' },
-          resultSchema: { type: 'string' },
+          argsSchema: closed({}),
+          resultSchema: { type: 'string', maxLength: 64 },
           expression: 'state.status',
           disclosure: 'declared-business-result-v1',
         },
@@ -1478,7 +1504,9 @@ workflow labelPrint(input):                                 // code version of l
 
 scenario('code-continue-as-new', (name) => {
   const r = new Run(name, 'main', { workflowType: 'subscription', input: { cycle: 1, amountCents: 990 } });
-  const subscriptionState = { state: { schema: { type: 'object' }, initial: '{}' } };
+  const subscriptionState = {
+    state: { schema: closed({ charged: { type: 'array', items: { type: 'integer' }, maxItems: 64 } }), initial: '{}' },
+  };
   r.declarations = subscriptionState;
   r.begin();
   r.cmd(activity('audit.write', { cycle: 1 }));
@@ -1698,7 +1726,7 @@ scenario('code-gated-activity', (name) => {
     input: { batchId: 'pay-3' },
     lease: { gatedEntries: ['payouts.send'] },
   });
-  r.declarations = { state: { schema: { type: 'object' }, initial: '{}', maxBytes: 131072 } };
+  r.declarations = { state: { schema: closed({}), initial: '{}', maxBytes: 131072 } };
   r.begin();
   r.cmd(activity('payouts.send', { payoutId: 'p-1', amountCents: 250000 }));
   r.cmd(activity('payouts.send', { payoutId: 'p-2', amountCents: 990000 }));
@@ -1962,7 +1990,6 @@ scenario('code-nondeterminism', (name) => {
   moved.begin({ worker: 'A' });
   const scope = moved.cmd(sagaOpen(options));
   moved.cmd(activity('hotel.book', { tripId: 'trip-12' }));
-  moved.cmd(sagaClose(scope));
   moved.finish();
   moved.completed('c-2', { hotelBookingId: 'h-12' });
   moved.begin({ worker: 'B' });
@@ -1994,8 +2021,8 @@ workflow notifyOrder(input):                                 // the second versi
   return {orderId: input.orderId}
 
 workflow bookTrip(input):                                    // run "scope-moved", version 1
-  saga({}, async (s) => {})                                  // s-1, empty: it closes after the next call
-  await activity("hotel.book", {tripId: input.tripId})       // outside any scope
+  await saga({}, async (s) =>                                // s-1
+      await activity("hotel.book", {tripId: input.tripId}))  // the run's activity, not the scope's: outside any scope
 
 workflow bookTrip(input):                                    // its second version, replayed by worker B
   await saga({}, async (s) =>                                // s-1
@@ -2160,7 +2187,7 @@ scenario('code-cache-eviction', (name) => {
 workflow paymentFlow(input):
   requestId = uuid()
   charge = await activity("payments.charge", {orderId: input.orderId, requestId: requestId})
-  fx = sideEffect(() => readRate("EURUSD"))                  // {pair, rate}, recorded once
+  fx = sideEffect(() => readRate("EURUSD"), {id: "fx-rate"})  // {pair, rate}, recorded once
   settled = await waitForEvent("payment.settled", input.orderId, {timeoutMs: 3600000, lookbackMs: 60000})
   await script("${normalize}",
                {settlementId: settled.settlementId, rate: fx.rate})

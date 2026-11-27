@@ -636,7 +636,7 @@ and cold start are measured in both modes on a stated machine.
 - **FR-019-037 — Protocol and SDKs:** Worker-protocol additions MUST be additive minors of protocol 1, one per wire
   slice (deployment identity and dispatch facts; checkpoints; detach), each a superset of the previous and
   advertised only after its slice's evidence passes, negotiated per ADR-0015; the server MUST keep serving every
-  older minor unchanged. The three minors are the next free ones when the contract merges (1.10, 1.11 and 1.12 at the
+  older minor unchanged. The three minors are the next free ones when the contract merges (1.11, 1.12 and 1.13 since design 044 took 1.10, Decision 044-255; 1.10, 1.11 and 1.12 at the
   time of writing, D019-002); minors are cumulative, so a host of any of them also carries the host procedures of 1.8
   (delivery acknowledgement) and 1.9 (design 045). The six SDKs MUST expose
   deployment identity, checkpoint recording and reading, detach, the asynchronous completion client, the dispatch
@@ -777,7 +777,7 @@ All criteria are future evidence; none is met by this document.
 
 - Worker protocol minors: the three wire slices take three consecutive minors, written `1.N` (deployment identity
   and dispatch facts), `1.N+1` (checkpoints) and `1.N+2` (detach). Corrected 2026-11-24 (D019-002): they are the next
-  free minors of the register of `sdks/SPEC.md` §9 when the contract merges, 1.10, 1.11 and 1.12 at the time of
+  free minors of the register of `sdks/SPEC.md` §9 when the contract merges, 1.11, 1.12 and 1.13 since design 044 took 1.10 (Decision 044-255), 1.10, 1.11 and 1.12 at the time of
   writing (1.7 is design 041, 1.8 delivery acknowledgement, 1.9 design 045).
 - The engine's `listWorkers`, identity drain and operator alerts of feature 008 remain the base of insights.
 - Push endpoints are reachable over the public network from the engine under the namespace egress policy; private

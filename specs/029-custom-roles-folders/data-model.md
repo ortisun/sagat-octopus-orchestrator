@@ -15,7 +15,8 @@ permission its assignability, meaningful scopes, and for item permissions the ki
 **level** or **sensitive** permission; its compile-time default arm yields `reserved` (unclassified), so a
 permission added by another feature compiles and stays reserved until classified, and a contract test lists
 the unclassified ones. Counts are derived (53 permissions with this feature: 43 assignable, 10 reserved; 13 level, 11
-sensitive; `quota:manage`, `egress:manage`, `audit:read` marked administrator-equivalent, `audit:read` also
+sensitive; on 2026-11-27, with the permissions merged since and design 044's reserved `history:export`, the catalog's
+`derivedCounts` say 60: 48 assignable, 12 reserved; 13 level, 13 sensitive; `quota:manage`, `egress:manage`, `audit:read` marked administrator-equivalent, `audit:read` also
 "sees past restriction"). The combined catalog will grow with the permissions other drafts add. The REST catalog endpoint and the
 Studio read the same table; a contract test compares it with
 [contracts/permission-catalog.json](./contracts/permission-catalog.json).

@@ -3,8 +3,8 @@
   "activations": [
     {
       "k": 1,
-      "commandCountAfter": 3,
-      "chainHex": "a587d1d0e52ab98c4f13d362da8dea16488418dc80af64a47648151c10e0c096"
+      "commandCountAfter": 2,
+      "chainHex": "64c630cf53ad74d347fff1ff358b657c431373b12b960df84e127ad92f8520f9"
     }
   ],
   "commands": [
@@ -15,10 +15,6 @@
     {
       "commandNumber": 2,
       "chainHex": "64c630cf53ad74d347fff1ff358b657c431373b12b960df84e127ad92f8520f9"
-    },
-    {
-      "commandNumber": 3,
-      "chainHex": "a587d1d0e52ab98c4f13d362da8dea16488418dc80af64a47648151c10e0c096"
     }
   ]
 }

@@ -75,6 +75,13 @@ BUDGET_SUITES = ("integration_claim_transition_efficiency",)
 LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
 STEP_LOG_SUITES = ("integration_step_logs",)
 STEP_LOG_SERVER_SUITES = STEP_LOG_SUITES + BUDGET_SUITES + ("contract_platform_foundation",)
+# Contracts that the tests of an SDK read, so that a change of the contract alone runs that SDK's checks: the golden
+# corpus of design 044 is served by the TypeScript fake server (Decision 044-262), and every SDK compares its packaged
+# copy of the worker protocol with the canonical one.
+CONTRACT_SDKS = (
+    (re.compile(r"specs/044-workflow-as-code/contracts/goldens/.*"), ("typescript",)),
+    (re.compile(r"specs/001-platform-foundation/contracts/worker\.proto"), SDK_LANGUAGES),
+)
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
@@ -267,7 +274,8 @@ class Readers:
     string literal of its sources is a path that ends in `specs/<feature>/contracts/<file>`, or when one is a path that
     ends in the directory `specs/<feature>/contracts` and another is `<file>` or ends in `/<file>` (a helper that joins
     the two), or when one is a path that ends in a directory beneath `specs/<feature>/contracts` that holds `<file>` at
-    any depth (a corpus the suite walks). A literal that only mentions a contract inside a sentence is not a path to it, and a comment is not a
+    any depth (a corpus the suite walks), or when one ends in `specs/<feature>/contracts` and another names such a
+    directory relative to it (a helper that joins the corpus onto the contracts directory). A literal that only mentions a contract inside a sentence is not a path to it, and a comment is not a
     literal. The literals of a suite are those of the files its directory owns (the deepest target directory, as for a
     changed file) and of a module of tests/support that it names (`contract::`, or `mod support` for
     tests/support/mod.rs); those of a package are those of every .rs file under its directory, `build.rs` and
@@ -335,7 +343,7 @@ class Readers:
         for reader, literals in self.literals.items():
             whole = any(literal.endswith(f"{directory}/{name}") for literal in literals)
             joined = any(literal.rstrip("/").endswith(directory) for literal in literals) and any(
-                literal == name or (literal.endswith("/" + name) and not CONTRACT_PATH.search(literal))
+                literal in (name, *parents) or (literal.endswith("/" + name) and not CONTRACT_PATH.search(literal))
                 for literal in literals)
             beneath = any(literal.rstrip("/").endswith(directory + "/" + parent)
                           for literal in literals for parent in parents)
@@ -444,6 +452,10 @@ def scope(root, base, head, targets, workspace):
                     decision.reasons.append((name, f"{rel} is a contract the package reads"))
             # A harness may also be tied to a contract (the worker protocol of design 041, task T041-32).
             harnesses(rel)
+            for pattern, languages in CONTRACT_SDKS:
+                if pattern.fullmatch(rel):
+                    decision.sdks.update(languages)
+                    decision.reasons.append(("sdks " + " ".join(languages), f"{rel} is a contract their tests read"))
             continue
         if MARKDOWN.fullmatch(rel):
             continue

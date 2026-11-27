@@ -10,7 +10,7 @@ Pseudo-code with the API names of Technical Plan 1.12.
 workflow paymentFlow(input):
   requestId = uuid()
   charge = await activity("payments.charge", {orderId: input.orderId, requestId: requestId})
-  fx = sideEffect(() => readRate("EURUSD"))                  // {pair, rate}, recorded once
+  fx = sideEffect(() => readRate("EURUSD"), {id: "fx-rate"})  // {pair, rate}, recorded once
   settled = await waitForEvent("payment.settled", input.orderId, {timeoutMs: 3600000, lookbackMs: 60000})
   await script("sha256:c4a45a6892a43d9557dab01899a89444a99702f4c9eb4b86e79bead5bc544d59",
                {settlementId: settled.settlementId, rate: fx.rate})

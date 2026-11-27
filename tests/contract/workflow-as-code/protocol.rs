@@ -86,7 +86,12 @@ fn the_worker_protocol_change_is_additive_to_the_baseline() {
         ("TaskLease", 28, "workflow_task"),
         ("TaskLease", 29, "query_task"),
         ("TaskLease", 30, "replay_check_task"),
+        ("CompleteStepRequest", 13, "step_logs"), // design 041 (1.7), beside 044's 14 (Decision 044-256)
         ("CompleteStepRequest", 14, "accept_workflow_task"),
+        ("FailStepRequest", 13, "step_logs"),
+        ("ReadBlobRequest", 9, "read_token"),
+        ("HistoryCommandRecord", 5, "saga_scope"),
+        ("FailWorkflowTaskRequest", 14, "actual_saga_scope"),
         ("StepCommandResponse", 5, "workflow_task"),
         ("CompleteWorkflowTaskRequest", 7, "applied_through_seq"),
         ("CompleteWorkflowTaskRequest", 8, "replayed_chain"),

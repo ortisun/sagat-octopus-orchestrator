@@ -19,7 +19,9 @@
   "declarations": {
     "state": {
       "schema": {
-        "type": "object"
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
       },
       "initial": "{}",
       "maxBytes": 131072

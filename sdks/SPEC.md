@@ -830,7 +830,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | 1.8 | Delivery acknowledgement (`TaskLease.acknowledge_before_start` field 23 and `attempt_deadline_epoch_ms` field 24, `WorkerCapabilities.declines_acknowledgement` field 10, `AcknowledgeTasks`; a flagged lease is provisional until acknowledged); the minor at which `TASK_NOT_STARTED` is reserved for the host | feature 006, Architecture decision 0099, Owner decision 2026-11-20-12; reserved by its design on 2026-11-20 at the coordinator's instruction, an exception to this register's rule that the owner approved (Owner decision 2026-11-21-6, which answered Owner question 006-002); offered from Task 006-057, after its gate, and only after 1.7 is served by the server and spoken by the SDK |
   | 1.9 | Activity timeouts (`TaskLease.heartbeat_timeout_ms` field 26 and `heartbeat_from_handler` field 27, `FailStepRequest.next_retry_delay_ms` field 14) | design 045 (named on its branch, pull request #279; taken when its contract merges) |
-  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2, which is being built while draft 019 is not, so 044 keeps 1.10 and draft 019's named minors move to 1.11 to 1.13 (Decision 044-255, delegate (OD-2026-11-24-4)); served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
+  | 1.10 | Workflow as code: the task kinds `WORKFLOW`, `QUERY` and `REPLAY_CHECK` (`TaskLease` fields 28 to 30, a `oneof`), `WorkerCapabilities.workflow_types` field 11 and `offers_workflow_as_code` field 12, `CompleteStepRequest.accept_workflow_task` field 14, `StepCommandResponse.workflow_task` field 5, `ReadBlobRequest.read_token` field 9, the RPCs `CompleteWorkflowTask`, `FailWorkflowTask`, `ReadHistory`, `RespondWorkerQuery`, `RespondReplayCheck` and `ReleaseSticky` and their messages; a session on 1.10 carries the host procedures of 1.7, 1.8 and 1.9 | design 044, Architecture decision 0109, Decision 044-233; taken by the contract of Task 044-2, which is being built while draft 019 is not, so 044 keeps 1.10 and draft 019's named minors move to 1.11 to 1.13 (Decision 044-255, delegate (OD-2026-11-24-4)); served from Tasks 044-8 (lease, history), 044-9 (completion), 044-13 (replay checks), 044-14 (sticky, eager) and 044-29 (worker queries) |
   | 1.11 to 1.13 | Deployment identity and dispatch facts; heartbeat checkpoints; `DetachStep` | draft 019 (named; the next free minors when its contract merges; moved from 1.10 to 1.12 by Decision 044-255) |
   | next | Draft 031's codec minor (`TaskLease.payload_plan` field 25, `WorkerCapabilities.payload_codec` field 7) and drafts 020, 021, 023, 024, 025, 026, 032 and 035 each name a minor; each takes the next free one (1.14 or later) when its contract merges, and a host of a later minor carries 1.7, the 1.8 host procedure and 1.9 | |
 
@@ -926,7 +926,8 @@ setState(state: unknown): void
 patched(id: string): boolean; deprecatePatch(id: string): void
 sideEffect<T>(compute: () => T, options?: { id?: string }): T            // a recorded marker, at most 64 KiB
   // id: the marker identifier (the pattern of a patch identifier), `side-effect` when absent; compared at replay
-  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258)
+  // like every target, so naming each side effect reports a reordered pair at the first one (Decision 044-258).
+  // A code constant, never data: it is recorded unclassified in the history, the chain and reports
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
 requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
@@ -1061,11 +1062,12 @@ same branch both times (Requirement 044-012, Non-functional requirement 044-006)
   The SDK throws the typed `InlineValuesExceeded` at the call that would cross one of these bounds, or after which the
   activation's values could no longer be carried, and for a terminal output over the 4 MiB validation bound.
 - A side-effect value is at most 64 KiB; `setState` at most once per completion (the last call of an activation wins).
-- **A re-emitted deferral** (`deferred_command`) may name each of its values by its descriptor alone, whatever carrier the
-  deferral used: the server holds every value of a deferred command until it is accepted or the run ends, and resolves
-  the descriptor to it once the body digest matches (Decision 044-259). A cold worker therefore re-emits without
-  uploading or re-sending anything, and the re-emission costs nothing of the inline values; carrying a value again,
-  inline or as another blob with the same descriptor, is accepted as well.
+- **A re-emitted deferral** (`deferred_command`): a `complete` may name its output by its descriptor alone, whatever
+  carrier its deferral used, because the server holds a deferred output until it is accepted or the run ends (Decision
+  044-259); a cold worker re-emits it without uploading, and its output costs nothing of the inline values. Carrying the
+  output again (inline, or a new blob with the same descriptor) is accepted as well, and the held output is the one
+  accepted. A continue-as-new carries its input and state inline, as its first emission did (its body hashes them); a
+  `fail` carries its message again.
 
 ### 12.7 Patches
 

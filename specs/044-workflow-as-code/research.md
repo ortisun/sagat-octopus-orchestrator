@@ -1048,9 +1048,13 @@ the same lines of this register while both are open.
   as `state_max_bytes` (and query and replay-check tasks, and the export header's `stateMaxBytes`). A code version that
   declares no `state` has a bound of 0: it sets no state (`set_state` is `COMMAND_INVALID`) and carries none (a
   continue-as-new's state must be absent). A graph version refuses the field in the schema, because no graph rule reads
-  it. The corpus declares it where state exists (`code-declared-state` 4,096, `code-gated-activity` 131,072,
-  `code-continue-as-new` the default on its three runs), and `generate.mjs` derives each lease's `stateMaxBytes` from
-  the declarations, never by hand, and refuses a carried state over it. delegate (OD-2026-11-24-4): the design named
+  it. The evaluated `state.initial` is bounded by it as well: a start whose initial state is over it is refused `422
+  VALIDATION_FAILED`, as an input outside the input schema is (the follow-up Task 044-42 names
+  `a_start_whose_initial_state_is_over_max_bytes_is_refused` and its siblings for a child, a successor and a schedule fire). The corpus declares it where state exists
+  (`code-declared-state` 4,096, `code-gated-activity` 131,072, `code-continue-as-new` the default on its three runs,
+  and `code-updates` and `code-update-with-start`, whose updates are `state.updates` in the IR's form), and
+  `generate.mjs` derives each lease's `stateMaxBytes` from the declarations, never by hand, and refuses a set-state or
+  a carried state over it; `contract_workflow_as_code::goldens` checks the same on every run, independently. delegate (OD-2026-11-24-4): the design named
   `state.maxBytes` (Non-functional requirement 044-006, Technical Plan 7.3, Requirement 044-016's 128 KiB) but the IR
   schema had no such field, so every lease of a scenario with state sent 0 and the TypeScript runtime refused the
   scenario's own set-state (relayed by the TypeScript lane). Changing the corpus instead (no state in those scenarios)
@@ -1058,41 +1062,96 @@ the same lines of this register while both are open.
   because the SDK reserves the bound from every activation's start (Decision 044-308): a version that never needed 128
   KiB of state would otherwise leave a gated input only 64 KiB. Held by
   `contract_workflow_as_code::schema::a_code_version_bounds_its_declared_state_and_a_graph_version_cannot`; the server's
-  tests are named in Task 044-12's list (`a_set_state_over_the_versions_max_bytes_is_refused`,
+  tests are named in the follow-up Task 044-42 (`a_set_state_over_the_versions_max_bytes_is_refused`,
   `a_set_state_in_a_version_without_state_is_refused`).
 - **D044-258** (2026-11-27) `sideEffect(compute, options?: { id?: string })`: the side-effect marker's identifier is
   the option `id` (the pattern of a patch identifier, `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`), `side-effect` when absent;
   each language takes it as its own optional argument named `id`. The corpus keeps its named side effects (`fx-rate`,
-  `exchange-rate`), and `sdks/SPEC.md` 12.1 and Technical Plan 1.12 name the option. delegate (OD-2026-11-24-4): the
+  `exchange-rate`), and `sdks/SPEC.md` 12.1 names the option (the design's Technical Plan 1.12 through the follow-up Task
+  044-42). delegate (OD-2026-11-24-4): the
   TypeScript lane's Decision 044-322, taken rather than renaming the corpus's markers, because `MarkerCommand.marker_id`
   already carries any identifier, the option is additive (a call without it is unchanged), and a target that names the
   side effect lets the replay report a reordered pair at the first one that moved instead of returning the other's
   recorded value.
-- **D044-259** (2026-11-27) A re-emitted deferral may name **each** of its values by its descriptor alone, whatever
-  carrier the deferral used, inline included. The deferral record holds every value of the deferred command (an
-  inline value as well as a blob) until the command is accepted or the run ends; the server first compares the
-  re-emission's kind, target and body digest with the deferral record (a difference is `CHAIN_MISMATCH`, as before),
-  then resolves each descriptor to the value it holds, and uses the held value, never a re-sent one, so the accepted
-  command is the deferral's. A re-emission that carries a value again (inline, or another blob with the same
-  descriptor) is accepted as well. delegate (OD-2026-11-24-4): a cold worker cannot know which carrier the first
-  emission used (the history records the deferral's kind and target only), so a rule that depended on the carrier
-  would make the SDK guess; resolving every descriptor makes a re-emission cost nothing of the 192 KiB of inline values
-  and uploads nothing, for every kind that can be deferred. A descriptor can only name a value of the run's own latest
-  deferral, after the body digest matched, so it reaches nothing another run holds. Written in `worker.proto`
-  (`CommandValue`), Technical Plan 4.2 and 6.2, `sdks/SPEC.md` 12.6 and the corpus README; the fake server accepts it
-  (`a re-emitted deferral may name a value its deferral held inline by its descriptor alone`), and Task 044-9 names
-  `a_re_emission_names_an_inline_held_value_by_its_descriptor_alone`.
+- **D044-259** (2026-11-27) A re-emitted **`complete`** may name its output by its descriptor alone, whatever carrier
+  its deferral used. A deferred `complete` holds its output until the command is accepted or the run ends: an output
+  that travelled as a blob is held as before (`blobs.held_by_seq`), and an output that travelled inline is written by
+  the server, in the deferral's transaction, as a `COMMAND_VALUE` blob of the run's `~workflow` step, held the same way,
+  charged to the retained bytes once and released at the run's end like any held blob; a deferral that is deferred
+  again moves the hold to the newer record. The body of a `complete` holds the output's descriptor (`{"output":
+  D(output)}`), so the server compares the re-emission's kind, target and body digest with the deferral record first (a
+  difference is `CHAIN_MISMATCH`) and then resolves the descriptor to the held blob, which is the output accepted. A
+  re-emission that carries the output again (inline, or a new blob with the same descriptor) is accepted as well; the
+  held blob is still the one committed, and the re-sent blob is never committed and is released by the blob pass as an
+  unused upload. A **continue-as-new** hashes its input and state themselves (`{"input": input, "state": state,
+  "version": ...}`), so its re-emission carries them inline, as its first emission did (they are always inline); a
+  descriptor alone there is `COMMAND_INVALID`. A `fail` carries its message again (`FailCommand.safe_message` is not a
+  value), and an acknowledgement carries nothing. delegate (OD-2026-11-24-4): relayed by the TypeScript lane, whose SDK
+  re-emits with the first carrier; a cold worker cannot know that carrier (the history records the deferral's kind and
+  target only), so a rule that depended on it would make the SDK guess, while the kind alone now decides. Holding an
+  inline output costs at most one output per run (the latest deferral), and keeps one resolution path, the held blob.
+  A descriptor reaches only the run's own latest deferral, after the body digest matched. First written for every
+  value of every kind and narrowed the same day after the independent correctness review of the relay (its Majors 1
+  and 2: a continue-as-new's body cannot be digested from descriptors, and two passages disagreed on which blob a
+  re-emission commits). Written in `worker.proto` (`CommandValue`), `sdks/SPEC.md` 12.6 and the corpus README, and in
+  the follow-up Task 044-42 for the design's text; the fake server holds it (`a re-emitted complete may name an output its deferral held inline by
+  its descriptor alone`, `a re-emitted continue-as-new must carry its values inline`), and the follow-up Task 044-42 names
+  `a_re_emitted_complete_names_an_output_held_inline_by_its_descriptor_alone`,
+  `a_re_emitted_complete_that_carries_its_output_again_commits_the_held_blob_only` and
+  `a_re_emitted_continue_as_new_with_a_descriptor_alone_is_invalid`.
 - **D044-260** (2026-11-27) The fake server of `sdks/typescript/test/` checks `FailWorkflowTaskRequest.actual_saga_scope`:
-  against the golden report's `actualSagaScope` (empty when the report names none), against `^s-[1-9][0-9]{0,9}$`, and
-  only on an activity or a script; the corpus gains `code-nondeterminism/scope-moved`, a pure change of scope (the same
+  against the golden report's `actualSagaScope` (empty when the attempt has no report or its report names none),
+  against `^s-[1-9][0-9]{0,9}$`, and only on an activity or a script; the corpus gains `code-nondeterminism/scope-moved`, a pure change of scope (the same
   activity moved into a saga, reported with `actual_saga_scope` `s-1`). delegate (OD-2026-11-24-4): relayed by the
   TypeScript lane; a fake that ignores a field cannot hold an SDK to it.
 - **D044-261** (2026-11-27) The test-target selector (`scripts/select-test-targets.py`) treats a string literal that
-  ends in a directory beneath `specs/<feature>/contracts` as a read of every file beneath it, so a change of one golden
+  ends in a directory beneath `specs/<feature>/contracts`, or that names such a directory beside a literal of the
+  contracts directory itself (a joined path), as a read of every file beneath it, so a change of one golden
   selects `contract_workflow_as_code`, which walks `specs/044-workflow-as-code/contracts/goldens`; held by
   `scripts/tests/test_select_test_targets.py`
   (`test_a_directory_inside_a_contracts_directory_is_a_read_of_every_file_beneath_it`, and the repository-wide
-  `test_every_path_into_a_contracts_directory_is_seen_as_a_read`, which failed on pull request 291).
+  `test_every_path_into_a_contracts_directory_is_seen_as_a_read`, which failed on pull request 291, and
+  `test_a_directory_joined_onto_a_contracts_directory_is_a_read_of_every_file_beneath_it`).
+- **D044-262** (2026-11-27) The independent correctness review of the merge and the relay (no Blocker, three Major,
+  nine Minor, four Nits) is answered by fixes, none contested: Decision 044-259 narrowed to `complete` with the held
+  output and the order of its checks (Majors 1 and 2); the updates scenarios' declarations in the IR's form and a Rust
+  check of every lease's bound (Major 3); the generator's bound on set-state (Minor 1); `scope-moved`'s first version
+  written so that every language makes the same commands (Minor 2); the fake's scope check on an attempt without a
+  report (Minor 3) and its acceptance of a re-emitted output as a new blob (Minor 4); the notes of drafts 019, 031,
+  045 and 052 that named the old minors or field 13 (Minor 5); `ReadBlobRequest.read_token` in the register and the
+  protocol test, with the other new fields (Minor 6); the side effect's `id` in `code-cache-eviction`'s function
+  (Minor 7); a joined corpus directory in the selector (Minor 8); the initial state's bound (Minor 9, Decision
+  044-257); feature 029's counts and the `fail` re-emission in `sdks/SPEC.md` (Nits). Its Nit on `"type": "integer"`
+  admitting `4096.0` is settled: the server reads `maxBytes` as an unsigned integer and refuses another number at
+  publication, as for every IR byte bound, so a fractional value never reaches a lease.
+- **D044-263** (2026-11-27) The independent security review of the same slice (no Blocker, two Major, four Minor, three
+  Nits, one suspicion) is answered by fixes (a security finding is always fixed): a held inline output is charged to
+  the tenant's content quota in the transaction of the first deferral, never to the run's retained bytes, a refusal is
+  `STORAGE_QUOTA_EXCEEDED` counted with its backoff, the charge becomes the output's at acceptance and is released with
+  the blob at the run's end (Major 1); a deferral of a deferral writes and charges nothing, so a run holds at most one
+  blob, enforced by a partial unique index in Task 044-6's migration (follow-up Task 044-42) and outside the tenant's 1,024 command-value ceiling (Major
+  2); a held output is resolved through the deferral record, not named, so the refusal of a named `secret`-carrier blob
+  is unchanged and such an output completes and stays redacted (Minor 1); a change of the golden corpus alone now runs
+  the TypeScript SDK's checks, and a change of the canonical `worker.proto` alone runs all six SDKs' (Minor 2, and the
+  suspicion, confirmed by reading the selector: `decision.sdks` was set only for paths under `sdks/<language>/`), held
+  by `test_a_contract_an_sdk_test_reads_selects_that_sdk`; the initial state's bound sits in the run creation that
+  every start path shares, with tests named for a child, a successor and a schedule fire (Minor 3); a marker
+  identifier is a code constant by contract and is never a log field or a metric label (Minor 4, `sdks/SPEC.md` 12.1
+  and the follow-up Task 044-42); `actual_saga_scope` is dropped on a kind other than an activity or a script,
+  and descriptor fields that disagree with their carrier are `COMMAND_INVALID` (Nits 1 and 2). Its third Nit is
+  settled: a carried `null` is the absence of state, which a bound of 0 admits; the successor's bound is checked by the
+  server (Task 044-36), the generator's check against the current version being the corpus's own consistency; and the
+  fake's refusal of an inline re-send of a blob-held output cannot meet the corpus, whose only blob-held output is
+  425,790 bytes, beyond the 192 KiB of inline values.
+- **D044-264** (2026-11-27) The design is approved, so its body changes only by ticks, evidence and follow-up tasks
+  (Rule 3 of `docs/designs/constitution-4.0.0-egm.md`, checked by `scripts/check-design-docs.py`). The changes the
+  contract branch had written into the body since approval (the text of Decisions 044-241 to 044-254, and of 044-257 to
+  044-263, in the Technical Plan and in the red-test lists of Tasks 044-5, 044-6, 044-8, 044-9, 044-12, 044-14 and
+  044-21) are moved into the follow-up Task 044-42, which names every red test they added and amends the Technical
+  Plan through a review of its own, as Tasks 044-34 and 044-39 already do; the body is the approved text again, and
+  the notes written into designs 045 and 052 for the register are withdrawn (the register of `sdks/SPEC.md` section 9
+  is the source). Found by running the check locally: on pull request 291 the step never ran, since the script tests
+  before it failed. delegate (OD-2026-11-24-4).
 
 ## 3. Gaps
 
