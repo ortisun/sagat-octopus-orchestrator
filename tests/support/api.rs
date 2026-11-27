@@ -65,6 +65,8 @@ pub struct TestApi {
     pub executions: PgRunStore,
     /// `http://host:port` of the gRPC worker service.
     pub grpc_url: String,
+    /// The withdrawals of undelivered leases of the worker API (feature 006): a test waits on them, never sleeps.
+    pub worker_withdrawals: sagat_api_grpc::Withdrawals,
     /// The key ring the API seals secrets with and the worker service opens them with.
     pub keys: sagat_infra_secrets::SecretsConfig,
     pub blobs: Option<BlobService>,
@@ -282,6 +284,28 @@ pub struct Options {
     /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
     /// production, unless a test turns it on.
     pub collection_operators: bool,
+    /// The gate whose kept requirements decide whether undelivered leases are withdrawn (feature 006, decision D006-004).
+    /// `None`, as a process with no registry: never.
+    pub lease_withdrawal: Option<Arc<sagat_application::instances::ServingGate>>,
+    /// A barrier after each run's transaction of a claim committed leases (decisions D006-008 and D006-035).
+    pub delivery_probe: Option<sagat_api_grpc::DeliveryProbe>,
+    /// A barrier just before a run's transaction that leased commits (decisions D006-008 and D006-092).
+    pub commit_probe: Option<sagat_api_grpc::DeliveryProbe>,
+    /// `SAGAT_LEASE_WITHDRAWAL`: whether the worker API writes new withdrawals (decision D006-032). On by default.
+    pub new_withdrawals: bool,
+    /// The ceiling hand-backs are judged by; this build's own by default (ADR-0099 decision 9). A test of the honoured
+    /// hand-back raises it to 8 with the stored minor of its session.
+    pub hand_back_ceiling: u32,
+    /// `SAGAT_STEP_LOGS_ENABLED` (design 041, P2; on by default, as in production): copied into `worker`'s
+    /// `step_logs_enabled`, which the registration policy reads, and given to the ingest, so that the two cannot
+    /// disagree.
+    pub step_logs_enabled: bool,
+    /// `SAGAT_STEP_LOGS_TENANT_CALLS` (design 041, P3): the batches of one tenant at once; the engine's default (7),
+    /// at most `grpc.max_log_calls`, as the engine caps it.
+    pub step_log_tenant_calls: usize,
+    /// Whether the worker API serves `AppendStepLogs` at all; off, it answers `UNIMPLEMENTED`, as an instance built
+    /// without the ingest does.
+    pub step_logs_served: bool,
 }
 
 impl Default for Options {
@@ -321,6 +345,14 @@ impl Default for Options {
             lake: false,
             run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
             collection_operators: false,
+            lease_withdrawal: None,
+            delivery_probe: None,
+            commit_probe: None,
+            new_withdrawals: true,
+            hand_back_ceiling: sagat_application::worker::PROTOCOL_MINOR,
+            step_logs_enabled: true,
+            step_log_tenant_calls: sagat_api_grpc::DEFAULT_STEP_LOG_TENANT_CALLS,
+            step_logs_served: true,
         }
     }
 }
@@ -612,12 +644,16 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         exec = exec.with_stream_limits(limits);
     }
     // The worker protocol shares the REST API's identity, budgets and database.
+    let worker_settings = WorkerSettings {
+        step_logs_enabled: options.step_logs_enabled,
+        ..options.worker
+    };
     let mut workers = WorkerService::new(
         executions.clone(),
         SystemClock,
         Engine::new(JsonEvaluator),
         SystemEntropy,
-        options.worker,
+        worker_settings,
     )
     .with_vault(keys.cipher())
     .with_database_content(
@@ -629,12 +665,48 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }
+    if let Some(gate) = &options.lease_withdrawal {
+        workers = workers.with_lease_withdrawal(Arc::clone(gate));
+    }
+    // the process's gate decides the capability use cases too (decision D006-100), as the engine wires it
+    if let Some(gate) = &options.serving_gate {
+        workers = workers.with_capability_gate(Arc::clone(gate));
+    }
+    workers = workers
+        .with_new_withdrawals(options.new_withdrawals)
+        .with_hand_back_ceiling(options.hand_back_ceiling);
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
+    if let Some(probe) = &options.delivery_probe {
+        grpc = grpc.with_delivery_probe(Arc::clone(probe));
+    }
+    if let Some(probe) = &options.commit_probe {
+        grpc = grpc.with_commit_probe(Arc::clone(probe));
+    }
+    let worker_withdrawals = grpc.withdrawals();
     if let Some(gate) = &options.serving_gate {
         grpc = grpc.with_serving_gate(Arc::clone(gate));
     }
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
+    }
+    // Design 041, protocol 1.7: the ingest on the API's pool, as the execution engine builds it.
+    if options.step_logs_served {
+        grpc = grpc
+            .with_step_logs(
+                Arc::new(sagat_application::step_logs::StepLogIngest::new(
+                    sagat_infra_postgres::PgStepLogStore::new(api_pool.clone()),
+                    SystemClock,
+                    options.step_logs_enabled,
+                )),
+                options
+                    .step_log_tenant_calls
+                    .min(options.grpc.max_log_calls.max(1)),
+                sagat_api_grpc::StepLogBudgets {
+                    subject: options.subject_rate_limit,
+                    tenant: options.rate_limit,
+                },
+            )
+            .expect("usable step-log budgets");
     }
     let grpc_config = options.grpc;
     let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -709,6 +781,7 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         api_pool,
         executions,
         grpc_url: format!("http://{grpc_addr}"),
+        worker_withdrawals,
         keys,
         blobs,
         blob_backend,

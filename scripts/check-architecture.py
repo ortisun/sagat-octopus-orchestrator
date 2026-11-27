@@ -513,6 +513,89 @@ def run_creator_errors(root):
     return errors
 
 
+# Constitution 5.1.0, principle I: journal rows leave only by two audited paths (feature 020's per-run purge, design 049's
+# partition retirement), both privileged, and the runtime role holds no DELETE or TRUNCATE on runs, steps, the journal
+# or payloads. A migration (up or down) is where such a grant would come from, so every way of giving it is refused: a
+# GRANT of DELETE, TRUNCATE or ALL on one of those tables (named, or through ALL TABLES or default privileges) to the
+# runtime role or to PUBLIC, with or without GRANT OPTION or GRANTED BY; any role granted to the runtime role; a table
+# given to the runtime role as owner; and such a GRANT built as dynamic SQL. A runtime check of the privileges the role
+# really has (through memberships too) is feature 020's privilege sweep.
+JOURNAL_TABLES = {"runs", "steps", "run_events", "payloads", "run_payloads"}
+RUNTIME_GRANTEES = {"sagat_app", "public"}
+GRANT_STATEMENT = re.compile(r"\bgrant\s+(?P<privs>.*?)\s+on\s+(?P<target>.*?)\s+to\s+(?P<grantees>[^;]*);", re.I | re.S)
+ROLE_GRANT = re.compile(r"\bgrant\s+(?P<roles>[\w\"]+(?:\s*,\s*[\w\"]+)*)\s+to\s+(?P<grantees>[^;]*);", re.I)
+OWNER_TO_RUNTIME = re.compile(r"\bowner\s+to\s+\"?sagat_app\"?\b", re.I)
+SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
+DYNAMIC_GRANT = re.compile(r"\bgrant\b.*\b(delete|truncate|all)\b.*\bto\s+\"?sagat_app\b", re.I | re.S)
+GRANTEE_TAIL = re.compile(r"\b(with|granted\s+by)\b.*$", re.I | re.S)
+JOURNAL_PARTITION = re.compile(r"(" + "|".join(sorted(["runs", "steps", "run_events", "payloads", "run_payloads"])) + r")_([0-9]{4}_[0-9]{2}|legacy)")
+MEMBERSHIP_TO_RUNTIME = [
+    re.compile(r"\bcreate\s+(role|group|user)\b[^;]*\b(role|user|admin)\s+\"?sagat_app\b", re.I),
+    re.compile(r"\bcreate\s+(role|user)\s+\"?sagat_app\"?[^;]*\bin\s+(role|group)\b", re.I),
+    re.compile(r"\balter\s+group\b[^;]*\badd\s+user\b[^;]*\bsagat_app\b", re.I),
+    re.compile(r"\breassign\s+owned\s+by\b[^;]*\bto\s+\"?sagat_app\b", re.I),
+]
+FORMAT_GRANT = re.compile(r"\bformat\s*\(\s*'(?:[^']|'')*\bgrant\b(?:[^']|'')*'[^;]*", re.I)
+
+
+def grantee_set(text):
+    return {g.strip().strip('"').lower() for g in GRANTEE_TAIL.sub("", text).split(",") if g.strip()}
+
+
+def journal_delete_grant_errors(root):
+    errors = []
+    base = pathlib.Path(root)
+    for path in sorted(base.glob("crates/infra-postgres/migrations/*.sql")):
+        text = path.read_text()
+        rel = path.relative_to(base).as_posix()
+        # comments and REVOKE statements carry no grant ("REVOKE GRANT OPTION FOR ..." is not one)
+        masked = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+        masked = re.sub(r"--[^\n]*", lambda m: " " * len(m.group(0)), masked)
+        if not masked.rstrip().endswith(";"):
+            masked = masked.rstrip() + ";"  # a last statement without its semicolon is still read
+        masked = re.sub(r"\brevoke\b[^;]*;", lambda m: re.sub(r"[^\n]", " ", m.group(0)), masked, flags=re.I)
+        line = lambda offset: text.count(chr(10), 0, offset) + 1
+        why = "journal rows leave only by the two audited privileged paths of principle I (constitution 5.1.0)"
+        for m in GRANT_STATEMENT.finditer(masked):
+            if not re.search(r"\b(delete|truncate|all)\b", m.group("privs"), re.I):
+                continue
+            target = re.sub(r"\s+", " ", m.group("target").strip().lower())
+            if re.search(r"\ball tables\b", target) or target == "tables":
+                hit = "every table"
+            else:
+                names = {n.strip().strip('"').split(".")[-1].strip('"')
+                         for n in re.sub(r"^table\s+", "", target).split(",")}
+                hit = ", ".join(sorted(n for n in names if n in JOURNAL_TABLES or JOURNAL_PARTITION.fullmatch(n)))
+            if hit and grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
+                privileges = re.sub(r"\s+", " ", m.group("privs").strip())
+                errors.append(f"{rel}:{line(m.start())}: a migration grants {privileges} on {hit} to the runtime role: {why}")
+        for m in ROLE_GRANT.finditer(masked):
+            if re.search(r"\bon\b", m.group(0), re.I):
+                continue
+            if grantee_set(m.group("grantees")) & RUNTIME_GRANTEES:
+                errors.append(f"{rel}:{line(m.start())}: a migration grants the role {m.group('roles')} to the runtime role, "
+                              f"which would carry that role's privileges: {why}")
+        for m in OWNER_TO_RUNTIME.finditer(masked):
+            errors.append(f"{rel}:{line(m.start())}: a migration makes the runtime role the owner of a relation, which may "
+                          f"delete from it: {why}")
+        for pattern in MEMBERSHIP_TO_RUNTIME:
+            for m in pattern.finditer(masked):
+                errors.append(f"{rel}:{line(m.start())}: a migration makes the runtime role a member of a role, or the "
+                              f"owner of another role's objects, which would carry their privileges: {why}")
+        for m in FORMAT_GRANT.finditer(masked):
+            if re.search(r"\bsagat_app\b", m.group(0)) and re.search(r"\b(delete|truncate|all)\b", m.group(0), re.I):
+                errors.append(f"{rel}:{line(m.start())}: a migration builds a GRANT of DELETE, TRUNCATE or ALL to the "
+                              f"runtime role as dynamic SQL: {why}")
+        for m in SQL_LITERAL.finditer(masked):
+            if FORMAT_GRANT.search(masked[max(0, m.start() - 40):m.end()]):
+                continue  # already judged as a whole format() call above
+            if not DYNAMIC_GRANT.search(m.group(0)):
+                continue
+            errors.append(f"{rel}:{line(m.start())}: a migration builds a GRANT of DELETE, TRUNCATE or ALL to the runtime role "
+                          f"as dynamic SQL: {why}")
+    return errors
+
+
 # The creators a composition root builds, each of which holds the unwired gate until it is given one (D043-120): a
 # service built without `.with_run_inputs` refuses every start of a version with an `inputSchema` as busy, and an engine
 # creator retries it forever (architecture review of 2026-11-15, Major 3).
@@ -558,6 +641,24 @@ def gate_wiring_errors(root):
     return errors
 
 
+# Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
+# inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
+# source may call them; the tests package and a crate's own test modules may.
+TEST_PROBE_CALL = re.compile(r"\.\s*(with_delivery_probe|with_commit_probe)\s*\(")
+
+
+def test_probe_errors(root):
+    """A call of a test-only probe of the worker API in a production source under `crates/*/src` or `apps/*/src`."""
+    errors = []
+    for rel, text, masked, _ in production_sources(root):
+        for m in TEST_PROBE_CALL.finditer(masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside the tests: the probe holds "
+                f"claims until a test releases them, and production never sets one (D006-093)"
+            )
+    return errors
+
+
 def test_support_errors(pkgs):
     """`sagat-application`'s `test-support` feature enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
     errors = []
@@ -578,6 +679,100 @@ def test_support_errors(pkgs):
     return errors
 
 
+# Feature 006, decision D006-033: the three checks of the instance-capability registry list the capabilities by hand, and two
+# branches (feature 022 and feature 006) redefine them with only their own values each. A fresh database ends with the newest
+# definition by version, so that one must list exactly what the code lists (`Capability::as_str` over `Capability::ALL`):
+# whichever branch merges second takes the union in its own migration, or this fails.
+CAPABILITY_SOURCE = "crates/application/src/instances.rs"
+CAPABILITY_MIGRATIONS = "crates/infra-postgres/migrations"
+CAPABILITY_CHECKS = (
+    "serving_instances_capabilities_known",
+    "platform_requirements_capability_known",
+    "platform_requirement_history_capability_known",
+)
+
+
+def code_capabilities(root):
+    """The tokens of `Capability::as_str`, a constant resolved in the application crate; None when the body is not found."""
+    base = pathlib.Path(root)
+    text = (base / CAPABILITY_SOURCE).read_text(encoding="utf-8")
+    impl = text.find("impl Capability {")
+    if impl < 0:
+        return None
+    body = text.find("fn as_str(", impl)
+    end = text.find("\n    }\n", body)
+    if body < 0 or end < 0:
+        return None
+    tokens = set()
+    for arm in re.finditer(r"Self::\w+\s*=>\s*([^,\n]+),", text[body:end]):
+        value = arm.group(1).strip()
+        if value.startswith('"'):
+            tokens.add(value.strip('"'))
+            continue
+        name = value.split("::")[-1]
+        found = None
+        for source in sorted((base / "crates/application/src").rglob("*.rs")):
+            match = re.search(rf'pub const {re.escape(name)}: &str = "([^"]+)";', source.read_text(encoding="utf-8"))
+            if match:
+                found = match.group(1)
+                break
+        if found is None:
+            return None
+        tokens.add(found)
+    return tokens
+
+
+def defined_capabilities(text, check):
+    """The quoted values of the last `CONSTRAINT <check> CHECK (...)` of a migration (inline or after `ADD`), or None."""
+    listed = None
+    for found in re.finditer(rf"CONSTRAINT {check} CHECK \(", text):
+        depth, i = 1, found.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        listed = set(re.findall(r"'([^']+)'", text[found.end():i]))
+    return listed
+
+
+def capability_list_errors(root):
+    errors = []
+    code = code_capabilities(root)
+    if not code:
+        return [f"`Capability::as_str` was not found in {CAPABILITY_SOURCE}: the capability-list rule would check nothing"]
+    folder = pathlib.Path(root) / CAPABILITY_MIGRATIONS
+    migrations = sorted(folder.glob("*.up.sql")) if folder.is_dir() else []
+    for check in CAPABILITY_CHECKS:
+        newest = None
+        for migration in migrations:
+            listed = defined_capabilities(migration.read_text(encoding="utf-8"), check)
+            if listed is None:
+                continue
+            # decision D006-083: the down of this migration restores the list in force before it (none for the first)
+            down = migration.with_name(migration.name.replace(".up.sql", ".down.sql"))
+            restored = defined_capabilities(down.read_text(encoding="utf-8"), check) if down.is_file() else None
+            before = newest[1] if newest else None
+            if restored != before:
+                errors.append(
+                    f"{down.name} restores {sorted(restored) if restored is not None else 'no list'} of {check}, but the "
+                    f"list before {migration.name} is {sorted(before) if before is not None else 'none'}: a rollback "
+                    "must restore the list in force before its migration (decision D006-083)"
+                )
+            newest = (migration.name, listed)
+        if newest is None:
+            errors.append(f"no migration under {CAPABILITY_MIGRATIONS} defines {check}: the capability-list rule would check nothing")
+            continue
+        name, listed = newest
+        missing, unknown = sorted(code - listed), sorted(listed - code)
+        if missing or unknown:
+            errors.append(
+                f"{check}, last defined by {name}, does not list what `Capability::ALL` lists"
+                + (f"; it drops {', '.join(missing)}" if missing else "")
+                + (f"; it lists {', '.join(unknown)}, which the code does not know" if unknown else "")
+                + ": the branch that merges second takes the union of both lists in its own, newest migration (decision D006-033)"
+            )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -595,12 +790,25 @@ def main(argv):
         if "--rust-root" in argv
         else str(pathlib.Path(__file__).resolve().parents[1])
     )
+    capability_root = (
+        argv[argv.index("--capability-root") + 1]
+        if "--capability-root" in argv
+        else str(pathlib.Path(__file__).resolve().parents[1])
+    )
+    if "--capability-root" in argv:
+        # the capability-list rule alone, over a tree a test built
+        errors = capability_list_errors(capability_root)
+        for e in errors:
+            print(f"  - {e}")
+        return 1 if errors else 0
     md = load(metadata_file)
     root = md["workspace_root"]
     ws_ids = set(md["workspace_members"])
     pkgs = {p["id"]: p for p in md["packages"] if p["id"] in ws_ids}
     by_name = {p["name"]: p for p in pkgs.values()}
     errors = []
+    if metadata_file is None:
+        errors.extend(capability_list_errors(capability_root))
 
     graph = {}
     for p in pkgs.values():
@@ -669,6 +877,8 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
+    errors.extend(test_probe_errors(rust_root))
+    errors.extend(journal_delete_grant_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -699,7 +909,9 @@ def main(argv):
             print(f"  - {e}")
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
-          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input)")
+          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
+          f"the capability checks list the code's capabilities, no test probe in production, "
+          f"the runtime role cannot delete the journal)")
     return 0
 
 

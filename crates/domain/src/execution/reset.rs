@@ -59,6 +59,7 @@ registry! {
     RunEvent::StepRouted { .. } => ("step.routed", ResetRule::Copy),
     RunEvent::StepReleased { .. } => ("step.released", ResetRule::Copy),
     RunEvent::StepLeased { .. } => ("step.leased", ResetRule::Copy),
+    RunEvent::StepLeaseWithdrawn { .. } => ("step.lease_withdrawn", ResetRule::Copy),
     RunEvent::StepStarted { .. } => ("step.started", ResetRule::Copy),
     RunEvent::StepCompleted { .. } => ("step.completed", ResetRule::Copy),
     RunEvent::StepRetryScheduled { .. } => ("step.retry_scheduled", ResetRule::Copy),

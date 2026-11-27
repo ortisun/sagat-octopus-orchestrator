@@ -576,3 +576,5 @@ Each stale item names the evidence and the decision that fixes it. The fixes are
 | G1345 | Design 040 requires one OCSF mapping per audit action; this feature adds about thirty actions. | Each action enters 040's mapping table in the task that adds it, once 040 is built (Task 026-054). |
 | G1346 | Owner question 1081 (feature 020) is unanswered, so the `pii` channel ceiling cannot be built. | Channels stop at `internal` until it is answered (Task 026-077 gate). |
 | G1347 | External approvers without an account cannot decide (Owner question 1320 answered no). | A guest principal of federated login (feature 013) is the later route. |
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9. A host of 1.9 or later also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

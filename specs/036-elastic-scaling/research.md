@@ -102,3 +102,39 @@ Numbering: decisions `D1700`–`D1739`, gaps `G1700`–`G1718`, owner question `
 ## Research tasks that remain
 
 None of the technical context is unresolved. What remains is the owner's answer to O1710, the evidence for slice 2 (benchmark), and the slice 3 items listed in `plan.md`.
+
+## Readiness, 2026-11-24
+
+Read again against `develop` at `546d5aa5` (the full list of corrections is in `plan.md`, "Readiness against
+`develop` (2026-11-24)"). Nothing above is changed; what follows is added.
+
+**Owner question O1710, answered.** Option 1, delegate (Owner decision 2026-11-20-6), Owner decision 2026-11-24-504;
+the reason is in the specification's "Owner questions". Owner questions O1700, O1701, O1702 and O1704 are answered there
+too (Owner decisions 2026-11-24-500 to 2026-11-24-503). What remains of the section above is the evidence for slice 2
+and the slice 3 items.
+
+**Decisions.**
+
+- **D036-001 — The migrations take the next free timestamps at build time.** The first planned ones are taken; the names
+  stay. Task T036-001 re-checks every branch.
+- **D036-002 — The platform's autoscaling is a third chart toggle,** `engine.autoscaling.platform.enabled`, refused with
+  `keda.enabled` or `hpa.enabled`: the chart has no `mode` key (`infra/helm/values.yaml`, `templates/_helpers.tpl`).
+- **D036-003 — The database budget reuses the chart's existing check** (`database.maxConnections`,
+  `database.serverMaxConnections`) and adds only `reserveConnections`. Refines D1722.
+- **D036-004 — The rank share of connector partitions waits for the fleet** through a registry capability
+  `connector-rank-share` (Architecture decision 0082; design 053, Requirement 053-006), which answers G1715 for a
+  released old binary and removes the unbalanced rolling upgrade as a consequence. Refines D1708.
+- **D036-005 — The operator audience is a second verification configuration,** not a change of the tenant's: the API holds
+  one audience per process today (`crates/api-http/src/auth/verifier.rs`), so the operator listener builds its own
+  verifier; `apps/dev-idp` gains a second issuer configuration for development (Task T036-065).
+- **D036-006 — Tenant-published custom signals are not in the first delivery** (O1704, CHK016): requirement 036-024 keeps
+  "no automatic effect until an operator admits it", and the tenant endpoint follows with a later delivery.
+- **D036-007 — Architecture decisions 0072, 0073 and 0074 are accepted** (Owner decision 2026-11-24-505), with the stale
+  lines corrected in each and their evidence sections to be filled when built.
+
+**Evidence that moved** (facts unchanged): `inbox_pending_events` is at `crates/scheduler/src/events.rs:234`; the
+600 s idle timeout at `crates/telemetry/src/metrics.rs:279` and `:285`; the autoscaler contract test is
+`the_autoscalers_scale_on_metrics_the_platform_emits_and_on_nothing_else` (`tests/contract/scalability-ha/main.rs`);
+`Backlogged` at `crates/infra-postgres/src/events.rs:469`; `partitioning.rs` is in `crates/infra-postgres/src/`; the
+stale KEDA sentence of G1714 is at `docs/runbooks/scaling.md:127`; the tenant id of an audit record at
+`crates/domain/src/audit.rs:584`. Counts that moved: 37 quota kinds (not 32), 53 permissions (not 48).

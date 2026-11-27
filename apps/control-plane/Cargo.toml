@@ -34,11 +34,14 @@ sagat-infra-postgres.workspace = true
 sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-telemetry.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }
 tracing.workspace = true
 uuid.workspace = true
+zeroize = "1"
 
 [dev-dependencies]
 rcgen = "0.13"
+tokio = { workspace = true, features = ["test-util"] }

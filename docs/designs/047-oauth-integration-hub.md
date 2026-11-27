@@ -965,6 +965,14 @@ the hub needs feature 028's Tasks 028-062 to 028-067. The tasks that deliver a d
 
 #### Follow-up tasks
 
+- [x] T047-29 Record that the condition of this design's approval is met: constitution 5.1.0, with the third declared set
+  of Principle V, merged into `develop` (pull request #286, merge commit `610c0c09`), so the delivery tasks' gate
+  (`Owner-gate: OD-2026-11-25-3`) is satisfied and Architecture decision 0122's condition with it (Owner decision
+  2026-11-24-335).
+  Refs: Requirement 047-015
+  Evidence (2026-11-27): `docs/constitution.md` on `develop` reads `**Version**: 5.1.0`, and its Principle V lists "three
+    declared sets", the third being a declared resource's non-secret settings and current access token; merge commit
+    `610c0c09` of pull request #286.
 - [ ] T047-24 Give a delivery call that finds a refresh running a closed refusal, `CAPABILITY_UNAVAILABLE` with the reason
   `REFRESH_IN_FLIGHT` and a retry delay, counted against neither the full calls nor the re-asks; restate Requirement
   047-010 for the gRPC paths (no wait while an admission place is held) and Technical Plan 5's "`RESOURCE_ASK_LIMIT`-style

@@ -35,7 +35,10 @@ An encoded value replaces the plaintext JSON value at an encoded location:
 
 Parsing is strict in the server, every SDK and every codec server: duplicate members at any depth, unknown members,
 other types, case variants and non-canonical base64 (padding, whitespace, URL alphabet) are invalid. The header (the
-`$encoded` object without `data`, serialized) is at most 2 KiB.
+`$encoded` object without `data`, in its RFC 8785 canonical UTF-8 form) is at most 3 KiB (3,072 bytes), and `ctx.p` is
+at most 512 bytes in its JSON-escaped form. Corrected 2026-11-24 (Decision D031-013): the draft said 2 KiB, but the
+largest header the members above allow is 2,317 bytes (`kid` 128, `kv` 64, `wk` 1,368 base64 characters, `ctx.p` 512,
+two UUIDs, `iv` 16, the longest chain and level, and the member names); 3,072 leaves 755 bytes of margin.
 
 ## 2. Encoding (customer side)
 
@@ -50,7 +53,9 @@ other types, case variants and non-canonical base64 (padding, whitespace, URL al
    `C` = AES-256-GCM-Encrypt(`DEK`, `iv`, `P`, `AAD`), tag appended.
 5. `data` = base64 of `C` (or of `P` without a cipher).
 6. A writer that streams an envelope into a blob MUST emit the members in the order `v`, `codecs`, `cty`, `lvl`, `ctx`,
-   `key`, `iv`, `data`, so the header precedes `data` (spec FR-031-012). Inline envelopes may use any member order.
+   `key`, `iv`, `data`, so the header precedes `data` (spec FR-031-012). Inline envelopes may use any member order. The
+   header then ends within the first 4 KiB of the blob: 12 bytes of `{"$encoded":`, at most 3,071 bytes of header
+   before its closing brace and 9 bytes of `,"data":"` make at most 3,092 bytes.
 
 A data key MUST NOT encrypt more than 1,048,576 envelopes or be reused for longer than 15 minutes (hard ceilings; the
 defaults are smaller, plan "Finite ceilings"). With random 96-bit nonces this stays far below the 2^32 messages per key

@@ -24,10 +24,16 @@ mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
+mod withdrawal;
+
 use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
 use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
+pub use withdrawal::{
+    HAND_BACK_PROTOCOL_MINOR, HandBackVerdict, TASK_NOT_STARTED, UndeliveredLease,
+    WithdrawalOutcome, count as count_undelivered, hand_back, hand_back_verdict,
+};
 
 use std::future::Future;
 use std::sync::Arc;
@@ -65,8 +71,9 @@ use sagat_domain::secrets::{SecretCipher, SecretName, SecretValue};
 /// and calls and removes none, so a worker of any minor version of protocol 1 can be served
 /// (`negotiate_protocol`). 1.1 added the step identity to `Heartbeat`, 1.2 `task_kind` and
 /// `ResolveSecrets`; 1.3 streaming blobs; 1.4 bounded task streams; 1.5 scoped execution identity;
-/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5).
-pub const PROTOCOL_MINOR: u32 = 6;
+/// 1.6 managed database capabilities (the combined protocol: a 1.6 session also speaks 1.5); 1.7 step logs
+/// (`AppendStepLogs`, `StepLogPolicy` and a report's `StepLogCarry`, design 041).
+pub const PROTOCOL_MINOR: u32 = 7;
 /// The newest minor a storage adapter may negotiate before it proves scoped claim and report.
 pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 /// Scoped execution identity is allocated to worker protocol 1.5. A store must explicitly declare
@@ -74,13 +81,23 @@ pub const ROOT_PROTOCOL_MINOR: u32 = 4;
 pub const SCOPED_PROTOCOL_MINOR: u32 = 5;
 /// Managed database capabilities first became available in protocol 1.6 (decision D600).
 pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
+/// Step logs first became available in protocol 1.7 (design 041, OD-2026-11-15-8): `AppendStepLogs`, the
+/// `StepLogPolicy` of a registration and the `StepLogCarry` of a report. A batch is stored only for a session
+/// accepted at this minor or later.
+pub const STEP_LOG_PROTOCOL_MINOR: u32 = 7;
 
 /// The newest minor this session may negotiate. Scoped identity (1.5) needs a store that proves the
 /// scoped claim and report path; the managed database minor (1.6) is a superset of 1.5 for ordinary
 /// workers, so it needs both proofs. The dedicated database runner only ever handles root work, so
-/// it reaches 1.6 on a store that proves the database path alone.
-fn protocol_ceiling(role: Role, scoped: bool, database: bool) -> u32 {
-    if database && (scoped || role == Role::DatabaseRunner) {
+/// it reaches 1.6 on a store that proves the database path alone. Step logs (1.7) are a superset of 1.6 and need a
+/// third proof, the store of step logs; they are offered to an ordinary worker only: the database runner and the
+/// script runner keep 1.6, since the ingest refuses their batches (design 041 section 2, P1) and a minor whose calls
+/// a role is always refused is not offered to it (decision D041-149).
+fn protocol_ceiling(role: Role, scoped: bool, database: bool, step_logs: bool) -> u32 {
+    let machine_runner = matches!(role, Role::DatabaseRunner | Role::Runner);
+    if database && scoped && step_logs && !machine_runner {
+        STEP_LOG_PROTOCOL_MINOR
+    } else if database && (scoped || role == Role::DatabaseRunner) {
         DATABASE_PROTOCOL_MINOR
     } else if scoped {
         SCOPED_PROTOCOL_MINOR
@@ -218,6 +235,10 @@ pub struct WorkerSettings {
     pub session_ttl: Duration,
     /// What a worker is told to wait before polling again when nothing was available.
     pub idle_retry: Duration,
+    /// The deployment switch of step logs (`SAGAT_STEP_LOGS_ENABLED`, on by default; design 041 section 10): off, a
+    /// registration at 1.7 is told capture is off and the ingest answers every batch `STOP_CAPTURE` (`CAPTURE_OFF`).
+    /// The one value the registration policy and the ingest read, so that the two cannot disagree.
+    pub step_logs_enabled: bool,
 }
 
 impl Default for WorkerSettings {
@@ -226,6 +247,7 @@ impl Default for WorkerSettings {
             lease_ttl: Duration::from_secs(30),
             session_ttl: Duration::from_secs(3600),
             idle_retry: Duration::from_millis(500),
+            step_logs_enabled: true,
         }
     }
 }
@@ -286,6 +308,12 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
 
     /// Managed capabilities require an independently proven adapter boundary.
     fn supports_database_worker_protocol(&self) -> bool {
+        false
+    }
+
+    /// Whether this adapter stores step logs (design 041, protocol 1.7): the store of `AppendStepLogs` and of a
+    /// report's carry. False by default, so that an adapter that has not proven the storage keeps workers at 1.6.
+    fn supports_step_log_protocol(&self) -> bool {
         false
     }
 
@@ -390,6 +418,10 @@ pub struct Registered {
     pub session_token: Token,
     pub accepted_protocol_version: String,
     pub expires_at: OffsetDateTime,
+    /// The step-log policy of the session (`RegisterWorkerResponse.step_logs`, design 041 section 1): `None` below
+    /// protocol 1.7; otherwise whether capture is on, that is, the deployment switch is on and the namespace's
+    /// `step_log_attempt_records` is above 0. A hint for the worker: every batch is judged again by the ingest.
+    pub step_logs_enabled: Option<bool>,
 }
 
 /// A task handed to a worker.
@@ -472,6 +504,56 @@ fn require_supported_task(
         Ok(())
     } else {
         Err(AppError::StaleAttempt)
+    }
+}
+
+/// What the caller of a claim says while the claim runs (feature 006, decisions D006-035 and D006-092 of
+/// `specs/006-sdk-multilanguage/research.md`). A claim commits one transaction per run; between two of them nothing is half
+/// done, so it stops there once its consumer is gone and returns what it already committed, which the caller hands to the
+/// withdrawal. A run's transaction whose only writes are its leases is rolled back instead of committed when the consumer is
+/// gone just before its commit.
+pub trait ClaimWatch: Send + Sync {
+    /// Whether the consumer of the claim is gone (a stream body dropped or past its window, a unary handler dropped);
+    /// asked before each run's transaction and just before the commit of one that leased.
+    fn consumer_gone(&self) -> bool;
+
+    /// Awaited after each run's transaction committed at least one lease, before the next run is claimed: a test's barrier
+    /// (decision D006-008). Production returns at once.
+    fn committed(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::ready(()))
+    }
+
+    /// Awaited just before the commit of a run's transaction that leased, before the claim asks again whether its consumer
+    /// is gone (decision D006-092): a test's barrier (decision D006-008). Production returns at once.
+    fn before_commit(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// Whether the run's transaction that is about to commit leases must be dropped instead, which rolls it back, because the
+/// consumer of the claim went away while it ran (feature 006, decision D006-092): a claim that waited on a lock when its client
+/// left would otherwise commit leases nobody receives. Only a transaction whose only writes are its leases is rolled back:
+/// with `kept_writes` (a refusal's audit, a permanent failure) it commits and its leases go to the withdrawal. Waits first at
+/// the test's barrier.
+pub(crate) async fn roll_back_for_a_gone_consumer(
+    watch: &dyn ClaimWatch,
+    kept_writes: bool,
+) -> bool {
+    watch.before_commit().await;
+    let gone = !kept_writes && watch.consumer_gone();
+    if gone {
+        metrics::counter!("worker_claim_skipped_total", "reason" => "consumer_gone").increment(1);
+    }
+    gone
+}
+
+/// A claim whose consumer never goes away: [`WorkerService::poll`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Unwatched;
+
+impl ClaimWatch for Unwatched {
+    fn consumer_gone(&self) -> bool {
+        false
     }
 }
 
@@ -591,11 +673,68 @@ pub struct WorkerService<S, C, E, R> {
     lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
     /// The polls of each namespace in flight in this process, shared by every clone (design 038).
     polls_in_flight: Arc<PollsInFlight>,
+    /// The gate whose recorded requirements say whether undelivered leases are withdrawn (feature 006, decision
+    /// D006-004); `None`: never.
+    lease_withdrawal: Option<Arc<crate::instances::ServingGate>>,
+    /// The gate whose capability decision a capability use case asks just before it commits what it hands out (decision
+    /// D006-100); none in a process with no registry.
+    capability_gate: Option<Arc<crate::instances::ServingGate>>,
+    /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
+    lease_withdrawal_disabled: bool,
+    /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
+    hand_back_ceiling: u32,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerService").finish_non_exhaustive()
+    }
+}
+
+/// Which stops a report fence lets through: a cancellation requested of the step, or a run that is stopping (decision
+/// D006-097). A closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopAllowance {
+    /// Every other report: a cancellation or a stop refuses it.
+    None,
+    /// The acknowledgement of a cancellation (`CANCELLED`, not retryable): it settles a cancelled lease.
+    Cancellation,
+    /// A host's hand-back (`TASK_NOT_STARTED`): let through only while the step is still `LEASED`, so it reaches the verdict
+    /// of the withdrawal whatever the cancellation says (request (1) of decision D006-059). A step that started keeps the
+    /// fence.
+    HandBack,
+}
+
+impl StopAllowance {
+    /// The allowance of a failure report with `raw_code` and `retryable`, as the host sent them.
+    pub(crate) fn of_failure(raw_code: &str, retryable: bool) -> Self {
+        if raw_code == "CANCELLED" && !retryable {
+            Self::Cancellation
+        } else if raw_code == TASK_NOT_STARTED {
+            Self::HandBack
+        } else {
+            Self::None
+        }
+    }
+
+    /// The allowance of a fence that lets an acknowledged cancellation through, or none.
+    pub(crate) const fn cancellation(allowed: bool) -> Self {
+        if allowed {
+            Self::Cancellation
+        } else {
+            Self::None
+        }
+    }
+
+    /// Whether a step in `status` may report past a cancellation or a stop. `HandBack` is granted only to a session whose
+    /// minor reserves the code, judged at the build's ceiling (decision D006-100): below 1.8 the code may be a handler's, and
+    /// a fleet below 1.8 keeps the outcome it had.
+    pub(crate) fn allows(self, status: StepStatus) -> bool {
+        match self {
+            Self::None => false,
+            Self::Cancellation => true,
+            Self::HandBack => status == StepStatus::Leased,
+        }
     }
 }
 
@@ -626,6 +765,10 @@ where
             lake_receipts: None,
             lake_probes: None,
             polls_in_flight: Arc::default(),
+            lease_withdrawal: None,
+            capability_gate: None,
+            lease_withdrawal_disabled: false,
+            hand_back_ceiling: PROTOCOL_MINOR,
         }
     }
 
@@ -716,6 +859,7 @@ where
             principal.role(),
             self.store.supports_scoped_worker_protocol(),
             self.store.supports_database_worker_protocol(),
+            self.store.supports_step_log_protocol(),
         );
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
@@ -811,6 +955,23 @@ where
             }
             return Err(AppError::NotBound);
         }
+        let step_logs_enabled = if accepted_protocol_minor < STEP_LOG_PROTOCOL_MINOR {
+            None
+        } else if self.settings.step_logs_enabled {
+            // Read without a policy fence: a hint, which the ingest's T3 reads again under its fences. Read before the
+            // session is created, so that a failed read leaves no session behind (the security review of task T041-7).
+            let records = self
+                .store
+                .effective_limit(
+                    principal.tenant_id(),
+                    Some(namespace.id()),
+                    QuotaResource::StepLogAttemptRecords,
+                )
+                .await?;
+            Some(records > 0)
+        } else {
+            Some(false)
+        };
         let token = Token::from_bytes(self.entropy.token()).ok_or(AppError::Internal)?;
         let proposed = Uuid::now_v7();
         let ttl = self.settings.session_ttl;
@@ -860,6 +1021,7 @@ where
             session_token: token,
             accepted_protocol_version,
             expires_at: self.clock.now() + ttl,
+            step_logs_enabled,
         })
     }
 
@@ -927,13 +1089,16 @@ where
             max_tasks,
             MAX_POLL_BYTES,
             trace_id,
+            &Unwatched,
         )
         .await
     }
 
     /// Claims through the canonical poll path while respecting a caller-owned aggregate byte
     /// budget. Task streams pass their remaining finite-window budget here; unary polling passes
-    /// [`MAX_POLL_BYTES`].
+    /// [`MAX_POLL_BYTES`]. The claim stops before its next run once `watch` says its consumer is gone
+    /// (decision D006-035).
+    #[allow(clippy::too_many_arguments)] // the claim's budgets, its trace and its watch travel together
     pub async fn poll_bounded(
         &self,
         principal: &Principal,
@@ -942,6 +1107,7 @@ where
         max_tasks: u32,
         max_bytes: usize,
         trace_id: Option<&str>,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1006,6 +1172,7 @@ where
             wanted as usize,
             byte_budget,
             trace_id,
+            watch,
             &mut claimed,
         )
         .await?;
@@ -1030,6 +1197,7 @@ where
         wanted: usize,
         byte_budget: usize,
         trace_id: Option<&str>,
+        watch: &dyn ClaimWatch,
         claimed: &mut Vec<ClaimedTask>,
     ) -> Result<(), AppError>
     where
@@ -1050,6 +1218,10 @@ where
             if remaining == 0 || bytes >= byte_budget {
                 break;
             }
+            // nobody will receive more: what committed so far goes back to the caller and to the withdrawal
+            if watch.consumer_gone() {
+                break;
+            }
             probed += 1;
             match self
                 .claim_run(
@@ -1063,11 +1235,16 @@ where
                     trace_id,
                     &mut bytes,
                     &mut progress,
+                    watch,
                 )
                 .await
             {
                 Ok(tasks) => {
+                    let leased = !tasks.is_empty();
                     claimed.extend(tasks);
+                    if leased {
+                        watch.committed().await;
+                    }
                     if progress.session_full {
                         break;
                     }
@@ -1108,6 +1285,7 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
         progress: &mut ClaimProgress,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1197,6 +1375,9 @@ where
         );
         let mut leased = Vec::new();
         let mut run_bytes = 0usize;
+        // Set by a write that is not a lease (a refusal's audit, a permanent failure of an input): it must not be rolled back
+        // with the leases of a consumer that went away (decision D006-092).
+        let mut kept_writes = false;
         for (instance, activity, timeout) in ready {
             // Every task carries the run's data; the response is bounded by what it carries.
             // `remaining` bounds what is *leased*, not what is looked at: a step the circuit
@@ -1229,6 +1410,7 @@ where
                     "lease",
                     trace_id,
                 );
+                kept_writes = true;
                 tx.persist(&[], effects).await?;
                 metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
                 continue;
@@ -1251,6 +1433,7 @@ where
                     .map_err(|error| { tracing::error!(%error, instance = ?instance, "failed to materialize task input"); AppError::Internal })?
             };
             if input.len() > MAX_TASK_INPUT_BYTES {
+                kept_writes = true;
                 match self
                     .reject_large_input(&mut tx, session, &instance, trace_id)
                     .await
@@ -1304,6 +1487,7 @@ where
                         )
                         .with_reason("managed database claim refused"),
                     );
+                    kept_writes = true;
                     tx.persist(&[], effects).await?;
                     continue;
                 }
@@ -1316,6 +1500,7 @@ where
                     match self.lake_lease_input(&mut tx, &instance).await? {
                         Ok(leased) => leased,
                         Err(failure) => {
+                            kept_writes = true;
                             let code = FailureCode::parse(failure.code())
                                 .map_err(|_| AppError::Internal)?;
                             match self
@@ -1356,6 +1541,7 @@ where
                 )
             ) {
                 if input.len() > MAX_TASK_INPUT_BYTES {
+                    kept_writes = true;
                     match self
                         .reject_large_input(&mut tx, session, &instance, trace_id)
                         .await
@@ -1419,6 +1605,9 @@ where
                 Err(AppError::StateConflict(_)) => break,
                 Err(other) => return Err(other),
             }
+        }
+        if !leased.is_empty() && roll_back_for_a_gone_consumer(watch, kept_writes).await {
+            return Ok(Vec::new());
         }
         tx.commit().await?;
         // A failed transaction contributes neither leases nor bytes to this response.
@@ -1914,7 +2103,7 @@ where
             }
             // A receipt is replayable after expiry; a new report must not reach the catalog
             // without its exact live lease, even when cancellation is draining the scope.
-            Self::live_path_fence(&mut tx, task, true).await?;
+            Self::live_path_fence(&mut tx, task, StopAllowance::Cancellation).await?;
             let scope = Self::scope_from_info(&tx.snapshot().info, task);
             tx.commit().await?;
             return Ok(BlobCompletionTarget::Ready(scope));
@@ -2120,6 +2309,8 @@ where
         }
         let scope = Self::scope_of(&tx, task);
         if let Some((blob, trace_id)) = audit_read {
+            // the audit of a read commits only while the process may hand data out (decision D006-100)
+            self.capability_window_holds()?;
             let effects = self.blob_read_effects(principal, task, scope, blob, trace_id);
             tx.persist(&[], effects).await?;
             tx.commit().await?;
@@ -2193,7 +2384,7 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         if !task.instance.path().is_root() {
             let mut tx = self.open_worker_path(principal, task).await?;
-            Self::live_path_fence(&mut tx, task, true).await?;
+            Self::live_path_fence(&mut tx, task, StopAllowance::Cancellation).await?;
             let scope = Self::scope_from_info(&tx.snapshot().info, task);
             tx.commit().await?;
             return Ok(scope);
@@ -2392,6 +2583,13 @@ where
         // credential fits the characters and the length it may have (`[A-Za-z0-9_.:-]`, 64): a
         // worker that reports its own secret as the reason it failed fails for good instead.
         let mut retryable = retryable;
+        // a hand-back passes a cancellation only from a session whose minor reserves the code (decision D006-100)
+        let stop = match StopAllowance::of_failure(error_code, retryable) {
+            StopAllowance::HandBack if !self.root_reserves_the_code(&mut tx, task).await? => {
+                StopAllowance::None
+            }
+            stop => stop,
+        };
         let leaked = match self
             .checked_secret_report(
                 principal,
@@ -2399,7 +2597,7 @@ where
                 tx,
                 &idempotency,
                 error_code.as_bytes(),
-                error_code == "CANCELLED" && !retryable,
+                stop,
             )
             .await?
         {
@@ -2415,6 +2613,54 @@ where
                 Some(self.leak_audit(principal, tx.info(), task, &name, "failure code"));
             code = FailureCode::secret_in_output();
             retryable = false;
+        }
+        // A host hands back a lease it never ran (decisions D006-005 and D006-030): with the requirement recorded, the step
+        // still `LEASED` to this very lease, a session of a minor that reserves the code and the attempt below the cap, it is
+        // withdrawn and the attempt given back; otherwise it is the ordinary failure below, with the flag the host sent
+        // (decision D006-014). Never an unknown outcome. A report that leaked a secret carries `SECRET_IN_OUTPUT` by now, so it
+        // never reaches the withdrawal.
+        if code.as_str() == TASK_NOT_STARTED {
+            match self.root_hand_back(&mut tx, task).await? {
+                HandBackVerdict::Withdraw(before) => {
+                    // the token handed back is dead for every call, heartbeats included (decision D006-086): it is not
+                    // recorded as the lease that reported the step
+                    effects.reported = None;
+                    let node = task.instance.node().clone();
+                    let fence = task.fence;
+                    self.engine
+                        .run(&mut tx, effects, move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::withdraw_lease(
+                                    def,
+                                    state,
+                                    &node,
+                                    fence,
+                                    execution::WithdrawalCause::NotStarted,
+                                    before,
+                                    now,
+                                )?,
+                            ))
+                        })
+                        .await
+                        .map_err(engine_error)?;
+                    let ack = self.finish(tx, task, idempotency).await?;
+                    count_undelivered(
+                        execution::WithdrawalCause::NotStarted,
+                        WithdrawalOutcome::Withdrawn,
+                        1,
+                    );
+                    return Ok(ack);
+                }
+                // nothing recorded: the lease lapses as before (decision D006-089)
+                HandBackVerdict::Lapse(outcome) => {
+                    count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1);
+                    return Err(AppError::StaleAttempt);
+                }
+                HandBackVerdict::Fail(outcome) => {
+                    count_undelivered(execution::WithdrawalCause::NotStarted, outcome, 1)
+                }
+            }
         }
         let jitter = self.entropy.unit();
         let fallback_code = code.clone();
@@ -2793,20 +3039,21 @@ where
         tx: &mut Tx,
         task: &TaskRef<'_>,
     ) -> Result<(), AppError> {
-        self.attempt_authority_fence(principal, tx, task, false)
+        self.attempt_authority_fence(principal, tx, task, StopAllowance::None)
             .await
     }
 
-    /// Only an explicit cancellation acknowledgement may settle a cancelled lease. Other reports
-    /// retain the live-capability fence, including a cancellation during provider I/O.
+    /// Only an explicit cancellation acknowledgement, or a host's hand-back of a lease still `LEASED` (decision D006-097),
+    /// may report past a cancellation or a stop. Other reports retain the live-capability fence, including a cancellation
+    /// during provider I/O.
     async fn report_authority_fence<Tx: RunTx>(
         &self,
         principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-        cancellation_acknowledgement: bool,
+        stop: StopAllowance,
     ) -> Result<(), AppError> {
-        self.attempt_authority_fence(principal, tx, task, cancellation_acknowledgement)
+        self.attempt_authority_fence(principal, tx, task, stop)
             .await
     }
 
@@ -2815,20 +3062,30 @@ where
         principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,
-        allow_cancellation_report: bool,
+        stop: StopAllowance,
     ) -> Result<(), AppError> {
         self.verify(tx, task).await?;
         // Binding authority precedes session/catalog/membership locks, matching revocation.
         self.ensure_bound(principal, tx, task).await?;
         let legacy_attempt = task.fence.attempt == 0 && !Self::managed_database(tx, task);
-        let valid_step = tx.parts().1.instance(task.instance).is_some_and(|s| {
+        let state = tx.parts().1;
+        let step = state.instance(task.instance);
+        let stop_allowed = step.is_some_and(|s| stop.allows(s.status()));
+        // The stop rule is one domain function, which the step-log ingest's T2 applies too (OD-2026-11-16-11); a
+        // report the stop allowance admits is the answer to a cancellation.
+        let valid_step = step.is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && (allow_cancellation_report || !s.cancel_requested())
-        }) && (allow_cancellation_report
-            || tx.parts().1.stop_reason().is_none()
-            || task.instance.node().is_derived())
-            && !tx.parts().1.is_finished();
+                && sagat_domain::execution::report_fence_allows(
+                    sagat_domain::execution::ReportFence {
+                        cancel_requested: s.cancel_requested(),
+                        run_stopping: state.stop_reason().is_some(),
+                        run_finished: state.is_finished(),
+                        derived_node: task.instance.node().is_derived(),
+                    },
+                    stop_allowed,
+                )
+        });
         if !valid_step
             || !tx
                 .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))
@@ -2854,6 +3111,21 @@ where
             Ok(())
         } else {
             Err(AppError::StaleAttempt)
+        }
+    }
+
+    /// Refuses a capability use case whose process may no longer hand anything out (decision D006-100): asked inside its
+    /// transaction just before the commit of its audit, of a credential's pin or of a read's audit, so a refusal rolls them
+    /// back and nothing is recorded as handed out that was not.
+    ///
+    /// # Errors
+    /// [`AppError::RegistrySilent`] while the capability window of the gate has lapsed.
+    pub(super) fn capability_window_holds(&self) -> Result<(), AppError> {
+        match &self.capability_gate {
+            Some(gate) if gate.capability_window_lapsed(std::time::Instant::now()) => {
+                Err(AppError::RegistrySilent)
+            }
+            _ => Ok(()),
         }
     }
 
@@ -3031,18 +3303,77 @@ mod tests {
     #[test]
     fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
         use sagat_domain::identity::Role;
+        for step_logs in [false, true] {
+            for role in [Role::Worker, Role::Runner, Role::Admin] {
+                assert_eq!(super::protocol_ceiling(role, false, true, step_logs), 4);
+                assert_eq!(super::protocol_ceiling(role, true, false, step_logs), 5);
+            }
+            assert_eq!(
+                super::protocol_ceiling(Role::DatabaseRunner, false, true, step_logs),
+                6
+            );
+            assert_eq!(
+                super::protocol_ceiling(Role::DatabaseRunner, false, false, step_logs),
+                4
+            );
+        }
         for role in [Role::Worker, Role::Runner, Role::Admin] {
-            assert_eq!(super::protocol_ceiling(role, false, true), 4);
-            assert_eq!(super::protocol_ceiling(role, true, false), 5);
-            assert_eq!(super::protocol_ceiling(role, true, true), 6);
+            assert_eq!(super::protocol_ceiling(role, true, true, false), 6);
+        }
+    }
+
+    /// Design 041 section 1: 1.7 needs the three proofs (scoped, database and step logs) and is an ordinary worker's;
+    /// the database runner and the script runner keep 1.6, since the ingest refuses their batches (P1).
+    #[test]
+    fn step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only() {
+        use sagat_domain::identity::Role;
+        assert_eq!(PROTOCOL_MINOR, 7);
+        assert_eq!(super::STEP_LOG_PROTOCOL_MINOR, 7);
+        for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
+            assert_eq!(
+                super::protocol_ceiling(role, true, true, true),
+                7,
+                "{role:?}"
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, false, true, true),
+                4,
+                "{role:?}"
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, true, false, true),
+                5,
+                "{role:?}"
+            );
+        }
+        for role in [Role::DatabaseRunner, Role::Runner] {
+            assert_eq!(
+                super::protocol_ceiling(role, true, true, true),
+                6,
+                "{role:?}"
+            );
         }
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, true),
-            6
+            negotiate_protocol_details(
+                "1.999",
+                super::protocol_ceiling(Role::Worker, true, true, true)
+            ),
+            Some(("1.7".to_owned(), 7))
         );
         assert_eq!(
-            super::protocol_ceiling(Role::DatabaseRunner, false, false),
-            4
+            negotiate_protocol_details(
+                "1.6",
+                super::protocol_ceiling(Role::Worker, true, true, true)
+            ),
+            Some(("1.6".to_owned(), 6)),
+            "a worker that offers 1.6 is served at 1.6"
+        );
+        assert_eq!(
+            negotiate_protocol_details(
+                "1.999",
+                super::protocol_ceiling(Role::DatabaseRunner, true, true, true)
+            ),
+            Some(("1.6".to_owned(), 6))
         );
     }
 
@@ -3075,7 +3406,6 @@ mod tests {
 
     #[test]
     fn scoped_identity_negotiation_is_gated_by_storage_support() {
-        assert_eq!(PROTOCOL_MINOR, 6);
         assert_eq!(ROOT_PROTOCOL_MINOR, 4);
         assert_eq!(negotiate_protocol("1.5").as_deref(), Some("1.5"));
         assert_eq!(
@@ -3181,5 +3511,67 @@ mod tests {
         assert_eq!(json_escaped("caf\u{e9}", true), "caf\\u00e9");
         // Beyond the BMP it is a surrogate pair.
         assert_eq!(json_escaped("\u{1f511}", true), "\\ud83d\\udd11");
+    }
+}
+
+/// Feature 006, decision D006-092: the rollback for a gone consumer, its exception for kept writes, and its counter.
+#[cfg(test)]
+mod rollback_for_a_gone_consumer {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::{ClaimWatch, roll_back_for_a_gone_consumer};
+
+    struct Watch {
+        gone: AtomicBool,
+        barriers: AtomicUsize,
+    }
+
+    impl ClaimWatch for Watch {
+        fn consumer_gone(&self) -> bool {
+            self.gone.load(Ordering::SeqCst)
+        }
+
+        fn before_commit(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            self.barriers.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    fn watch(gone: bool) -> Watch {
+        Watch {
+            gone: AtomicBool::new(gone),
+            barriers: AtomicUsize::new(0),
+        }
+    }
+
+    #[test]
+    fn only_a_transaction_of_leases_alone_is_rolled_back_and_each_rollback_is_counted() {
+        let (metrics, recorder) = sagat_telemetry::Metrics::detached(Duration::from_secs(60));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        let (gone, kept, present) = (watch(true), watch(true), watch(false));
+        let decisions = metrics::with_local_recorder(&recorder, || {
+            runtime.block_on(async {
+                (
+                    roll_back_for_a_gone_consumer(&gone, false).await,
+                    roll_back_for_a_gone_consumer(&kept, true).await,
+                    roll_back_for_a_gone_consumer(&present, false).await,
+                )
+            })
+        });
+        assert_eq!(decisions, (true, false, false));
+        // the test's barrier is awaited in every case, before the question
+        for each in [&gone, &kept, &present] {
+            assert_eq!(each.barriers.load(Ordering::SeqCst), 1);
+        }
+        let page = metrics.render();
+        assert!(
+            page.contains("worker_claim_skipped_total{reason=\"consumer_gone\"} 1"),
+            "{page}"
+        );
     }
 }

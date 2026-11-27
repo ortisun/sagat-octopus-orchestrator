@@ -52,7 +52,7 @@ ENVIRONMENT (shared with the control plane):
                                       with a role that could rewrite the audit trail.
     SAGAT_ENV                         dev | staging | prod            [prod]
     SAGAT_LOG_FORMAT                  json | pretty                   [json]
-    SAGAT_DB_MAX_CONNECTIONS          pool size                       [20]
+    SAGAT_DB_MAX_CONNECTIONS          pool size                       [10]
     SAGAT_DB_STATEMENT_TIMEOUT_MS     per-statement server timeout    [5000]
     SAGAT_OIDC_ISSUER / _AUDIENCE / _JWKS_URI   worker identity verification (required)
     SAGAT_OIDC_TENANT_CLAIM, SAGAT_OIDC_REQUIRED_TYP, SAGAT_ALLOW_INSECURE_JWKS_HTTP (dev only)
@@ -67,6 +67,11 @@ ENVIRONMENT (serve):
     SAGAT_GRPC_TLS_HANDSHAKE_TIMEOUT_SECS   give up on a TLS handshake after [10]
     SAGAT_GRPC_MAX_CONNECTION_AGE_SECS    ask a connection to reconnect after [1800]
     SAGAT_GRPC_MAX_IN_FLIGHT          calls running at once; polls shed at 3/4 [1024]
+    SAGAT_GRPC_MAX_LOG_CALLS          AppendStepLogs calls running at once, apart from the others; more
+                                      than half the pool is refused [half of SAGAT_DB_MAX_CONNECTIONS, at least 1]
+    SAGAT_STEP_LOGS_ENABLED           capture step logs: off, workers are told capture is off and every
+                                      batch is answered STOP_CAPTURE [true]
+    SAGAT_STEP_LOGS_TENANT_CALLS      step-log batches of one tenant at once; at most the cap above [7]
     SAGAT_GRPC_TLS_CERT_FILE / _KEY_FILE   serve the worker API over TLS (PEM files)
     SAGAT_GRPC_TLS_CLIENT_CA_FILE     also require client certificates signed by this CA (mTLS)
     SAGAT_SECRETS_KEYS                key ring that opens secrets for workers: id:base64,id2:base64
@@ -82,8 +87,11 @@ ENVIRONMENT (serve):
     SAGAT_POLL_IDLE_RETRY_MS          retry hint when nothing is ready [500]
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick (1-5000) [200]
-    SAGAT_SCHEDULES_ENABLED           fire schedules from this replica [false]
+    SAGAT_SCHEDULES_ENABLED           fire schedules from this replica [true]
+    SAGAT_SCHEDULES_AUTO_HANDOVER     the deployment runs the job of the automatic handover; exported only, as
+                                      trigger_schedule_auto_handover_expected, for the alert on a job that never writes [true]
     SAGAT_LAKE_ENABLED                let a run carry an Apache Iceberg write; the control plane has the same switch [false]
+    SAGAT_LEASE_WITHDRAWAL            on|off: write new lease withdrawals (docs/runbooks/lease-withdrawal.md) [on]
     SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
     SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]
     SAGAT_BATCHES_ENABLED             run batch jobs from this replica [false]

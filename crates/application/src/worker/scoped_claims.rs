@@ -21,6 +21,7 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
         progress: &mut ClaimProgress,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         if path.is_root() {
             self.claim_root_run(
@@ -33,6 +34,7 @@ where
                 trace_id,
                 bytes,
                 progress,
+                watch,
             )
             .await
         } else if self.store.supports_scoped_worker_protocol()
@@ -49,6 +51,7 @@ where
                 trace_id,
                 bytes,
                 progress,
+                watch,
             )
             .await
         } else {
@@ -71,6 +74,7 @@ where
         trace_id: Option<&str>,
         bytes: &mut usize,
         progress: &mut ClaimProgress,
+        watch: &dyn ClaimWatch,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         let mut tx = match self
             .store
@@ -157,6 +161,8 @@ where
                 .then_with(|| left.0.cmp(&right.0))
         });
         let mut claimed = Vec::new();
+        // a write that is not a lease, which a rollback for a gone consumer must not take away (decision D006-092)
+        let mut kept_writes = false;
         let mut run_bytes = 0;
         for (instance, activity, timeout, declared) in ready {
             if claimed.len() >= remaining || *bytes + run_bytes >= byte_budget {
@@ -182,6 +188,7 @@ where
                     "lease",
                     trace_id,
                 );
+                kept_writes = true;
                 tx.persist_addressed(&[], &[], effects).await?;
                 metrics::counter!("secret_delivery_refused_total", "stage" => "lease").increment(1);
                 continue;
@@ -212,6 +219,7 @@ where
                 )
                 .map_err(|e| engine_error(EngineError::Execution(e)))?;
                 progress.events.insert(0, leased);
+                kept_writes = true;
                 tx.persist_addressed(
                     &progress.events,
                     &[],
@@ -286,6 +294,10 @@ where
                 kind,
                 target,
             });
+        }
+        // the same rule as the root path (decision D006-092)
+        if !claimed.is_empty() && roll_back_for_a_gone_consumer(watch, kept_writes).await {
+            return Ok(Vec::new());
         }
         tx.commit().await?;
         *bytes += run_bytes;

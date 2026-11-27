@@ -680,3 +680,5 @@ overrule it.
   toolchain identity and the conformance suite without that evidence (Decision 1201). Adoption later
   takes a new architecture decision, identical conformance results and a measured advantage on the
   reference environment.
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9, and minors are cumulative. An internal runner of this draft at 1.9 or later either implements the 1.8 host procedure (a flagged lease is acknowledged before it runs) or registers with `WorkerCapabilities.declines_acknowledgement = true` (field 10), and the server then flags none of its leases (Decision 006-063 of `specs/006-sdk-multilanguage/research.md`). `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

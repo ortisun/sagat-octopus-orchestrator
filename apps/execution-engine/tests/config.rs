@@ -47,9 +47,14 @@ fn defaults_listen_on_loopback_and_publish_nothing() {
 }
 
 #[test]
-fn schedules_are_stored_but_fire_nowhere_until_the_flag_is_set() {
+fn schedules_fire_by_default_and_an_explicit_false_stops_them() {
     let config = parse(&[]).expect("config");
-    assert!(!config.schedules_enabled, "off by default");
+    assert!(config.schedules_enabled, "on by default (OD-2026-11-13-8)");
+    let off = parse(&[("SAGAT_SCHEDULES_ENABLED", "false")]).expect("config");
+    assert!(
+        !off.schedules_enabled,
+        "an explicit false turns the pass off"
+    );
     assert_eq!(config.schedules.batch, 100);
     assert_eq!(config.schedules.round_actions, 100);
     assert_eq!(config.schedule_poll, Duration::from_secs(1));
@@ -84,6 +89,31 @@ fn a_run_may_carry_an_iceberg_write_only_when_the_lake_flag_is_set() {
         parse(&[("SAGAT_LAKE_ENABLED", "maybe")]).is_err(),
         "a mistyped switch is refused, not guessed"
     );
+}
+
+/// `SAGAT_LEASE_WITHDRAWAL` (feature 006, decision D006-032): on unless it says `off`, and anything else stops the process.
+#[test]
+fn new_lease_withdrawals_are_on_unless_the_switch_says_off() {
+    assert!(
+        parse(&[]).expect("config").lease_withdrawal,
+        "on by default"
+    );
+    assert!(
+        parse(&[("SAGAT_LEASE_WITHDRAWAL", "on")])
+            .expect("config")
+            .lease_withdrawal
+    );
+    assert!(
+        !parse(&[("SAGAT_LEASE_WITHDRAWAL", "off")])
+            .expect("config")
+            .lease_withdrawal
+    );
+    for mistyped in ["Off", "false", "0", " off"] {
+        assert!(
+            parse(&[("SAGAT_LEASE_WITHDRAWAL", mistyped)]).is_err(),
+            "{mistyped:?} is refused, not guessed"
+        );
+    }
 }
 
 #[test]
@@ -153,7 +183,7 @@ fn resets_that_wait_for_their_source_are_stored_but_completed_nowhere_until_the_
     assert_eq!(config.resets.per_tenant, 10);
     assert_eq!(config.reset_poll, Duration::from_secs(1));
     // it is not one of the other switches, and they are not it
-    assert!(!config.batches_enabled && !config.schedules_enabled);
+    assert!(!config.batches_enabled && config.schedules_enabled);
 
     let on = parse(&[
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
@@ -164,7 +194,7 @@ fn resets_that_wait_for_their_source_are_stored_but_completed_nowhere_until_the_
     .expect("config");
     assert_eq!(on.resets.per_tenant, 3);
     assert!(on.reset_cancel_source_enabled);
-    assert!(!on.batches_enabled && !on.schedules_enabled);
+    assert!(!on.batches_enabled && on.schedules_enabled);
     assert_eq!(on.resets.batch, 250);
     assert_eq!(on.reset_poll, Duration::from_millis(400));
     let top = parse(&[("SAGAT_RESET_CANCEL_SOURCE_BATCH", "1000")]).expect("config");
@@ -407,6 +437,101 @@ fn intervals_and_sizes_must_be_positive_numbers() {
     assert_eq!(config.grpc.handshake_timeout, Duration::from_secs(6));
     assert_eq!(config.grpc.max_connection_age, Duration::from_secs(900));
     assert_eq!(config.grpc.max_in_flight, 13);
+}
+
+/// Design 041 section 1, decision D041-127 (data-model.md §6): the Logs class's cap is half the database pool rounded
+/// down and at least 1, the tenant's tickets 7 and never more than the cap.
+#[test]
+fn the_step_log_admission_defaults_follow_the_database_pool() {
+    let binary = parse(&[]).expect("config");
+    assert_eq!(
+        (binary.grpc.max_log_calls, binary.step_log_tenant_calls),
+        (5, 5),
+        "the binary's pool of 10: cap 5, tickets 7 capped at the cap"
+    );
+    let chart = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "20")]).expect("config");
+    assert_eq!(
+        (chart.grpc.max_log_calls, chart.step_log_tenant_calls),
+        (10, 7),
+        "the chart's pool of 20: cap 10, tickets 7"
+    );
+    let small = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "8")]).expect("config");
+    assert_eq!(
+        (small.grpc.max_log_calls, small.step_log_tenant_calls),
+        (4, 4),
+        "a pool of 8: cap 4, tickets 4"
+    );
+    let odd = parse(&[("SAGAT_DB_MAX_CONNECTIONS", "1")]).expect("config");
+    assert_eq!(
+        (odd.grpc.max_log_calls, odd.step_log_tenant_calls),
+        (1, 1),
+        "at least 1"
+    );
+    let set = parse(&[
+        ("SAGAT_DB_MAX_CONNECTIONS", "20"),
+        ("SAGAT_GRPC_MAX_LOG_CALLS", "6"),
+        ("SAGAT_STEP_LOGS_TENANT_CALLS", "9"),
+    ])
+    .expect("config");
+    assert_eq!(
+        (set.grpc.max_log_calls, set.step_log_tenant_calls),
+        (6, 6),
+        "an explicit cap is kept and the tickets never pass it"
+    );
+    let raised = parse(&[
+        ("SAGAT_DB_MAX_CONNECTIONS", "30"),
+        ("SAGAT_GRPC_MAX_LOG_CALLS", "12"),
+        ("SAGAT_STEP_LOGS_TENANT_CALLS", "10"),
+    ])
+    .expect("config");
+    assert_eq!(
+        (raised.grpc.max_log_calls, raised.step_log_tenant_calls),
+        (12, 10)
+    );
+    // The security review of task T041-7: a cap above half the pool would let log transactions hold the connections
+    // that lease calls need.
+    for (pool, cap) in [("10", "6"), ("10", "12"), ("20", "11"), ("1", "2")] {
+        assert!(
+            matches!(
+                parse(&[
+                    ("SAGAT_DB_MAX_CONNECTIONS", pool),
+                    ("SAGAT_GRPC_MAX_LOG_CALLS", cap)
+                ]),
+                Err(ConfigError::Invalid {
+                    name: "SAGAT_GRPC_MAX_LOG_CALLS",
+                    ..
+                })
+            ),
+            "a cap of {cap} over a pool of {pool} is refused"
+        );
+    }
+    assert!(
+        parse(&[
+            ("SAGAT_DB_MAX_CONNECTIONS", "1"),
+            ("SAGAT_GRPC_MAX_LOG_CALLS", "1")
+        ])
+        .is_ok(),
+        "a pool of 1 still allows one log call"
+    );
+    for name in ["SAGAT_GRPC_MAX_LOG_CALLS", "SAGAT_STEP_LOGS_TENANT_CALLS"] {
+        assert!(
+            matches!(parse(&[(name, "0")]), Err(ConfigError::Invalid { name: n, .. }) if n == name),
+            "{name} must be positive"
+        );
+    }
+}
+
+/// `SAGAT_STEP_LOGS_ENABLED` (design 041 section 10): on by default; an explicit false turns capture off for the
+/// registration policy and the ingest, which read the one value of the worker settings.
+#[test]
+fn step_logs_are_captured_by_default_and_an_explicit_false_turns_them_off() {
+    assert!(parse(&[]).expect("config").worker.step_logs_enabled);
+    let off = parse(&[("SAGAT_STEP_LOGS_ENABLED", "false")]).expect("config");
+    assert!(!off.worker.step_logs_enabled);
+    assert!(
+        parse(&[("SAGAT_STEP_LOGS_ENABLED", "maybe")]).is_err(),
+        "a value that is not a boolean is refused"
+    );
 }
 
 #[test]
@@ -1008,11 +1133,12 @@ fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
     use sagat_execution_engine::settings::{
         PASS_BATCHES, PASS_RESETS, PASS_SCHEDULES, optional_passes,
     };
-    // nothing is on by default: the engine runs none of the three
+    // by default the engine runs the schedule pass (on since 0.3.0, OD-2026-11-13-8) and neither of the other two
     assert_eq!(
         optional_passes(&parse(&[]).expect("config")),
-        Vec::<&str>::new()
+        [PASS_SCHEDULES]
     );
+    const NO_SCHEDULES: (&str, &str) = ("SAGAT_SCHEDULES_ENABLED", "false");
     // each is on by its own variable and by no other
     for (variable, pass) in [
         ("SAGAT_SCHEDULES_ENABLED", PASS_SCHEDULES),
@@ -1020,13 +1146,14 @@ fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", PASS_RESETS),
     ] {
         assert_eq!(
-            optional_passes(&parse(&[(variable, "true")]).expect("config")),
+            optional_passes(&parse(&[NO_SCHEDULES, (variable, "true")]).expect("config")),
             [pass],
             "{variable}"
         );
         // and off said out loud is off
         assert!(
-            optional_passes(&parse(&[(variable, "false")]).expect("config")).is_empty(),
+            optional_passes(&parse(&[NO_SCHEDULES, (variable, "false")]).expect("config"))
+                .is_empty(),
             "{variable}"
         );
     }
@@ -1071,14 +1198,15 @@ fn with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either() {
         let config = parse(&off).expect("config");
         assert!(!config.reset_cancel_source_enabled, "{off:?}");
         assert_eq!(config.resets.expiry, Duration::from_secs(3_600), "{off:?}");
-        assert!(
-            optional_passes(&config).is_empty(),
-            "nothing runs with the flag off, so nothing expires: {off:?}"
+        assert_eq!(
+            optional_passes(&config),
+            [PASS_SCHEDULES],
+            "only the schedule pass of the default runs with the flag off, so nothing expires: {off:?}"
         );
     }
-    // the flag on: one pass, the one that completes and expires
+    // the flag on: one more pass, the one that completes and expires
     let on = parse(&[(WINDOW, "3600"), (FLAG, "true")]).expect("config");
-    assert_eq!(optional_passes(&on), [PASS_RESETS]);
+    assert_eq!(optional_passes(&on), [PASS_SCHEDULES, PASS_RESETS]);
     // there is no pass of the expiry besides it, whatever else is on
     let everything = parse(&[
         (FLAG, "true"),

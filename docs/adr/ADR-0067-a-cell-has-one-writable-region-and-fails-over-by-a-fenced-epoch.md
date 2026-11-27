@@ -1,8 +1,9 @@
 # ADR-0067: A cell has one writable region at a time, fails over active-passive by an operator's activation, and fences everything granted before it with a region epoch
 
-**Status:** Proposed (direction accepted by Owner decision 2026-11-24-2, which answers O1560; implementation may start). The status `Accepted` and ADR-0009's "Superseded in part by ADR-0067" line wait for the region drill report and the commit-latency benchmark, as ADR-0009's review criteria and the constitution's Governance require (feature 032, D1592, T032-063). The constitution amendment was applied in 5.0.0 ahead of that evidence, with the evidence gate written into its text (section "Constitution amendment" below).
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26); revised after independent architecture review (2026-10-27)
+**Status:** Accepted (2026-11-24; confirmed by the coordinating session, Owner decision 2026-11-24-514). Constitution 5.0.0's "Regions" bullet admits standby regions with fenced active-passive failover, offered for production only after the drill report and the commit-latency benchmark; those reports are this decision's release gate. The evidence the constitution's Governance asks of an ADR that diverges from an accepted one (benchmark data, failure tests) is a release gate of feature 032, not a gate of this decision: feature 032 is not released until the region drill report and the commit-latency benchmark of Task T032-063 are in the Evidence section below. ADR-0009 carries the "superseded in part" line from today. Until 2026-11-24 the status read: "Proposed. The owner may accept the direction so that implementation can start; the status `Accepted`, ADR-0009's 'Superseded in part by ADR-0067' line and the constitution amendment below wait for the region drill report and the commit-latency benchmark" (feature 032, D1592, T032-063).
+**Decided by:** agent proposal (2026-10-26); revised after independent architecture review (2026-10-27); accepted on 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-507, after the owner decided the constitution amendment it needed (Owner decision 2026-11-24-2: "single region" becomes one writable region per cell with fenced failover, constitution 5.0.0). Reason: of the five options it weighs, it is the only one that keeps one authority per cell, reuses the lease and fence model, and needs no consensus service of the platform's own; waiting for the evidence before accepting would leave the build without a fixed design while the evidence can only come from the build
 **Refines / supersedes:** Would supersede [ADR-0009](ADR-0009-single-region-first.md) in part once accepted (the single-region constraint, for a cell that declares standby regions; in-region HA and the deferral of active-active stand). Refines [ADR-0020](ADR-0020-the-scheduler-is-sharded-by-run-and-owned-by-lease-with-a-fence.md) (the fence also checks the region epoch). Builds on ADR-0002, ADR-0004, ADR-0012, ADR-0017, ADR-0025.
+**Superseded in part by:** [ADR-0130](ADR-0130-postgresql-high-availability-is-a-reference-topology-with-synchronous-quorum-and-one-moving-address.md) (proposed, design 048): the waited write on every replay path and the barrier on reconnect of decision 6 (FR-032-009 (b) and (d)) are replaced by ADR-0130's decisions 4 and 5, decision 4's read-only role guard moves into ADR-0130's confirmation, and the consequence "no unlogged tables" admits `server_incarnation`, which holds no state of record; this takes effect when ADR-0130 is accepted
 **Enforced by:** pending — the tests that must exist before acceptance of the implementation are named in [specs/032-multi-region-failover/tasks.md](../../specs/032-multi-region-failover/tasks.md): T032-020 (activation is one transaction, crash at every statement), T032-021 (epoch fence with a negative control), T032-023 and T032-058 (region loss mid-commit, cancelled synchronous wait, restart of the former primary, and acknowledgments through replays, duplicates and reads), T032-059 (an epoch-unaware binary cannot take a lease or write), T032-062 (in-region failover inside a two-region cell), T032-060 (tombstones downstream), T032-009 (no unlogged table or sequence), T032-045 (region drill fails on acknowledged loss in `sync_quorum`).
 
 ## Context
@@ -152,9 +153,17 @@ can lose acknowledged work never claims a recovery point objective of zero. This
 (D1592, T032-063). The dependents are listed in
 [the 5.0.0 Sync Impact Report](../governance/constitution-5.0.0-sync-impact.md).
 
+**Overtaken on 2026-11-24.** The owner decided the amendment (Owner decision 2026-11-24-2, which answers O1560): the
+constitution becomes 5.0.0 (MAJOR, not 1.1.0 MINOR as written above, because it also removes items from the
+out-of-scope list), and its technology baseline reads "one writable region per cell with fenced failover (032)". The
+coordinating session drafts it with its Sync Impact Report, which must name this ADR, ADR-0009, ADR-0130 (in-region
+high availability, design 048), `docs/architecture/overview.md`, `docs/architecture/capacity-and-topology.md`,
+`docs/runbooks/disaster-recovery.md`, the assumption lines of specs 001 to 012, and `AGENTS.md`. The paragraph above is
+kept as it was proposed.
+
 ## Evidence
 
-None yet; this is a proposal. Design and sources: [spec](../../specs/032-multi-region-failover/spec.md),
+None yet; the decision is accepted and its evidence is the release gate of feature 032 (Status). Design and sources: [spec](../../specs/032-multi-region-failover/spec.md),
 [research](../../specs/032-multi-region-failover/research.md) (D1560–D1599, G1560–G1584, PostgreSQL
 synchronous replication documentation and source, Temporal and Windmill failover semantics),
 [plan](../../specs/032-multi-region-failover/plan.md). Acceptance of the implementation requires the

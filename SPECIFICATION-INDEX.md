@@ -105,7 +105,7 @@ security and cross-feature consistency) and revised. Suggested order and gates: 
 | [032](specs/032-multi-region-failover/spec.md) | active-passive multi-region cells | ADR-0067 |
 
 **Owner decisions that gate the drafts** (each recorded as an `O…` question in the feature's `research.md`):
-the amendment of constitution principle I for retention (020, ADR-0054; still open); one rule for `pii` leaving
+the amendment of constitution principle I for retention (020, ADR-0054; made in 5.1.0 for the purge after a verified archive, still open for `archive = NONE` and erasure); one rule for `pii` leaving
 the platform (020, O1081, applied by 020/025/026/031); the placement rule for customer-credentialed calls (021,
 ADR-0055, accepted on 2026-11-24 with clause 11(e) under Owner decision 2026-11-24-4); and acceptance of every proposed
 ADR (ADR-0055, ADR-0057, ADR-0061 and ADR-0068 accepted on 2026-11-24, same delegation). Constitution 5.0.0 (2026-11-24,

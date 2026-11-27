@@ -4,15 +4,16 @@
 
 **Created**: 2026-10-26
 
-**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented
+**Status**: Specification, plan and tasks approved for implementation by the owner on 2026-11-11 (Owner decision 2026-11-11-1, "Aprovo os rascunhos 019–032 e 036, pode implementar"); not implemented. Readiness round of 2026-11-24 (delegate, Owner decision 2026-11-24-4): checked against `develop`, ADR-0066 revised and accepted, owner questions O1520 to O1522 decided, checklist accepted ([research.md](research.md#readiness-round-2026-11-24-decided-under-the-delegation-of-owner-decision-2026-11-24-4)).
 
 **Input**: SDK payload codecs (the counterpart of Temporal's data converter and payload codec): encrypt selected
 fields or whole payloads on the client side with customer-managed keys (OpenBao Transit or a cloud KMS), in a
 versioned envelope with key identifiers and rotation, plus a compression codec; a customer-hosted codec server so
 that the Studio can decode in the browser while the platform never holds a key; the engine treats encoded values as
 opaque, and publication rejects expressions, search attributes, analytics declarations, cache keys and forms over
-encoded fields; the interplay with per-field classification (ADR-0033); five-SDK conformance, with the codec ordered
-relative to the SDK interceptors of feature 028.
+encoded fields; the interplay with per-field classification (ADR-0033); six-SDK conformance, with the codec ordered
+relative to the SDK interceptors of feature 028. (Corrected 2026-11-24: Rust is the sixth official SDK, feature 034;
+every "five SDKs" of the first draft reads six, Decision D031-001.)
 
 ## Context and delivery boundary
 
@@ -22,13 +23,13 @@ Today every run input, step output, signal and run result is stored as plaintext
 every value (016 G279). Some customers must keep regulated data (card data, health data, personal data under a
 contract) unreadable to the operator of the orchestration platform, including its administrators.
 
-This feature lets the author of a workflow declare which locations of its payloads are **encoded**, lets the five
+This feature lets the author of a workflow declare which locations of its payloads are **encoded**, lets the six
 SDKs encrypt (and optionally compress) those locations inside customer processes with keys held only by the
 customer, and makes the platform enforce three things it can enforce without a key: that it never accepts plaintext
 where encoding is declared, that it never tries to evaluate what it cannot read, and that ciphertext is delivered
 only to callers the classification allows. It adds the annotation `x-sagat-encoding` and its pinned
 publication checks, the versioned envelope `{"$encoded": {...}}`, write-path validation, SDK data converters with
-key providers in five languages, payload and lease plans, a customer-hosted codec server protocol (the customer's
+key providers in six languages, payload and lease plans, a customer-hosted codec server protocol (the customer's
 identity provider authenticates the person; a platform-signed assertion only narrows) for the Studio and the CLI,
 envelope disclosure under classification, the cross-draft registry of encoded-field positions, and a key-usage
 inventory.
@@ -117,7 +118,13 @@ plan, each defect is refused with its code and pointer, and a pre-feature identi
    `ENCODING_CARRIAGE_MISMATCH` and no child run exists; the same holds for a 030 handler and a 022 `fromRun` pin.
 7. **Given** a version published before this feature that already carried the key `x-sagat-encoding`, **when** the
    identical document is published again, **then** the answer is that version with `encodingRules: 0` and the warning
-   `ENCODING_INERT_VERSION`; nothing is enforced for its runs.
+   `ENCODING_INERT_VERSION`; nothing is enforced for its runs. (Corrected 2026-11-24: under design 043 such an
+   `inputSchema` is outside the supported subset, so in `enforce` mode its starts are refused as
+   `RUN_INPUT_SCHEMA_UNUSABLE`; republishing it with any change gives `encodingRules: 1`, Decision D031-006.)
+8. **Given** a version with `encodingRules: 1` whose `inputSchema` requires `orderId` and marks `/card` encrypted,
+   **when** a start sends an envelope at `/card` and no `orderId`, **then** it is refused by design 043 with
+   `RUN_INPUT_INVALID` and `details.rule = required`; **when** it sends `orderId` and a plaintext `/card`, **then** it
+   is refused with `ENCODING_REQUIRED` at `/card`, never with a 043 rule that names the card (FR-031-037).
 
 ### US02 — Encrypt in clients and workers with customer-managed keys (Priority: P1)
 
@@ -127,7 +134,7 @@ where the node declares it. The platform stores only envelopes at declared locat
 
 **Why this priority**: it is the value of the feature; without it nothing is protected.
 
-**Independent Test**: run the shared `payload-encryption` scenario in each of the five SDKs against the real platform
+**Independent Test**: run the shared `payload-encryption` scenario in each of the six SDKs against the real platform
 and a real OpenBao Transit; capture the wire at the transport hook and the PostgreSQL rows; seed plaintext canaries.
 
 **Acceptance Scenarios**:
@@ -145,8 +152,8 @@ and a real OpenBao Transit; capture the wire at the transport hook and the Postg
 4. **Given** a worker that negotiated an older protocol minor or advertised no codec, **when** a task whose step
    document holds envelopes or whose node declares encoded output is ready, **then** that worker is never leased the
    task, which stays `READY` without consuming an attempt, and a codec-capable worker completes it.
-5. **Given** a TypeScript client that encrypted the input, **when** Go, Python, C# and Java workers decode it, **then**
-   each obtains byte-identical plaintext; a tampered header or ciphertext fails authentication in all five.
+5. **Given** a TypeScript client that encrypted the input, **when** Go, Python, C#, Java and Rust workers decode it,
+   **then** each obtains byte-identical plaintext; a tampered header or ciphertext fails authentication in all six.
 6. **Given** a handler whose output contains a platform secret resolved in the same attempt, **when** the SDK is about
    to encode it, **then** the step fails locally with `SECRET_IN_OUTPUT` and nothing is sent.
 7. **Given** an envelope copied from a run of namespace N1 into a start request of namespace N2, **when** it arrives,
@@ -155,6 +162,9 @@ and a real OpenBao Transit; capture the wire at the transport hook and the Postg
 8. **Given** a handler of a node with encoded input that records heartbeat checkpoint details (019) or appends stream
    events (026) to a channel without an encoded schema, **when** they arrive, **then** they are refused with
    `ENCODING_REQUIRED` and the lease is still renewed.
+9. **Given** a handler that writes the decoded card number into a step-log line (041) or into the message of an
+   exception, **when** the line or the `FailStep` leaves the worker, **then** the card number is replaced by
+   `[REDACTED]` and no stored step-log row or failure holds it (FR-031-038).
 
 ### US03 — Rotate keys and survive key and KMS failures (Priority: P1)
 
@@ -175,9 +185,10 @@ the Studio and the canaries.
    expired, **then** the step fails with `PAYLOAD_KEY_UNAVAILABLE` (not retryable) and follows its `onError` or failure
    policy; no plaintext or ciphertext appears in the failure.
 3. **Given** the KMS is unreachable, **when** a worker host notices it, **then** it stops claiming tasks with a payload
-   plan (they stay `READY`, no attempt spent); a task already claimed fails with `PAYLOAD_CODEC_UNAVAILABLE` (retryable)
-   under its ordinary retry budget; **when** a client must encode a start, **then** the SDK raises the same code before
-   sending anything and no run exists.
+   plan (they stay `READY`, no attempt spent); a task already claimed whose input it cannot decode is handed back with
+   `TASK_NOT_STARTED` at protocol 1.8 or later (no attempt spent, once per attempt) and otherwise fails with
+   `PAYLOAD_CODEC_UNAVAILABLE` (retryable) under its ordinary retry budget; **when** a client must encode a start,
+   **then** the SDK raises the same code before sending anything and no run exists.
 4. **Given** a compensation whose `steps.<node>.output` envelope cannot be decoded, **when** it runs, **then** it fails
    like any compensation and reaches the existing manual-review path; nothing is assumed undone.
 5. **Given** retained runs, **when** the administrator asks which key versions their envelopes use, **then** the
@@ -313,7 +324,8 @@ restart, and compare counts with a direct count.
 - An array wildcard location over an empty array; over 1,024 elements (ceiling: `ENVELOPE_INVALID`, reason too many
   envelopes); arrays of arrays up to four wildcards.
 - An envelope whose `v` is unknown, whose `codecs` repeats a stage or puts compression after the cipher, whose header
-  exceeds 2 KiB, or whose `data` is not canonical base64: `ENVELOPE_INVALID`.
+  exceeds 3 KiB (3,072 bytes; corrected 2026-11-24 from 2 KiB, which the largest legal header of 2,317 bytes exceeds,
+  Decision D031-013), or whose `data` is not canonical base64: `ENVELOPE_INVALID`.
 - An envelope-shaped object at an undeclared location of a rules-1 carrier: refused (`ENCODING_CARRIAGE_MISMATCH`); in a
   rules-0 carrier it is ordinary JSON. SDKs decode only planned pointers.
 - An envelope moved to another element of the same array, or replayed into another run of the same namespace at the
@@ -354,8 +366,9 @@ restart, and compare counts with a direct count.
   per `items`), reached from the root through those keywords only. Refused, with the JSON pointer of the annotation:
   under `additionalProperties`, `patternProperties`, `prefixItems`, `allOf`, `anyOf`, `oneOf`, `$defs` or a `$ref`
   target, or on a property named `*` (`ENCODING_UNSUPPORTED_LOCATION`); under another encoded location
-  (`ENCODING_NESTED`); more than 64 locations per carrier, more than 4 wildcards or 16 segments per location, or a carrier
-  over the 016 bounds (`ENCODING_TOO_COMPLEX`); a value other than the two strings (`ENCODING_INVALID_VALUE`).
+  (`ENCODING_NESTED`); more than 64 locations per carrier, more than 4 wildcards or 16 segments per location, a pointer
+  pattern longer than 512 bytes in its JSON-escaped form (D031-013), or a carrier over the 016 bounds
+  (`ENCODING_TOO_COMPLEX`); a value other than the two strings (`ENCODING_INVALID_VALUE`).
 - **FR-031-003**: The effective level of an encoded location MUST be the strictest of its effective level under the
   016 rules and every level declared or implied (undeclared `pii`) in its subtree. `validate` MUST report each encoded
   location with its encoding and level, and warn `ENCODING_LEVELS_COLLAPSED` when the subtree mixed levels.
@@ -381,9 +394,10 @@ restart, and compare counts with a direct count.
   write paths of the IR and of the parity drafts (coordinator C7) and expose one encoded-location check that those
   features call at publication; they MUST refuse a declaration that reads an encoded location with the registry's code —
   `ENCODING_READ_BY_SEARCH_ATTRIBUTE`, `ENCODING_READ_BY_ANALYTICS` (020, carriage included), `ENCODING_READ_BY_CACHE_KEY`,
-  `ENCODING_READ_BY_CONCURRENCY_KEY` (022), `ENCODING_READ_BY_FAIRNESS_KEY` (019), `ENCODING_READ_BY_FORM` (026),
-  `ENCODING_READ_BY_DECLARED_OPERATION` (014), `ENCODING_NOT_PRODUCIBLE` (027 write mappings and other platform- or
-  app-produced values), `ENCODING_READ_BY_EXPRESSION` (021, 024, 025, 027 predicates and the rest) — and define no
+  `ENCODING_READ_BY_CONCURRENCY_KEY`, `ENCODING_READ_BY_RATE_LIMIT_KEY` (022), `ENCODING_READ_BY_FAIRNESS_KEY` (019),
+  `ENCODING_READ_BY_FORM` (026), `ENCODING_READ_BY_DECLARED_OPERATION` (014), `ENCODING_NOT_PRODUCIBLE` (027 write
+  mappings and other platform- or app-produced values), `ENCODING_READ_BY_EXPRESSION` (021, 024, 025, 027 predicates,
+  042 stage expressions and the rest) — and define no
   encrypted-field code of their own. A consumer that cannot call the check MUST refuse any document with encoded
   locations. A draft that adds a position registers it in the same delivery.
 - **FR-031-007**: The interpretation MUST be pinned: `workflow_versions.encoding_rules` is `0` for every version published
@@ -460,7 +474,10 @@ restart, and compare counts with a direct count.
   refuses to start unless explicitly marked for test use. No provider MAY read platform secrets or `ctx.secrets()`.
   Data-key reuse and unwrap caches MUST be bounded by uses, age and entries within the ceilings of the plan; zero
   disables them. While its key provider reports unhealthy, a worker host MUST stop claiming tasks with a payload plan
-  (D1665).
+  (D1665). A host at protocol 1.8 or later that cannot decode a claimed lease's planned locations because its key
+  provider is unavailable, before any handler started and before any `ResolveSecrets` call, MUST hand the lease back
+  with `TASK_NOT_STARTED` (ADR-0099 decision 5) instead of failing it; a second such failure of the same attempt fails
+  `PAYLOAD_CODEC_UNAVAILABLE` (D031-004).
 - **FR-031-019**: Before encoding an output, a checkpoint or a stream event, the worker host MUST scan the plaintext for
   values the attempt resolved through `ResolveSecrets` and fail with `SECRET_IN_OUTPUT` instead of sending.
 - **FR-031-020**: SDK failures MUST use the canonical error type with the new codes `PAYLOAD_ENCODE_FAILED`,
@@ -468,13 +485,14 @@ restart, and compare counts with a direct count.
   `PAYLOAD_CODEC_UNAVAILABLE` (retryable), reported as `FailStep` codes by the worker host; messages never contain a
   value, ciphertext, key, wrapped key or KMS response body.
 - **FR-031-021**: Decoders MUST bound the decoded size (default 4 MiB, hard 64 MiB) while decompressing, refuse headers
-  over 2 KiB, duplicate members and envelopes outside the closed format, and wipe data keys from memory when evicted
+  over 3 KiB (3,072 bytes, D031-013), duplicate members and envelopes outside the closed format, and wipe data keys from memory when evicted
   where the language allows. Encoders MUST pad compressed plaintext to the size buckets of the envelope contract before
   encryption unless explicitly disabled.
-- **FR-031-022**: The five SDKs MUST pass shared conformance: byte-identical builder documents with the annotation; a
-  5×5 interoperability matrix in which every SDK decodes the shared envelope vectors and every other SDK's encodings to
-  identical bytes; a runtime scenario whose wire capture shows envelopes only and whose goldens are equal; the fault
-  cases of FR-031-020.
+- **FR-031-022**: The six SDKs (TypeScript, Go, Python, C#, Java, Rust) MUST pass shared conformance: byte-identical
+  builder documents with the annotation; a 6 × 6 interoperability matrix (36 ordered pairs of encoder and decoder) in
+  which every SDK decodes the shared envelope vectors and every SDK's encodings to identical bytes; a runtime scenario
+  whose wire capture shows envelopes only and whose goldens are equal; the fault cases of FR-031-020; the hand-back of
+  FR-031-018; the redaction of FR-031-038.
 
 **Codec server, Studio and CLI**
 
@@ -543,7 +561,7 @@ restart, and compare counts with a direct count.
 - **FR-031-033**: IR, OpenAPI, worker protocol and AsyncAPI changes MUST be additive; versions with `encodingRules: 0`,
   their runs, older workers, older Studio builds and older SDKs MUST keep working; the canonical contracts are updated
   from the fragments in `contracts/` in the same delivery.
-- **FR-031-034**: The delivery MUST ship `docs/guides/client-side-encryption.md` (five languages), the runbook
+- **FR-031-034**: The delivery MUST ship `docs/guides/client-side-encryption.md` (six languages), the runbook
   `docs/runbooks/payload-encryption.md` (key rotation, KMS outage, codec-server outage, lost key, origin change, scan,
   activation and rolling upgrade, customer session setup), regenerated `docs/reference/` pages, and the happy/failure
   demo of `quickstart.md`.
@@ -552,12 +570,26 @@ restart, and compare counts with a direct count.
   or the channel's `schema` is a carrier of a rules-1 version, and then pass the checks of FR-031-010; otherwise they are
   refused with `ENCODING_REQUIRED` without blocking lease renewal. Delivered checkpoints are part of the next lease's
   decode plan.
-- **FR-031-036**: Publication of a document that declares encoding MUST be refused (`ENCODING_NOT_ACTIVATED`) until an
-  audited operator command activates the feature through feature 018's instance-capability registry (FR-018-052), which
-  succeeds only when every live control-plane and execution-engine instance reports `payload-encoding-v1`; once the
-  requirement is recorded, a registered instance without it does not serve (018). Live instances without the capability
-  are reported by the gauge `payload_encoding_incapable_members`. Validation of already published rules-1 versions
-  never depends on activation.
+- **FR-031-036**: Publication of a document that declares encoding MUST be refused (`ENCODING_NOT_ACTIVATED`) until the
+  operator command `control-plane payload-encoding-activate`, run with the schema-owning role, records the requirement
+  `payload-encoding-v1` for the control plane and the execution engine through feature 018's instance-capability
+  registry (FR-018-052, ADR-0082), which succeeds only when every live instance of both kinds lists the capability; the
+  registry's `platform_requirement_history` is the audit of it. Once the requirement is recorded, a registered instance
+  without it does not serve (ADR-0082 decision 3). The publish transaction MUST read the requirement through a fence
+  that takes the requirement epoch `FOR SHARE`, and `payload-encoding-deactivate` MUST be refused while any version
+  with `encoding_rules = 1` exists, so no rules-1 version commits without the requirement (D031-005). Live instances
+  without the capability are reported by the gauge `payload_encoding_incapable_members`. Validation of already published
+  rules-1 versions never depends on activation.
+- **FR-031-037**: Run input validation (design 043, ADR-0090) MUST agree with encoding (D031-006): publication gives 043's
+  pre-check the `inputSchema` without its `x-sagat-encoding` members; for a version with `encoding_rules = 1` the start
+  gate validates the encoded view (each encoded location's subschema replaced by `true`); at every run creator the
+  envelope checks of FR-031-010 run before 043's validation and their reasons take precedence; the carriage mapping of
+  FR-031-005 runs before 043's check of a child or a continuation. The server never validates plaintext constraints at
+  an encoded location (G031-001).
+- **FR-031-038**: The worker host MUST redact, by value and before a line leaves the process, the decoded values of the
+  planned locations of every attempt in flight from step-log text (design 041, ADR-0085 rule 1) and from `safe_message`,
+  under the rule of `sagat_domain::scripts::redact` (values of at least 6 bytes, longest first, replaced by `[REDACTED]`);
+  the set is held only while its attempt runs (D031-007, G031-002).
 
 ### Non-Functional Requirements
 
@@ -584,12 +616,14 @@ restart, and compare counts with a direct count.
 - **Namespace codec endpoint** (URL, origin, level ceiling and its setter, revision).
 - **Codec assertion** (signed narrowing claims; single use; not stored, audited).
 - **Encoded-field registry** (positions, carriers and write paths across drafts).
-- **Encoding activation** and the capability of each engine and control-plane replica.
+- **Encoding activation**: the requirement `payload-encoding-v1` recorded in 018's registry, and the capability of each
+  engine and control-plane instance; its history is the registry's `platform_requirement_history` (D031-005).
 - **Key-usage scan** and its results.
 - **Codec capability** of a worker session (negotiated minor plus advertised codec).
-- **Audit actions**: `codec.endpoint_set`, `codec.endpoint_removed`, `codec.assertion_issued`, `codec.assertion_denied`,
-  `payload.key_usage_scan_started`, `payload.key_usage_scan_finished`, `run.encoding_refused`,
-  `payload.encoding_activated`, `payload.encoding_deactivated`.
+- **Audit actions** (seven): `codec.endpoint_set`, `codec.endpoint_removed`, `codec.assertion_issued`,
+  `codec.assertion_denied`, `payload.key_usage_scan_started`, `payload.key_usage_scan_finished`, `run.encoding_refused`.
+  (Corrected 2026-11-24: `payload.encoding_activated` and `payload.encoding_deactivated` are dropped, because an audit
+  record needs a tenant and the activation is deployment-wide.)
 
 ## Success Criteria *(mandatory)*
 
@@ -602,10 +636,12 @@ restart, and compare counts with a direct count.
   stable digest on a second publish; an identical pre-feature document returns `encodingRules: 0`; the plan endpoint
   returns exactly the corpus plans; every registry row has a fixture that its consumer's check refuses with the
   registry's code (rows of drafts not yet merged run when they merge). (FR-031-001..008)
-- **SC-031-003**: The five SDKs produce byte-identical annotated documents, and the 5×5 interoperability matrix decodes
-  every vector to identical bytes; every tampered vector fails in all five. (FR-031-009, 016..018, 021, 022)
-- **SC-031-004**: The runtime scenario passes in all five SDKs with equal goldens; the wire capture contains envelopes and
-  no plaintext at declared locations. (FR-031-015..017, 022)
+- **SC-031-003**: The six SDKs produce byte-identical annotated documents, and the 6 × 6 interoperability matrix (36
+  ordered pairs) decodes every vector to identical bytes; every tampered vector fails in all six. (FR-031-009, 016..018,
+  021, 022)
+- **SC-031-004**: The runtime scenario passes in all six SDKs with equal goldens; the wire capture contains envelopes and
+  no plaintext at declared locations; a canary decoded in a handler and written to a step log or an exception message is
+  in no stored step-log row, failure or span. (FR-031-015..017, 022, 038)
 - **SC-031-005**: Rotation, disabled version, KMS outage, unknown `kid`, cache expiry and a secret in an output each
   produce the specified typed outcome and retry count; zero plaintext is persisted in any of them. (FR-031-018..021)
 - **SC-031-006**: Crash at each commit point of the plan, duplicate start, signal and completion (identical and re-encoded bytes), lost
@@ -637,6 +673,10 @@ restart, and compare counts with a direct count.
   reset into another version, a 030 handler, a trigger start with an undeclared envelope, a re-rooted carriage, and an
   envelope pasted from another namespace or location; a crash between the mapping check and the admission commit leaves
   no child. (FR-031-005, 010, 011)
+- **SC-031-015**: For each run creator of design 043's table, a start with plaintext at an encoded location is refused
+  with `ENCODING_REQUIRED`, a start with an envelope there and a 043 violation elsewhere is refused with
+  `RUN_INPUT_INVALID`, and a start that satisfies both creates the run; a publication with `x-sagat-encoding` passes
+  043's pre-check in `enforce` mode. (FR-031-037)
 
 ## Assumptions
 
@@ -654,17 +694,30 @@ restart, and compare counts with a direct count.
   disclosure), 017 (OpenBao precedent); ADR-0002, 0014, 0016, 0017, 0023, 0027, 0028, 0031, 0032, 0033, 0035.
 - **New features (drafts in progress):** every draft in the [registry](contracts/encoded-field-registry.md) (018, 019,
   020, 021, 022, 024, 025, 026, 027, 030) cites it and uses its codes (coordinator C7); 028 only for interceptor ordering
-  (C5: 031 owns the only payload-transforming stage); 019 and 026 for the protocol minor and the side-channel carriers
+  (C5: 031 owns the only payload-transforming stage); 019 and 026 for the side-channel carriers (corrected 2026-11-24:
+the protocol minor is the register's next free one, D031-002)
   (`heartbeatSchema`, stream channel schemas; C6 amendment of FR-016-002); 018 for the instance-capability registry
   (FR-018-052, ADR-0050 decision 9) through which activation works; 020 for the C9 egress rule by envelope level; 027/ADR-0062 for the combined Studio CSP (C15); 032 for the key
   inventory entry of the assertion keys (C11); 030 encoded values do not cross namespaces (D1667).
+- **Landed or designed since the draft (checked 2026-11-24):** 018's instance-capability registry is built (ADR-0082,
+  `Capability::PayloadEncodingV1` already listed); 034 makes Rust the sixth SDK (ADR-0070); design 038 shapes the claim
+  path the gating joins (D031-010); design 041 holds protocol 1.7 and its by-value redaction carries decoded values
+  (ADR-0084, ADR-0085, FR-031-038); design 042 adds stage expressions that are inspection positions (ADR-0086,
+  ADR-0087, D031-008); design 043 validates run input and agrees with the encoded view (ADR-0090, ADR-0092,
+  FR-031-037); feature 022's rate limits add a key position (D031-009); feature 006's delivery acknowledgement holds
+  protocol 1.8 (ADR-0099), whose hand-back saves the attempt on a KMS failure (FR-031-018); design 045 holds protocol 1.9
+  and its fields are never encoded (D031-003); design 040 maps the audit actions to OCSF (D031-014); design 044 reuses
+  the converter (D031-012).
 - **Draft not required:** feature 015 (OpenBao Transit for platform keys) would hold the assertion signing key when it
   lands (D1555).
 
 ## Out of Scope
 
 - Server-side decryption, a decode proxy, platform-held customer keys, a "trusted executor" with customer keys (G1529).
-- Encoding of search attributes, workflow ids, memo-like metadata, failure codes, journal facts or audit records.
+- Encoding of search attributes, workflow ids, memo-like metadata, failure codes, journal facts or audit records; on
+  the worker protocol, `FailStepRequest.error_code` and `safe_message` stay as they are today, and design 045's
+  `next_retry_delay_ms` and lease timeout fields are never payloads (D031-003). Draft 019's checkpoint `details_json`
+  is a payload and is encoded under the lease's `checkpoint` plan.
 - Re-encryption (rewrap) of retained payloads; deterministic or searchable encryption.
 - Studio encoding (start/signal forms over encoded fields); per-user codec endpoint overrides.
 - Field-level encoding of event data without a declared `waitEvent` and of declared Query/Update results (G1524,
@@ -679,3 +732,7 @@ provider), O1521 (codec authentication: the customer's identity provider authent
 assertion only narrows — adopted by the coordinator on 2026-10-27, pending the owner), O1522 (reference codec server
 status, default example plus conformance). The decision this specification proposes is
 [ADR-0066](../../docs/adr/ADR-0066-client-side-payload-encryption.md) (Proposed).
+
+Decided on 2026-11-24, delegate (OD-2026-11-24-4): O1520 option (a), O1521 option (a), O1522 option (a), with their
+reasons in [research.md](research.md#owner-questions-decided-on-2026-11-24); ADR-0066 is revised and Accepted. No owner
+question of this feature is open.

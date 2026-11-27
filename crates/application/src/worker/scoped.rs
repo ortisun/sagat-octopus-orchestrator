@@ -62,20 +62,19 @@ where
     pub(super) async fn live_path_fence(
         tx: &mut <S as PathExecutionStore>::Tx,
         task: &TaskRef<'_>,
-        allow_cancellation: bool,
+        stop: StopAllowance,
     ) -> Result<(), AppError> {
         Self::verify_path_lease(tx, task).await?;
         let snapshot = tx.snapshot();
-        let valid = snapshot
-            .state
-            .local_instance(task.instance.node())
-            .is_some_and(|step| {
-                step.attempt() == task.fence.attempt
-                    && step.generation() == task.fence.generation
-                    && (allow_cancellation || !step.cancel_requested())
-            })
-            && !snapshot.state.global().status().is_terminal()
-            && (allow_cancellation
+        let step = snapshot.state.local_instance(task.instance.node());
+        // an acknowledged cancellation, or a hand-back of a lease still `LEASED` (decision D006-097)
+        let stop_allowed = step.is_some_and(|step| stop.allows(step.status()));
+        let valid = step.is_some_and(|step| {
+            step.attempt() == task.fence.attempt
+                && step.generation() == task.fence.generation
+                && (stop_allowed || !step.cancel_requested())
+        }) && !snapshot.state.global().status().is_terminal()
+            && (stop_allowed
                 || task.instance.node().is_derived()
                 || snapshot.state.global().stop_reason().is_none());
         if !valid

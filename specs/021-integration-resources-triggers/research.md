@@ -633,3 +633,5 @@ weighed and the one with the most architectural and business advantage was chose
 - Gap 1133: closed by Owner question 1122 (Decision 021-004).
 - Gap 1137 and Gap 1142: unchanged in the code at `2c94064f`.
 - Decision 1131: superseded for the OAuth scheme by Decision 021-001.
+
+Note (2026-11-20, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9. A host of 1.9 or later also carries the 1.8 host procedure (a flagged lease is acknowledged before it runs), so the SDK work of delivery acknowledgement comes before any later minor in the SDKs. `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken.

@@ -323,9 +323,12 @@ What a server says is bounded (SPEC sections 6.2, 8 and 10), and each rule has a
   the call fails as `PROTOCOL`. The deadline of a call (`timeout`) covers the whole exchange, body included.
 * The `message` of an error is cut to 512 characters, its `reason` to 128, a `traceId` that is not 32 lower case hex
   characters is not repeated; text is cut by code points and never leaves a lone surrogate (U+FFFD instead).
-* A poll answer that carries more tasks than were asked for runs the first ones, logs the rest and leaves their leases to
-  lapse; a session refused again right after registering is registered again with a backoff, not in a loop; the host
-  runs at most `maxInflight` handlers.
+* A poll answer or a stream frame that carries more tasks than were asked for runs the first ones and hands the rest back
+  with `FailStep` `TASK_NOT_STARTED` (SPEC section 6.2), as it does for what it receives once `stop` began, the rest of a
+  frame over the input budget and a task the task pool refused, from protocol 1.8; below it the lease lapses. A
+  duplicate lease is ignored, never handed back. A
+  session refused again right after registering is registered again with a backoff, not in a loop; the host runs at
+  most `maxInflight` handlers.
 * A number with an exponent such as `1e999999999` is never expanded in memory (the wire text keeps `1E+999999999`; the
   canonical text refuses it or reads it as the double it is); typed input binding is Jackson 2.22.3 or newer, because
   2.22.2 spends seconds on a 40 000 character string given to a number field.

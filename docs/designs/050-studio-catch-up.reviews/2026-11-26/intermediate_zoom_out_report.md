@@ -1,0 +1,14 @@
+# egm-review, Stage 8 (Intermediate Zoom Out) of design 050 (2026-11-26)
+
+Doc: docs/designs/050-studio-catch-up.md
+Reviewed-commit: 1b5b03cc
+Reviewer: egm-review (Stage 8, egm-zoom-out)
+EGM-hash: 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+Note: condensed by the author to one paragraph per finding, every severity, location and fix kept. The reviewer found the objective clear and the design still one deliverable (the operator screens call existing routes in separate tasks, so the contest of Stage 5 finding 1 still holds); the server work grew, and two additions do not earn their cost.
+Counts: Blocker 0, Major 2, Nit 3
+
+1. **Major. Technical Plan 5 "The source", Task 050-9, the Overview, Constitution Check I.** The migration adding `failed_iteration` and `failure_code` duplicates columns that exist: `drain_kind`, `drain_iteration` and `drain_failure_code` on `iteration_scopes` (`20261103000000_collection_drain`) and `loop_scopes` (`20261107000000_loop_drain`), written by the drain statements (`primitives.rs:2820`, `loop_progress.rs:2766`). The Stage 9 premise was false. One fact stored twice, three engine write paths touched, a false runbook caveat, and two summaries made untrue. Fix: delete the migration and writes, map from the existing columns, drop the caveat; Task 050-9 becomes read-only.
+2. **Major. The `RUN_ENDED` change (Overview, Requirement 050-010, Technical Plan 6, Non-functional requirement 050-003, Gap 050-001, Task 050-4).** A `run_ended` input through the domain, a public behaviour change, five SDK tests and four integration tests, for a state the design itself says no public call reaches; a run's end cancels its approvals (`execution.rs:5752`), and the probe that would show otherwise runs after the mechanism is built. Fix: the probe first; if it passes, a run-status predicate in the scan, unchanged `may_decide` and `decide`, the adapter guard moved after authorization, nothing in the SDKs.
+3. **Nit. Decision 050-006, Technical Plan 7, Tasks 050-2, 050-11.** Two lists of audit actions (OpenAPI `x-known-values` with no reader, and the Studio's JSON); `ALL` by a position `match` where the domain already has a table macro (`failure.rs`). Fix: one list (the JSON), the table macro.
+4. **Nit. Requirement 050-012, Technical Plan 6, Task 050-14.** The refresh rules are specified as new where `RunListStore` and TanStack Query's `refetchInterval` already do them; the back-off does not lower the bounded worst case; the 300-inbox driver re-implements the schedule in Rust. Fix: name the reuse; measure latency at a fixed rate.
+5. **Nit. Requirement 050-004, Technical Plans 3 and 4, Task 050-15.** No kind of this design uses kind-level capability gating; the one capability use (the `forEach` stage list read-only without `workflow.collection-operators`) has no Studio test. Fix: say the kind-level variant is for feature 022; add a test for the stage list.

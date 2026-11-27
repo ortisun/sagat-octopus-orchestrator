@@ -3,7 +3,7 @@
 //!
 //! A capability is listed when the **process** will honour it, not when the binary could: it is the code of the binary
 //! narrowed by the passes the configuration turns on. `schedules-v1` is the promise that this engine fires the schedules
-//! (and, after the handover, the cron triggers that became schedules); an engine with `SAGAT_SCHEDULES_ENABLED` unset runs
+//! (and, after the handover, the cron triggers that became schedules); an engine with `SAGAT_SCHEDULES_ENABLED=false` runs
 //! no schedule pass, so it does not list it, an activation that requires it from every live engine refuses it by name,
 //! and one that is restarted without the pass after the handover is refused at registration and closes its whole gate.
 //! The flags are read from the environment once, so the list is true for the life of the process.
@@ -26,5 +26,10 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     if config.run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
         listed.push(Capability::RunInputValidationV1);
     }
+    // feature 006 (decision D006-004): every engine of this build replays `step.lease_withdrawn`, whatever it runs
+    listed.push(Capability::LeaseWithdrawalV1);
+    // the follow-up of pull request #260 (decisions D006-096 and D006-098): it replays every cause of the event, and serves
+    // no capability call while its registry is silent
+    listed.push(Capability::LeaseWithdrawalV2);
     listed
 }

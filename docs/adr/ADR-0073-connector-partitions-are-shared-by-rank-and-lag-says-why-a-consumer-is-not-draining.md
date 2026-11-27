@@ -1,7 +1,7 @@
 # ADR-0073: Connector partitions are shared by rank among the replicas that read them, and a connector's lag says why it is not draining
 
-**Status:** Proposed (2026-10-28)
-**Decided by:** agent proposal for the owner's review; the owner asked for lag-based consumer scaling and confirmed the Kafka direction as a recommended default (O1701, not yet confirmed as a decision)
+**Status:** Accepted (2026-11-24) for implementation; the evidence section is filled when the tests it names have run
+**Decided by:** agent proposal for the owner's review; the owner asked for lag-based consumer scaling; O1701 was decided on 2026-11-24 as recommended (delegate, Owner decision 2026-11-20-6, Owner decision 2026-11-24-501). Accepted on 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-505: positions in PostgreSQL keep the admission and the offset in one commit, which a consumer group cannot. Refined at acceptance: the rank share is switched on through an instance-registry capability only when no process without it is live (Architecture decision 0082; `specs/036-elastic-scaling/research.md`, D036-004), so the unbalanced rolling upgrade named under Consequences does not happen
 **Refines / supersedes:** refines ADR-0012 (events pass through a durable inbox) and ADR-0002; extends the lease pattern of ADR-0020 with an exact rank-based share; supersedes nothing
 **Enforced by:** `integration_elastic_scaling` assignment tests and `fault_elastic_scaling` handover tests on a real Kafka broker, the property test of `partition_targets`, a conformance test that every inbound connector kind implements `LagProbe`
 

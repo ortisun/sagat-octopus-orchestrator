@@ -323,3 +323,39 @@ not deployed and not checked.
   `sync_quorum` as reference mode; RPO/RTO across regions remain benchmark criteria, not published and
   not a release gate, until measured on a real two-region installation.
 - **O1562** — Placement granularity? Recommended default: tenant home cell (D1576).
+
+Note (2026-11-21, from Architecture decision 0099): worker-protocol minor 1.8 is reserved for delivery acknowledgement (feature 006, Owner decision 2026-11-20-12; Owner question 006-002); the next free minor is 1.9, and minors are cumulative, so a host of a later minor carries the 1.8 host procedure (a flagged lease is acknowledged before it runs). `TaskLease` fields 23 and 24 and `WorkerCapabilities` field 10 are taken. Its region activation promotes another database server, whose start time differs, so a mark of delivery acknowledgement (which counts only on the server it was written on) already ends there and its epoch need not be stamped on the marks; in a quorum cell the verdicts `duplicate` and `recovered` follow its Requirement 032-009 item (b); the acknowledgement commits with `synchronous_commit` at least `local`, and a replication wait cut short by its statement timeout is covered the same way.
+
+## 6. Readiness, 2026-11-24
+
+Read again against `develop` at `546d5aa5`; the corrections are in `plan.md`, "Readiness against `develop`
+(2026-11-24)". Nothing above is changed. The bare range D1560 to D1599 is used up (D1600 to D1602 belong to feature
+022), so new decisions take the feature-scoped form.
+
+**Owner questions, settled.** O1560: answered by the owner (Owner decision 2026-11-24-2, constitution 5.0.0); ADR-0067
+accepted (Owner decision 2026-11-24-507). O1561 and O1562: as recommended, delegate (Owner decision 2026-11-20-6), Owner
+decisions 2026-11-24-508 and 2026-11-24-509; the reasons are in the specification's "Owner questions".
+
+**Decisions.**
+
+- **D032-001 — An identity column is allowed when its values never leave the database as an identifier.** Physical
+  replication carries a sequence's state, so a promoted standby never repeats a value it saw committed; what a lossy
+  activation can repeat is a value of a lost transaction. That matters only for a value that was exported, used as a
+  cursor or compared across an activation. `platform_requirement_history.id` is none of these (an operator's history,
+  read ordered by time); the contract test of T032-009 lists the allowed columns by name with this reason and refuses
+  any other sequence, `serial` or identity column.
+- **D032-002 — The region check comes before the instance registry's gate,** `/v1/region` is exempt from both, a
+  passive process skips the registry heartbeat, activation removes the serving rows of earlier epochs, and
+  region-awareness is the registry capability `region-v1` that `region-init` requires of every live process
+  (Architecture decision 0082). Refines D1593 and FR-032-031's "replace every process before `region-init`".
+- **D032-003 — The region epoch is its own component of every cursor,** separate from the stream generation that
+  feature 026 calls "epoch" in its `<epoch>.<offset>` cursor; design 041's step-log cursor carries it too (T032-069).
+
+**Gaps.**
+
+- **G1585 — `sync_quorum` across regions needs a stretched HA cluster.** CloudNativePG replica clusters and Patroni
+  standby clusters stream asynchronously; a synchronous quorum across regions needs one cluster that spans them
+  (Patroni with an etcd of three regions, or CloudNativePG on a Kubernetes cluster that spans them). The HA manager owns
+  `synchronous_standby_names` (design 048); D1591's manual setting is replaced. T032-003's harness records the answer.
+- **G1586 — Feature 026's cursor does not carry the region epoch yet.** Until 026 is built with D032-003, a Workflow
+  Stream follower after a lossy activation resets by 026's own rule only.

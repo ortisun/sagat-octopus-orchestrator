@@ -30,7 +30,7 @@
           "properties": {
             "t": {"type": "string", "format": "uuid", "description": "Tenant id."},
             "n": {"type": "string", "format": "uuid", "description": "Namespace id."},
-            "p": {"type": "string", "maxLength": 512, "pattern": "^(/([^/~]|~[01])*)*$", "description": "Pointer pattern of the location in its carrier; '' is the root; a '*' segment is every array element."}
+            "p": {"type": "string", "maxLength": 512, "pattern": "^(/([^/~]|~[01])*)*$", "description": "Pointer pattern of the location in its carrier; '' is the root; a '*' segment is every array element. maxLength counts code points; parsers also refuse a pattern over 512 bytes in its JSON-escaped form, and a header over 3,072 bytes in its RFC 8785 canonical form (envelope.md section 1)."}
           }
         },
         "key": {
