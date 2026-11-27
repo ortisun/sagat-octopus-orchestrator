@@ -1,15 +1,13 @@
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { EMPTY_CHAIN, Xoshiro256, bodyDigest, extendChain, hex, rfc8785, type CommandKind } from '../../src/workflows/index.js';
-import { hashedBody } from '../../src/workflows/chain.js';
+import { commandDigestInput, hashedBody } from '../../src/workflows/chain.js';
 import { splitMix64Words } from '../../src/workflows/context.js';
 
-// The golden corpus of Task 044-30 (the server lane writes it with its own generator); until it merges, the corpus
-// test is skipped with the release gate's text, and the vectors below come from outside this repository.
+// The golden corpus of Task 044-30, written by the server lane's own generator (`generate.mjs`), never by this SDK.
 const CORPUS = new URL('../../../../../specs/044-workflow-as-code/contracts/goldens/vectors/', import.meta.url);
-const PENDING = process.env['SAGAT_RUN_PENDING'] === '1' ? false : 'green with Task 044-30';
 
 test('the generator follows the published outputs of SplitMix64 and xoshiro256**', () => {
   // SplitMix64 from 0: the first output is 0xe220a8397b1dcdaf (Steele, Lea and Flood; Vigna's reference code).
@@ -67,31 +65,110 @@ test('the chain folds the uint32 big-endian length of d(k) before d(k)', () => {
   assert.equal(hex(extendChain(EMPTY_CHAIN, 1, 'activity', 'inventory.reserve', bodyDigest(command))), expected);
 });
 
-test('the corpus vectors of Task 044-30 hold', { skip: PENDING }, () => {
-  // The files the corpus README names; each must yield at least one compared vector, so this test cannot pass empty.
-  assert.ok(existsSync(CORPUS), 'the corpus of Task 044-30 is not on this branch');
-  const read = (name: string): Record<string, unknown>[] => {
-    const value = JSON.parse(readFileSync(new URL(name, CORPUS), 'utf8')) as unknown;
-    const list = Array.isArray(value) ? value : ((value as Record<string, unknown>)['vectors'] as unknown[]);
-    assert.ok(Array.isArray(list) && list.length > 0, `${name} holds no vector`);
-    return list as Record<string, unknown>[];
-  };
-  for (const vector of read('rfc8785.json')) {
-    assert.equal(Buffer.from(rfc8785(JSON.parse(vector['input'] as string)), 'utf8').toString('hex'), vector['utf8'] ?? vector['canonicalHex']);
-  }
-  for (const vector of read('primitives.json')) {
-    const generator = new Xoshiro256(vector['seed'] as string);
-    const next = vector['next'] as string[];
-    assert.deepEqual(next.map(() => generator.next().toString(16).padStart(16, '0')), next);
-  }
-  for (const list of read('chain.json')) {
-    let chain = EMPTY_CHAIN;
-    for (const vector of list['commands'] as Record<string, unknown>[]) {
-      const command = { kind: vector['kind'] as CommandKind, body: vector['body'] as Record<string, unknown> };
-      chain = extendChain(chain, vector['seq'] as number, command.kind, vector['target'] as string, bodyDigest(command));
-      assert.equal(hex(chain), vector['chain'], `chain after command ${String(vector['seq'])}`);
+type Json = Record<string, unknown>;
+const readVectors = (name: string): Json => JSON.parse(readFileSync(new URL(name, CORPUS), 'utf8')) as Json;
+const list = (value: unknown, what: string): Json[] => {
+  // Each file must yield vectors, so that this test cannot pass on an empty corpus.
+  assert.ok(Array.isArray(value) && value.length > 0, `${what} holds no vector`);
+  return value as Json[];
+};
+
+/** The runtime's model of a chain vector's command: a work command's value beside its fragment, a typed body's values as themselves. */
+function modelOf(vector: Json): { kind: CommandKind; body: Record<string, unknown>; sagaScope?: string } {
+  const kind = vector['kind'] as CommandKind;
+  const typed = (vector['typed'] ?? {}) as Record<string, Json>;
+  const field = { activity: 'input', script: 'input', child: 'input', approval: 'subject' }[kind as string];
+  let body: Record<string, unknown>;
+  if (vector['fragment']) {
+    body = { ...(vector['fragment'] as Json) };
+    if (field) body[field] = vector['value'];
+  } else {
+    switch (kind) {
+      case 'timer_cancel': case 'step_cancel': body = { target: typed['target']!['target'] }; break;
+      case 'saga_open': {
+        const open = typed['sagaOpen']!;
+        body = { scope: open['scope'], parentScope: open['parentScope'] ?? null, onCompensationFailure: open['onCompensationFailure'], cancelPolicy: open['cancelPolicy'] };
+        break;
+      }
+      case 'saga_close': body = { scope: typed['sagaClose']!['target'] }; break;
+      case 'saga_abort': body = { scope: typed['sagaAbort']!['target'] }; break;
+      case 'marker_patch': body = { markerId: typed['marker']!['markerId'] }; break;
+      case 'marker_side_effect': body = { markerId: typed['marker']!['markerId'], value: typed['marker']!['sideEffectValue'] }; break;
+      case 'set_state': body = { state: typed['setState'] }; break;
+      case 'consume_signals':
+        body = { signals: (typed['consumeSignals']!['signals'] as Json[]).map((s) => ({ name: s['signalName'], seqs: (s['seqs'] as string[]).map(Number) })) };
+        break;
+      case 'update_accept': case 'update_reject': {
+        const decision = typed['updateDecision']!;
+        body = { admittedSeq: Number(decision['admittedSeq']), accepted: decision['accepted'] === true };
+        if (decision['accepted'] !== true) body['reason'] = decision['rejectionReason'];
+        break;
+      }
+      case 'update_complete': {
+        const result = typed['updateResult']!;
+        body = 'result' in result ? { admittedSeq: Number(result['admittedSeq']), result: result['result'] } : { admittedSeq: Number(result['admittedSeq']), failureCode: result['failureCode'] };
+        break;
+      }
+      case 'complete': body = { output: typed['complete'] }; break;
+      case 'fail': body = { code: typed['fail']!['code'], message: typed['fail']!['safeMessage'] }; break;
+      case 'continue_as_new': {
+        const next = typed['continueAsNew']!;
+        body = { input: next['input'], state: next['state'] ?? null, version: next['activeVersion'] === true ? 'active' : 'same' };
+        break;
+      }
+      case 'acknowledge_cancellation': body = {}; break;
+      default: throw new Error(`no model for the kind ${kind}`);
     }
   }
+  return vector['sagaScope'] === undefined ? { kind, body } : { kind, body, sagaScope: vector['sagaScope'] as string };
+}
+
+test('the RFC 8785 cases of the corpus hold', () => {
+  for (const vector of list(readVectors('rfc8785.json')['cases'], 'rfc8785.json')) {
+    const canonical = rfc8785(JSON.parse(vector['input'] as string));
+    assert.equal(canonical, vector['canonical'], vector['name'] as string);
+    assert.equal(Buffer.from(canonical, 'utf8').toString('hex'), vector['canonicalHex'], vector['name'] as string);
+  }
+});
+
+test('the primitive streams of the corpus hold', () => {
+  const vectors = readVectors('primitives.json');
+  for (const seed of list(vectors['seeds'], 'primitives.json')) {
+    const label = seed['label'] as string;
+    const fresh = new Xoshiro256(seed['seedHex'] as string);
+    const next = seed['next'] as string[];
+    assert.deepEqual(next.map(() => fresh.next().toString(16).padStart(16, '0')), next, `${label}: next`);
+    // One stream in the order the file states: random, then randomInt for each n, then uuid.
+    const stream = new Xoshiro256(seed['seedHex'] as string);
+    assert.deepEqual((seed['random'] as number[]).map(() => stream.random()), seed['random'], `${label}: random`);
+    for (const draw of seed['randomInt'] as Json[]) {
+      const values = draw['values'] as number[];
+      assert.deepEqual(values.map(() => stream.randomInt(draw['n'] as number)), values, `${label}: randomInt(${String(draw['n'])})`);
+    }
+    assert.deepEqual((seed['uuid'] as string[]).map(() => stream.uuid()), seed['uuid'], `${label}: uuid`);
+  }
+  for (const rejection of list(vectors['rejection'], 'primitives.json rejection')) {
+    assert.equal(new Xoshiro256(rejection['seedHex'] as string).randomInt(rejection['n'] as number), rejection['value']);
+  }
+});
+
+test('every command of the corpus chain vectors hashes to its body, d(k) and H(k)', () => {
+  let compared = 0;
+  for (const chainList of list(readVectors('chain.json')['lists'], 'chain.json')) {
+    let chain = EMPTY_CHAIN;
+    for (const vector of list(chainList['commands'], String(chainList['name']))) {
+      const where = `${String(chainList['name'])} command ${String(vector['seq'])} (${String(vector['kind'])})`;
+      const command = modelOf(vector);
+      assert.deepEqual(hashedBody(command), vector['body'], `${where}: the hashed body`);
+      const digest = bodyDigest(command);
+      assert.equal(hex(digest), vector['bodySha256'], `${where}: the body digest`);
+      assert.equal(hex(commandDigestInput(vector['seq'] as number, command.kind, vector['target'] as string, digest)), vector['dHex'], `${where}: d(k)`);
+      chain = extendChain(chain, vector['seq'] as number, command.kind, vector['target'] as string, digest);
+      assert.equal(hex(chain), vector['chainHex'], `${where}: H(k)`);
+      compared++;
+    }
+  }
+  assert.ok(compared >= 30, `only ${compared} commands compared`);
 });
 
 test('a lone surrogate, a bigint and a non-finite number have no canonical form', () => {

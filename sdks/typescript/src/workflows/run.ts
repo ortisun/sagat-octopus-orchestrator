@@ -249,6 +249,8 @@ const EXCEPTION_TYPE = /^[A-Za-z_][A-Za-z0-9_.$]{0,127}$/;
 // Every target of Technical Plan 6.2: a name, an identifier `c-<n>` or `s-<n>`, a script digest, a decimal sequence, or empty.
 const TARGET = /^$|^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+/** `FailWorkflowTaskRequest.actual_saga_scope`: a scope `s-<n>`, or empty outside any. */
+const SAGA_SCOPE_OR_NONE = /^$|^s-[1-9][0-9]{0,9}$/;
 /** The SDK's share of an activation (Requirement 044-012) and a completion's commands (Non-functional requirement 044-006). */
 const MAX_SDK_COMMANDS = 147;
 const MAX_COMPLETION_COMMANDS = 403;
@@ -282,6 +284,8 @@ function checkResult(answer: Record<string, unknown>): ActivationResult {
     if (Number.isSafeInteger(failure['commandNumber']) && (failure['commandNumber'] as number) >= 0) checked.commandNumber = failure['commandNumber'] as number;
     if (typeof failure['actualKind'] === 'string' && (failure['actualKind'] === '' || KINDS.has(failure['actualKind']))) checked.actualKind = failure['actualKind'];
     if (typeof failure['actualTarget'] === 'string' && TARGET.test(failure['actualTarget'])) checked.actualTarget = failure['actualTarget'];
+    // Empty outside a scope; anything but `s-<n>` is dropped, the report keeping its cause (Decision 044-250).
+    if (typeof failure['actualSagaScope'] === 'string' && SAGA_SCOPE_OR_NONE.test(failure['actualSagaScope'])) checked.actualSagaScope = failure['actualSagaScope'];
     if (typeof failure['exceptionType'] === 'string' && EXCEPTION_TYPE.test(failure['exceptionType'])) checked.exceptionType = failure['exceptionType'];
     result.failure = checked;
   }

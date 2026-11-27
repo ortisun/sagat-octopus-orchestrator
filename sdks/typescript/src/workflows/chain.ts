@@ -24,15 +24,23 @@ export function descriptorOf(value: unknown): ValueDescriptor {
   return { sha256: hex(sha256(bytes)), size: bytes.length };
 }
 
-/** The body that is hashed: the value field of the kind enters it as its descriptor, whatever carries the value. */
-export function hashedBody(command: Pick<WorkflowCommand, 'kind' | 'body'>): Record<string, unknown> {
+/**
+ * The body that is hashed: the value field of the kind enters it as its descriptor, whatever carries the value, and an
+ * activity or a script scheduled in a saga scope adds `"scope": "s-<n>"` (the corpus README's body table, Decision
+ * 044-244), so a function that moves a member between scopes changes the chain.
+ */
+export function hashedBody(command: Pick<WorkflowCommand, 'kind' | 'body' | 'sagaScope'>): Record<string, unknown> {
   const field = DESCRIPTOR_FIELD[command.kind];
-  if (!field || !(field in command.body)) return command.body;
-  return { ...command.body, [field]: descriptorOf(command.body[field]) };
+  const scoped = (command.kind === 'activity' || command.kind === 'script') && command.sagaScope !== undefined;
+  if ((!field || !(field in command.body)) && !scoped) return command.body;
+  const body: Record<string, unknown> = { ...command.body };
+  if (field && field in command.body) body[field] = descriptorOf(command.body[field]);
+  if (scoped) body['scope'] = command.sagaScope;
+  return body;
 }
 
-/** The SHA-256 of a command's canonical body (with descriptors). */
-export function bodyDigest(command: Pick<WorkflowCommand, 'kind' | 'body'>): Uint8Array {
+/** The SHA-256 of a command's canonical body (with descriptors and, for a scoped activity or script, its scope). */
+export function bodyDigest(command: Pick<WorkflowCommand, 'kind' | 'body' | 'sagaScope'>): Uint8Array {
   return sha256(Buffer.from(rfc8785(hashedBody(command)), 'utf8'));
 }
 

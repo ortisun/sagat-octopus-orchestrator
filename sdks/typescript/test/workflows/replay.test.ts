@@ -50,8 +50,8 @@ test('a replay that makes another command reports the command number, the actual
   });
   const verdict = await env.replay(changed);
   assert.deepEqual(verdict, {
-    verdict: 'NONDETERMINISM', activation: 2, commandNumber: 2, actualKind: 'activity', actualTarget: 'payments.authorize',
-    expectedKind: 'activity', expectedTarget: 'payments.charge',
+    verdict: 'NONDETERMINISM', activation: 2, commandNumber: 2, actualKind: 'activity', actualTarget: 'payments.authorize', actualSagaScope: '',
+    expectedKind: 'activity', expectedTarget: 'payments.charge', expectedSagaScope: '',
   });
 });
 
@@ -203,7 +203,7 @@ test('a recorded command the function no longer makes before it yields is a mism
   const env = await finished({ bundle: bundleOf({ flow: both }), workflowType: 'flow', activities: { 'a.first': () => 1, 'b.second': () => 2 } }, null);
   const verdict = await env.replay(bundleOf({ flow: async (ctx) => { await ctx.activity('a.first', 1); return 'done'; } }));
   assert.deepEqual(verdict, {
-    verdict: 'NONDETERMINISM', activation: 1, commandNumber: 2, actualKind: '', actualTarget: '', expectedKind: 'activity', expectedTarget: 'b.second',
+    verdict: 'NONDETERMINISM', activation: 1, commandNumber: 2, actualKind: '', actualTarget: '', expectedKind: 'activity', expectedTarget: 'b.second', expectedSagaScope: '',
   });
 });
 

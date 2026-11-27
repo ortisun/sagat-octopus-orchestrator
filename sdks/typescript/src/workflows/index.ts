@@ -38,6 +38,6 @@ export { CodeRun, prepare } from './run.js';
 export type { CodeRunOptions, Completion, CompletionAnswer, Failure, PreparedCommand, ReplayStep } from './run.js';
 export { ActivationDeadlineExceeded, InvalidWorkflowBundle, WorkflowBundle } from './sandbox.js';
 export { StubFailure, WorkflowTestEnvironment } from './testing.js';
-export type { BundleText, Stub, TestEnvironmentOptions, TestOutcome, TestRunStatus } from './testing.js';
+export type { BundleText, StartOptions, Stub, TestEnvironmentOptions, TestOutcome, TestRunStatus } from './testing.js';
 export { ThreadedRun, WorkflowThread, WorkflowThreadError } from './threaded.js';
 export type { LoadedBundle, RunHandle } from './threaded.js';

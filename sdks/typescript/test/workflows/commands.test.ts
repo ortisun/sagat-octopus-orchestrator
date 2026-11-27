@@ -122,7 +122,7 @@ test('an update is validated when admitted, accepted, handled and completed', as
   await env.runUntilBlocked();
   assert.equal(env.outcome.output, 10);
   assert.deepEqual(env.updates.get(good), { name: 'addLine', status: 'COMPLETED', result: { total: 10 } });
-  assert.deepEqual(env.updates.get(bad), { name: 'addLine', status: 'REJECTED', reason: 'VALIDATION_REJECTED' });
+  assert.deepEqual(env.updates.get(bad), { name: 'addLine', status: 'REJECTED', reason: 'VALIDATION_FAILED' });
   assert.deepEqual(env.updates.get(unknown), { name: 'removeLine', status: 'REJECTED', reason: 'HANDLER_NOT_REGISTERED' });
   assert.equal((await env.replay()).verdict, 'MATCH');
 });
@@ -333,7 +333,7 @@ test('every command kind has the body of the corpus table', async () => {
   const digest = `sha256:${'a'.repeat(64)}`;
   assert.deepEqual(Object.fromEntries(bodies), {
     update_accept: { admittedSeq: 2, accepted: true },
-    update_reject: { admittedSeq: 3, accepted: false, reason: 'VALIDATION_REJECTED' },
+    update_reject: { admittedSeq: 3, accepted: false, reason: 'VALIDATION_FAILED' },
     marker_patch: { markerId: 'v2' },
     marker_side_effect: { markerId: 'side-effect', value: 7 },
     timer_start: { type: 'timer', durationMs: 5 },

@@ -38,7 +38,9 @@ export class MalformedHistory extends Error {
 
 export type ReplayVerdict =
   | { verdict: 'MATCH'; activations: number; commands: number; chain: string }
-  | { verdict: 'NONDETERMINISM'; activation: number; commandNumber: number; actualKind: string; actualTarget: string; expectedKind?: CommandKind; expectedTarget?: string }
+  // The saga scopes are named for an activity or a script, empty outside any scope (Decision 044-244).
+  | { verdict: 'NONDETERMINISM'; activation: number; commandNumber: number; actualKind: string; actualTarget: string; actualSagaScope?: string;
+      expectedKind?: CommandKind; expectedTarget?: string; expectedSagaScope?: string }
   | { verdict: 'INCONCLUSIVE_REDACTED'; activation: number; commandNumber: number }
   | { verdict: 'WORKFLOW_TASK_FAILED' | 'ACTIVATION_DEADLINE' | 'VALIDATOR_COMMAND' | 'NONDETERMINISM_RISK'; activation: number; exceptionType?: string };
 
@@ -136,9 +138,13 @@ async function replayOn(run: RunHandle, events: HistoryEvent[]): Promise<ReplayV
           verdict: 'NONDETERMINISM', activation: index, commandNumber: failure.commandNumber ?? 0,
           actualKind: failure.actualKind ?? '', actualTarget: failure.actualTarget ?? '',
         };
+        if (failure.actualSagaScope !== undefined) verdict.actualSagaScope = failure.actualSagaScope;
         const expected = activation.records.find((record) => record.commandNumber === failure.commandNumber);
-        if (expected) { verdict.expectedKind = expected.kind; verdict.expectedTarget = expected.target; }
-        else if (activation.deferral) { verdict.expectedKind = activation.deferral.kind; verdict.expectedTarget = activation.deferral.target; }
+        if (expected) {
+          verdict.expectedKind = expected.kind;
+          verdict.expectedTarget = expected.target;
+          if (expected.kind === 'activity' || expected.kind === 'script') verdict.expectedSagaScope = expected.sagaScope ?? '';
+        } else if (activation.deferral) { verdict.expectedKind = activation.deferral.kind; verdict.expectedTarget = activation.deferral.target; }
         return verdict;
       }
       const verdict: ReplayVerdict = { verdict: failure.cause, activation: index };

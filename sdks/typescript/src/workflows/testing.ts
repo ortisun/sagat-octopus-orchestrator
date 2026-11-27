@@ -66,7 +66,8 @@ const WAKING: ReadonlySet<HistoryEvent['kind']> = new Set<HistoryEvent['kind']>(
   'signal.buffered', 'update.admitted', 'run.cancel_requested',
 ]);
 
-interface OpenStep { kind: CommandKind; scope?: string; settled: boolean }
+/** `begun`: a worker leased its attempt, or the child's run started (`beginStep`); a stub runs at once. */
+interface OpenStep { kind: CommandKind; scope?: string; settled: boolean; begun?: boolean }
 interface ScopeState { members: number[]; parent: string | undefined; aborting: boolean; settled: boolean }
 
 /** One run on an in-memory platform. */
@@ -94,6 +95,8 @@ export class WorkflowTestEnvironment {
   #cancelRequested = false;
   #tasks = 0;
   #lastDeferral: { kind: CommandKind; target: string; digest: string } | undefined;
+  /** A delayed start's first workflow task waits until this time. */
+  #notBeforeUs = 0;
 
   constructor(options: TestEnvironmentOptions) {
     this.#options = options;
@@ -166,10 +169,23 @@ export class WorkflowTestEnvironment {
 
   #thread(): WorkflowThread { return this.#options.thread ?? WorkflowThread.shared(); }
 
-  /** Starts the run; a successor of continue-as-new is started with the state its predecessor carried. */
-  start(input: unknown, options: { carriedState?: unknown } = {}): this {
+  /**
+   * Starts the run, as the transaction that creates it journals it (Decision 044-246): `run.started` first; for a delayed
+   * start the invisible `run.start_delayed` (its sequence is taken, the history skips it) and a first workflow task that
+   * waits for the delay; then the signal of a Signal-with-Start or the update of an Update-with-Start. A successor of
+   * continue-as-new is started with the state its predecessor carried.
+   */
+  start(input: unknown, options: StartOptions = {}): this {
     if (this.#seq !== 0) throw new Error('the run has started');
+    if (options.signal && options.update) throw new Error('a run is started with a signal or with an update, not both');
     this.#append(options.carriedState === undefined ? { kind: 'run.started', input } : { kind: 'run.started', input, carriedState: options.carriedState }, 'engine');
+    if (options.delayMs !== undefined) {
+      if (!Number.isSafeInteger(options.delayMs) || options.delayMs < 0) throw new RangeError('a start delay is a count of milliseconds');
+      this.#seq++;
+      this.#notBeforeUs = this.#nowUs + options.delayMs * 1000;
+    }
+    if (options.signal) this.signal(options.signal.name, options.signal.payload);
+    if (options.update) this.update(options.update.name, options.update.args);
     return this;
   }
 
@@ -183,6 +199,19 @@ export class WorkflowTestEnvironment {
     const seq = this.#append({ kind: 'update.admitted', name, args }, 'external');
     this.updates.set(seq, { name, status: 'ADMITTED' });
     return seq;
+  }
+
+  /**
+   * Marks a step's attempt as begun, as a worker's lease does (or a child's run as started): from then on the function's
+   * `step_cancel` no longer cancels it, and its outcome is the one the test gives it (Decision 044-245).
+   */
+  beginStep(commandNumber: number): void {
+    const step = this.#steps.get(commandNumber);
+    if (!step) throw new Error(`no step of the run has the command number ${commandNumber}`);
+    if (step.kind === 'wait_event' || step.kind === 'approval' || step.kind === 'timer_start') {
+      throw new Error(`a ${step.kind} step has no attempt that a worker begins`);
+    }
+    step.begun = true;
   }
 
   /** Completes a step that has no stub (or one left open on purpose), as its worker would. */
@@ -231,6 +260,7 @@ export class WorkflowTestEnvironment {
   }
 
   async #workflowTask(): Promise<void> {
+    this.#nowUs = Math.max(this.#nowUs, this.#notBeforeUs);
     const startedSeq = this.#append({ kind: 'workflow_task.started', continueAsNewSuggested: false, historyLimitReached: false }, 'engine');
     const started = this.history[this.history.length - 1] as Extract<HistoryEvent, { kind: 'workflow_task.started' }>;
     // A test may journal events while the task runs: they belong to the next activation.
@@ -273,7 +303,8 @@ export class WorkflowTestEnvironment {
       } else if (command.kind === 'marker_side_effect') {
         this.#append({ kind: 'marker.recorded', commandNumber: command.commandNumber!, markerKind: 'side_effect', markerId: command.target, value: command.body['value'] }, 'completion');
       } else {
-        this.#append({ kind: 'command.record', commandNumber: command.commandNumber!, commandKind: command.kind, target: command.target }, 'completion');
+        const record = { kind: 'command.record' as const, commandNumber: command.commandNumber!, commandKind: command.kind, target: command.target };
+        this.#append(command.sagaScope === undefined ? record : { ...record, sagaScope: command.sagaScope }, 'completion');
       }
     }
     this.#failures = 0;
@@ -382,11 +413,13 @@ export class WorkflowTestEnvironment {
         const target = Number(command.target.slice(2));
         const step = this.#steps.get(target);
         if (!step || step.settled) return;
+        // A step whose attempt began is not cancelled by the command: its attempt settles it (Decision 044-245).
+        if (command.kind === 'step_cancel' && step.begun) return;
         step.settled = true;
         this.#timers = this.#timers.filter((timer) => timer.commandNumber !== target);
         if (command.kind === 'step_cancel') {
           if (step.kind === 'child') this.#append({ kind: 'child.finished', commandNumber: target, status: 'cancelled' }, 'effect');
-          else this.#append({ kind: 'step.outcome', commandNumber: target, status: 'cancelled' }, 'effect');
+          else this.#append({ kind: 'step.outcome', commandNumber: target, status: 'cancelled', errorCode: 'CANCELLED' }, 'effect');
           if (step.scope) this.#settleScopeIfDone(step.scope);
         }
         return;
@@ -496,3 +529,14 @@ export class WorkflowTestEnvironment {
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+export interface StartOptions {
+  /** The state a predecessor carried by continue-as-new. */
+  carriedState?: unknown;
+  /** A delayed start: the first workflow task waits this many milliseconds. */
+  delayMs?: number;
+  /** Signal-with-Start: the signal the creating transaction buffers after `run.started`. */
+  signal?: { name: string; payload: unknown };
+  /** Update-with-Start: the update the creating transaction admits after `run.started`. */
+  update?: { name: string; args: unknown };
+}

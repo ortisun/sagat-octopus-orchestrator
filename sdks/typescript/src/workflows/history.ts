@@ -66,6 +66,7 @@ export class ActivationCutter {
         const record: ExpectedRecord = event.kind === 'command.record'
           ? { commandNumber: event.commandNumber, kind: event.commandKind, target: event.target }
           : { commandNumber: event.commandNumber, kind: event.markerKind === 'patch' ? 'marker_patch' : 'marker_side_effect', target: event.markerId };
+        if (event.kind === 'command.record' && event.sagaScope) record.sagaScope = event.sagaScope;
         if (event.kind === 'marker.recorded' && 'value' in event) record.value = event.value;
         if (event.redacted) record.redacted = true;
         this.#pending.records.push(record);

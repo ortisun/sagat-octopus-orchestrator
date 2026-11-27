@@ -68,7 +68,8 @@ interface EventBase { seq: number; origin?: EventOrigin; atUs?: number; redacted
 
 export type HistoryEvent = EventBase & (
   | { kind: 'run.started'; input?: unknown; carriedState?: unknown }
-  | { kind: 'command.record'; commandNumber: number; commandKind: CommandKind; target: string }
+  // `sagaScope` is the scope `s-<n>` an activity or a script was scheduled in (`HistoryCommandRecord.saga_scope`).
+  | { kind: 'command.record'; commandNumber: number; commandKind: CommandKind; target: string; sagaScope?: string }
   | { kind: 'marker.recorded'; commandNumber: number; markerKind: 'patch' | 'side_effect'; markerId: string; value?: unknown }
   | { kind: 'step.outcome'; commandNumber: number; status: 'completed' | 'failed' | 'timed_out' | 'cancelled'; output?: unknown; errorCode?: string; errorMessage?: string }
   | { kind: 'timer.fired'; commandNumber: number }
@@ -125,6 +126,8 @@ export interface WorkflowTaskFailure {
   commandNumber?: number;
   actualKind?: string;
   actualTarget?: string;
+  /** For an activity or a script: the saga scope the function scheduled it in, empty outside any (Decision 044-244). */
+  actualSagaScope?: string;
   exceptionType?: string;
 }
 
@@ -141,7 +144,7 @@ export interface ActivationResult {
 }
 
 /** A command record the replay compares against, with a side effect's recorded value. */
-export interface ExpectedRecord { commandNumber: number; kind: CommandKind; target: string; value?: unknown; redacted?: boolean }
+export interface ExpectedRecord { commandNumber: number; kind: CommandKind; target: string; sagaScope?: string; value?: unknown; redacted?: boolean }
 
 export interface BeginActivation {
   replaying: boolean;
@@ -197,11 +200,11 @@ export class InlineValuesExceeded extends Error {
   constructor(message: string) { super(message); this.name = 'InlineValuesExceeded'; }
 }
 
-/** An activity or script that ended failed, timed out or cancelled. */
+/** An activity or script that ended failed or timed out (a cancelled one rejects with `CommandCancelled`). */
 export class ActivityError extends Error {
-  readonly status: 'failed' | 'timed_out' | 'cancelled';
+  readonly status: 'failed' | 'timed_out';
   readonly code: string | undefined;
-  constructor(status: 'failed' | 'timed_out' | 'cancelled', code: string | undefined, message: string | undefined) {
+  constructor(status: 'failed' | 'timed_out', code: string | undefined, message: string | undefined) {
     super(message ?? `the activity ended ${status}${code ? ` (${code})` : ''}`);
     this.name = 'ActivityError';
     this.status = status;
@@ -226,7 +229,7 @@ export class TimerCancelled extends Error {
   constructor() { super('the timer was cancelled'); this.name = 'TimerCancelled'; }
 }
 
-/** A wait or an approval whose cancellation the function requested. */
+/** An activity, a script, a wait or an approval that ended cancelled (its outcome in the history, Decision 044-248). */
 export class CommandCancelled extends Error {
   constructor() { super('the command was cancelled'); this.name = 'CommandCancelled'; }
 }
@@ -449,7 +452,8 @@ export interface ActivityOptions {
 }
 
 export interface ScriptOptions { retry?: ActivityRetryPolicy; timeoutMs?: number }
-export interface WaitOptions { timeoutMs?: number; lookbackMs?: number }
+/** A wait is bounded, as a graph waitEvent node is: `timeoutMs` from 1 ms to 366 days (Decision 044-247). */
+export interface WaitOptions { timeoutMs: number; lookbackMs?: number }
 export interface ChildOptions { cancelPolicy?: 'propagate' | 'request_cancel' | 'detach'; businessId?: string }
 export interface SagaOptions {
   onCompensationFailure?: 'manual_review' | 'fail';
@@ -477,7 +481,7 @@ export interface WorkflowContext {
   activity<T = unknown>(name: string, input?: unknown, options?: ActivityOptions): CommandPromise<T>;
   script<T = unknown>(artifactDigest: string, input?: unknown, options?: ScriptOptions): CommandPromise<T>;
   sleep(durationMs: number): CommandPromise<void>;
-  waitForEvent<T = unknown>(eventType: string, correlationKey: string, options?: WaitOptions): CommandPromise<T | undefined>;
+  waitForEvent<T = unknown>(eventType: string, correlationKey: string, options: WaitOptions): CommandPromise<T | undefined>;
   child<T = unknown>(workflowId: string, input?: unknown, options?: ChildOptions): CommandPromise<T>;
   approval(policyName: string, subject: unknown): CommandPromise<'approved' | 'rejected' | 'expired'>;
   saga<T>(options: SagaOptions, body: (scope: SagaScope) => Promise<T>): Promise<T>;
@@ -820,9 +824,11 @@ class Run {
     const number = this.next++;
     const resolved = typeof target === 'string' ? target : target(number);
     if (this.replaying) {
+      // An activity's or a script's saga scope is compared with the kind and the target (Decision 044-244).
       const record = this.expected.get(number);
-      if (!record || record.kind !== kind || record.target !== resolved) {
-        this.mismatch(number, kind, resolved);
+      const scoped = kind === 'activity' || kind === 'script';
+      if (!record || record.kind !== kind || record.target !== resolved || (scoped && (record.sagaScope ?? '') !== (options.scope ?? ''))) {
+        this.mismatch(number, kind, resolved, options.scope ?? '');
         throw new ActivationStopped();
       }
     }
@@ -843,14 +849,12 @@ class Run {
    * A replay that differs from its record. When the activation was given a redacted value (an exported history), the
    * difference may come from the value the export withheld: the verdict is then inconclusive, never a false mismatch.
    */
-  mismatch(commandNumber: number, actualKind: string, actualTarget: string): void {
+  mismatch(commandNumber: number, actualKind: string, actualTarget: string, actualSagaScope = ''): void {
     if (this.failure || this.inconclusiveAt !== undefined) return;
-    if (this.sawRedacted) {
-      this.inconclusiveAt = commandNumber;
-      this.failure = { cause: 'NONDETERMINISM', commandNumber, actualKind, actualTarget };
-      return;
-    }
-    this.failure = { cause: 'NONDETERMINISM', commandNumber, actualKind, actualTarget };
+    const failure: WorkflowTaskFailure = { cause: 'NONDETERMINISM', commandNumber, actualKind, actualTarget };
+    if (actualKind === 'activity' || actualKind === 'script') failure.actualSagaScope = actualSagaScope;
+    if (this.sawRedacted) this.inconclusiveAt = commandNumber;
+    this.failure = failure;
   }
 
   failTask(error: unknown): void {
@@ -1048,7 +1052,7 @@ class Run {
     }
     if (this.failure) throw new ActivationStopped();
     if (rejected) {
-      this.issue('update_reject', target, { admittedSeq: seq, accepted: false, reason: 'VALIDATION_REJECTED' }, { sdk: true });
+      this.issue('update_reject', target, { admittedSeq: seq, accepted: false, reason: 'VALIDATION_FAILED' }, { sdk: true });
       return;
     }
     this.issue('update_accept', target, { admittedSeq: seq, accepted: true }, { sdk: true });
@@ -1167,6 +1171,7 @@ function stepOutcome<T>(resolve: (value: T) => void, reject: (error: unknown) =>
     settle(event: HistoryEvent): void {
       if (event.kind !== 'step.outcome') return;
       if (event.status === 'completed') resolve(event.output as T);
+      else if (event.status === 'cancelled') reject(new CommandCancelled());
       else reject(new ActivityError(event.status, event.errorCode, event.errorMessage));
     },
   };
@@ -1194,10 +1199,11 @@ function scheduleActivity<T>(name: string, input: unknown, options: ActivityOpti
 function scheduleScript<T>(digest: string, input: unknown, options: ScriptOptions | undefined, scope: Scope | undefined): CommandPromise<T> {
   const r = run('script');
   if (scope && scope.state !== 'open') throw new TypeError(`the saga scope ${scope.id} is not open`);
-  if (options?.timeoutMs !== undefined) throw new TypeError('the code profile of a script has no timeoutMs: its artifact bounds it');
   const { value, size } = snapshot(input);
   const fragment: Record<string, unknown> = { type: 'script', artifactDigest: digest, input: value };
   if (options?.retry) fragment['retry'] = { ...options.retry };
+  // As for a graph script node; the artifact's policy (`wall`) bounds the attempt as well (Decision 044-247).
+  if (options?.timeoutMs !== undefined) fragment['timeoutMs'] = options.timeoutMs;
   const values = [{ size, inline: false, what: `the input of the script ${digest}` }];
   const number = r.issue('script', digest, fragment, scope ? { scope: scope.id, values } : { values });
   return commandPromise<T>(number, stepOutcome, scope);
@@ -1304,8 +1310,9 @@ export function sleep(durationMs: number): CommandPromise<void> {
 }
 
 /** Waits for an event of a declared type and a literal correlation key; `undefined` when the wait times out. */
-export function waitForEvent<T = unknown>(eventType: string, correlationKey: string, options?: WaitOptions): CommandPromise<T | undefined> {
+export function waitForEvent<T = unknown>(eventType: string, correlationKey: string, options: WaitOptions): CommandPromise<T | undefined> {
   const r = run('waitForEvent');
+  // The type requires it; a caller in plain JavaScript is told at the call.
   if (options?.timeoutMs === undefined) throw new TypeError('a wait for an event needs timeoutMs: the code profile requires it');
   const fragment: Record<string, unknown> = { type: 'waitEvent', eventType, correlationKey, timeoutMs: options.timeoutMs };
   if (options?.lookbackMs !== undefined) fragment['lookbackMs'] = options.lookbackMs;

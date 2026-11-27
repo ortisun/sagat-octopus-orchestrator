@@ -211,7 +211,7 @@ test('an update handler may continue as new, and a validator may change nothing'
   const third = new WorkflowTestEnvironment({ bundle: bundleOf({ flow: asynchronous }), workflowType: 'flow' }).start(null);
   const seq = third.update('slow', {});
   await third.runUntilBlocked();
-  assert.deepEqual(third.updates.get(seq), { name: 'slow', status: 'REJECTED', reason: 'VALIDATION_REJECTED' });
+  assert.deepEqual(third.updates.get(seq), { name: 'slow', status: 'REJECTED', reason: 'VALIDATION_FAILED' });
 });
 
 test('a successor reads the state its predecessor carried', async () => {
