@@ -1907,7 +1907,8 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
 - **D006-118 — The first run of the database tests of 1.8, its seven failures explained and fixed** (pull request #297, run
   45942873719; delegate, OD-2026-11-24-4; each a defect, none rerun). (1) The `Debug` that hides a report's lease token
   (Task 006-043) dropped its step-log carry, whose counts FR-041-007 (d) prints: `CompleteStepRequest` and `FailStepRequest`
-  print `step_logs` again (`the_debug_of_a_report_that_holds_a_carry_prints_counts_and_no_text`). (2) The TypeScript
+  print `step_logs` again, in the server and in the Rust SDK alike, which had the same `Debug`
+  (`the_debug_of_a_report_that_holds_a_carry_prints_counts_and_no_text`, both). (2) The TypeScript
   SDK's fake server decodes with `defaults: true`, so the field `declines_acknowledgement` of 1.8 reads `false` in the
   registration it records; the expectation names it. (3) A statement of the acknowledgement began with a macro whose argument
   sat in its middle, which the audit of the runtime role's privileges does not expand: what followed (a `FOR NO KEY UPDATE`)
@@ -1925,3 +1926,82 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`) upgrade again before the services resume, as
   `step_log_isolation/schema.rs` already does; the round trip of the lookback index compares the rolled-back snapshot without
   the marks, asserts they left, and compares the whole snapshot once upgraded again.
+- **D006-119 — The platform's per-connection concurrency layer** (Task 006-049, closing that item of G006-054; delegate,
+  OD-2026-11-24-4). tonic's `concurrency_limit_per_connection` sat outside the admission layer, so a call waited for a place
+  of its connection before its arrival was stamped. It is removed; `concurrency_per_connection` (64) is applied by the
+  admission layer itself, after the stamp: each accepted connection gets its `ConnectionPlaces` (two semaphores held in its
+  `CappedConnectInfo`, dropped with it, never a map keyed by the peer). A call waits for a place as it waited for tonic's
+  (unbounded, so the meaning of the key does not change for the other classes), then takes its process ticket (`in_flight`,
+  shed as before), and holds the place until its response, as tonic's permit was held. The class `Acknowledge` takes any
+  free place, the others only the places outside the reserve; the reserve is `min(4, limit - 1)` places while the compiled
+  minor is at least `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (`acknowledge_reserve`), none below it, so the dormant build
+  and a release-0.2 configuration give every class 64 places. A connection's ordinal (its place in the order of accepting,
+  never an address) is told, with the method, to a hook installed by `WorkerApi::with_connection_probe` (Task 006-058's
+  assertion); the compiled minor is raised for a test by `WorkerApi::with_compiled_minor_for_tests`; both, and the
+  adapter's `rollback_stalled_for_tests`, are in the probe list of `test_probe_errors`, each with its negative case. The gauge
+  `grpc_connections_open` (one series) rises at an accept and falls when a connection closes. A call on a transport that is
+  not the platform's listener (an in-process test transport) has no places, as tonic's limit did not apply to it either.
+  Tested: `a_connection_keeps_its_reserve_for_acknowledgements_and_only_from_1_8` (every limit from 1 to 64, with and without
+  the reserve), `a_waiting_call_takes_the_first_place_that_frees_for_its_class`,
+  `from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_connection`,
+  `below_1_8_every_class_has_every_place_of_a_connection`, `a_full_connection_never_delays_an_acknowledgement_on_another`.
+- **D006-120 — The authentication of an acknowledgement under its deadline** (Task 006-049; delegate, OD-2026-11-24-4).
+  `authenticate_bearer_within` (`sagat-api-http`) runs the one authentication sequence with its lookups, once the token
+  verified, bounded by the call's deadline, and says which stage failed: a refusal (the token, a budget, the membership, the
+  tenant's concurrency) keeps its ordinary status; lookups that end with `AppError::Unavailable` or `AppError::Internal`, or
+  run past the deadline, answer `UNAVAILABLE` with `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, counted `store` (the safe direction:
+  it decides no early give-up). The token's verification itself is not bounded here: before it, nothing is said about the
+  store. `authenticate_bearer_with` is the same sequence with no bound and the ordinary mapping, so the other calls do not
+  change. A call whose deadline passed while it waited for a place of its connection answers `ACKNOWLEDGEMENT_DEADLINE`
+  before anything is looked up. Tested: `the_lookups_of_a_verified_token_find_the_pool_full_and_answer_store_unreachable_in_time`.
+- **D006-121 — The adapter holds its pooled connection, so a rollback out of time discards it** (Task 006-049, closing that
+  item of G006-054; delegate, OD-2026-11-24-4). `PgAcknowledgementTx` keeps the `PoolConnection` instead of an
+  `sqlx::Transaction` (which gives no connection back mid-rollback): the connection is acquired in a task of its own (cancel
+  safe, as `begin_safely`), the transaction is begun with `BEGIN` under the time left (a `BEGIN` cut short discards the
+  connection), committed with `COMMIT` (an answer of the server leaves the connection idle and it goes back; any other
+  failure discards it, since whether it committed is not known on this side), and ended with a `ROLLBACK` bounded by 100 ms,
+  after which, or after a failed `ROLLBACK`, the connection is detached and closed, which makes the server roll back
+  (`worker_task_acknowledgement_connections_discarded_total`). A transaction dropped mid-call is rolled back the same way off
+  the call. `BEGIN` and `COMMIT` have reasoned entries in the runtime role's audit (transaction control needs no privilege).
+  Tested: `a_rollback_that_does_not_return_in_time_discards_its_connection`,
+  `a_pool_held_full_is_a_store_not_reached_within_the_bound_and_discards_nothing`,
+  `a_connection_ended_between_the_lock_and_the_update_is_a_store_not_reached`, `a_read_only_server_is_a_store_not_reached`.
+- **G006-056 — What of Task 006-049 is left after its second slice (G006-054 narrowed).** Built by D006-119 to D006-121:
+  the platform's per-connection layer with the reserve, the connection ordinal's hook and the gauge of open connections; the
+  authentication's lookups under the call's deadline; the connection discarded after a rollback out of time; and the tests of
+  a pool held full (the service and the authentication), of `pg_terminate_backend` between `lock_matched` and `acknowledge`,
+  of a read-only server, of a deadlock, of 64 transfers and of more than 128 calls on one connection, of the release-0.2
+  configuration, and the negative cases of the new probes. Left: a call that reaches the handler with too little time left
+  after the concurrency layer, through the real handler (the check is built and answers `ACKNOWLEDGEMENT_DEADLINE`; holding a
+  call of the real service at a place past another's deadline needs a seam of its own); the compensation of a cancelled run
+  and the reconciliation under a stop acknowledged on the real store (the pure function's cases are tested; the fixtures that
+  lease a compensation and a reconciliation at 1.8 are Task 006-050's); `synchronous_commit` raised with `ALTER ROLE sagat_app
+  SET synchronous_commit = off` rather than by the session (the test sets it per session, which is what the role setting does
+  to every session). Each is to be closed with Task 006-050, whose fixtures they share.
+- **G006-057 — An intermittent failure of the blob scenario of the managed-secret lifecycle, not explained yet.** On the
+  local run of this branch's second slice (2026-11-27), `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`
+  (`integration_database_connections`) passed the point CI had stopped at (D006-118 (7)) and failed later, in
+  `output_blobs.rs`: after the injected audit failure was removed, the second `WriteBlob` of the leaking result was refused
+  but the run stayed `RUNNING` where `FAILED` was expected. The same binary passed on the next run. The test threw the
+  refusal away, so its cause cannot be read; it now keeps it and prints it with both assertions, so the next occurrence says
+  what the write was answered. Nothing of the acknowledgement is on that path (a database runner's session stays below 1.8 and
+  its lease is never marked), and no file of the scenario changed on this branch; the per-connection layer of D006-119 is the
+  only change on its transport, and it serves one connection's sequential calls as tonic's limit did. Open until an
+  occurrence names its cause.
+- **D006-122 — The second run of pull request #297, its three failures explained and fixed** (run 45985040459; delegate,
+  OD-2026-11-24-4). (1) The Rust SDK's `Debug` of the reports had the defect of D006-118 (1): fixed the same way. (2) The
+  reviewed inventory of step status writers had not been updated with the claim's marks (D006-118 (4)); it is now, after
+  its diff was read: three lease-creating `UPDATE`s of `steps` (two in `execution.rs`, one in `execution/path.rs`), each
+  gaining the assignments of the marks and their `RETURNING`, their status, generation and guards unchanged. (3)
+  `operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry` looked for the balance `777` in an
+  error body with its trace identifier taken out, but the body also carries `requestId`, thirty-two more random hexadecimal
+  digits, which spelled it: a flaky test of this kind about once in a hundred and thirty runs, not of this branch. The
+  helper takes out both identifiers, and its unit test gained the case (seen failing before the fix). Hand mutations of the
+  second slice, each seen failing its test: the reserve set to none
+  (`from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_connection`, strengthened to count the
+  acknowledgements apart, which as first written passed the mutation), the bound of the authentication's lookups removed
+  (`the_lookups_of_a_verified_token_find_the_pool_full_and_answer_store_unreachable_in_time`, 10.0 s), and the discard made a
+  return to the pool (`a_rollback_that_does_not_return_in_time_discards_its_connection`). (4) Run as the runtime role, `too_little_time_left_before_either_deadline_is_too_late` answered
+  the first lease `no_match`: it set that lease's expiry 1 s ahead before claiming the second lease, which a slower run took
+  longer than, so the lease had ended by the call. Both deadlines are now set right before the call, 3 s ahead (short of the
+  margin of 6 s even with the clock stepped back 2 s); it passed plain and twice as the runtime role.
