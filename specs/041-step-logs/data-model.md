@@ -494,7 +494,8 @@ the replica's database pool, which the benchmark builds as `API_POOL` = 20, desi
 
 Server, each metric with exactly one producer (decision D041-128):
 - `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
-  `retry_later`, `invalid`): the ingest (task T041-6).
+  `retry_later`, `invalid`): the ingest (task T041-6); `invalid` counts P4's refusals only, never a request the gRPC
+  handler could not parse (decision D041-151).
 - `step_log_carries_total{outcome}` (`written`, `mark_only`, `off`, `invalid`, `refused`, `removed`, `final_recorded`,
   `contended`, `failed`): the store, once per report the carry rode on (task T041-36). Out-of-order records are a drop
   reason, not an outcome.
