@@ -54,10 +54,12 @@ values of feature 017's `openbao` custody (design 015, The Problem).
    the value, never the value.
 5. Each custody MUST have its own mount or path prefix and its own policy, and each process kind its own token per
    custody it uses. Every
-   policy MUST be an exact allow-list; the bootstrap and a test refuse any other grant. Feature 031's customer keys MUST
+   policy MUST be an exact allow-list; the bootstrap and a test refuse any other grant. Each allow-list declares the
+   custody prefixes it owns, and the test refuses a grant outside them and any overlap of prefixes between features or
+   with the platform's own, so that a feature's fragment cannot certify a grant on another custody. Feature 031's customer keys MUST
    live outside the platform's OpenBao.
 6. Without OpenBao nothing is sealed or opened by other means, on every read path including the scan of a step's
-   output. Opening MAY use an unwrapped data key from a cache of at most 4,096 keys, 512 per tenant, each at most 300
+   output, which opens every retained secret version under `transit` as under `local`. Opening MAY use an unwrapped data key from a cache of at most 4,096 keys, 512 per tenant, each at most 300
    seconds after its unwrap, keyed by what a rewrap does not change (the value's row and its data key's issue time).
 7. Under `transit`, OpenBao MUST be backed up by scheduled encrypted snapshots, and a restore pairs a PostgreSQL backup
    with a later snapshot. The schedule belongs to the operator's OpenBao installation, under an operator-only policy
