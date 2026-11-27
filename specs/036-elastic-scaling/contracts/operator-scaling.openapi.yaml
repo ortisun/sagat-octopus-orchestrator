@@ -304,6 +304,21 @@ paths:
       responses:
         '200': {description: 'The decision', content: {application/json: {schema: {$ref: '#/components/schemas/Decision'}}}}
         default: {$ref: '#/components/responses/Error'}
+  /scaling/audit:
+    get:
+      operationId: listScalingAudit
+      tags: [Decisions]
+      summary: The platform audit trail of scaling, newest first
+      description: Needs `scaling:read`. Every change and every refusal of the operator surface (requirements 036-025 and 036-065), with the actor, the token identifier, the action, the resource, the reason and the digests of the before and after. Added 2026-11-24 (security checklist item CHK001).
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {name: actor, in: query, schema: {type: string, maxLength: 256}}
+        - {name: tokenId, in: query, schema: {type: string, maxLength: 256}}
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+      responses:
+        '200': {description: 'A page', content: {application/json: {schema: {$ref: '#/components/schemas/AuditPage'}}}}
+        default: {$ref: '#/components/responses/Error'}
   /scaling/desired:
     get:
       operationId: getScalingDesired
@@ -422,7 +437,7 @@ components:
         credentialFile: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,62}$', description: 'The name of a file mounted from a Secret. Never the secret.'}
         destination: {type: string, format: uri, description: 'METRICS_QUERY: must be on the configuration allowlist.'}
         query: {type: string, maxLength: 2048, description: 'METRICS_QUERY: an instant query that reduces to one finite number.'}
-        broker: {type: object, additionalProperties: true, description: 'BROKER_QUEUE: kind and the queue, topic or stream; servers must be on the allowlist.'}
+        broker: {type: object, additionalProperties: false, required: [kind], properties: {kind: {type: string, enum: [KAFKA, NATS, SQS]}, servers: {type: array, minItems: 1, maxItems: 8, items: {type: string, maxLength: 253}}, topic: {type: string, maxLength: 249}, stream: {type: string, maxLength: 255}, consumer: {type: string, maxLength: 255}, queueUrl: {type: string, format: uri, maxLength: 1024}, region: {type: string, maxLength: 32}}, description: 'BROKER_QUEUE: the same closed object as the configuration schema (security checklist item CHK029); servers and queueUrl are destinations under the allowlist rule of requirement 036-057, and every endpoint a broker advertises or a region derives is checked against it too.'}
         reason: {type: string, minLength: 1, maxLength: 500}
     Source:
       type: object
@@ -434,7 +449,7 @@ components:
         owner: {$ref: '#/components/schemas/Owner'}
         unit: {$ref: '#/components/schemas/Unit'}
         intervalSeconds: {type: integer}
-        health: {type: object, required: [state], properties: {state: {type: string, enum: [OK, FAILING, NEVER_QUERIED]}, lastSuccessAt: {type: string, format: date-time, nullable: true}, lastFailureClass: {type: string, nullable: true, enum: [timeout, refused, invalid, unavailable, null]}}}
+        health: {type: object, required: [state], properties: {state: {type: string, enum: [OK, FAILING, NEVER_QUERIED]}, lastSuccessAt: {type: string, format: date-time, nullable: true}, lastFailureClass: {type: string, nullable: true, enum: [timeout, refused, invalid, unavailable, credential_unavailable, null]}}}
     SourceList:
       type: object
       required: [items]
@@ -537,6 +552,25 @@ components:
         outcome: {type: string, enum: [OBSERVED, RECOMMENDED, APPLIED, HELD]}
         authority: {allOf: [{$ref: '#/components/schemas/Authority'}], nullable: true}
         reason: {type: string, enum: [OK, NO_SIGNAL, STABILIZING, COOLDOWN, FROZEN, OVERRIDDEN, AT_CEILING, DRAIN_EXCLUDED, PARTIAL_COVERAGE]}
+    AuditRecord:
+      type: object
+      required: [id, at, actor, action, resource, outcome]
+      properties:
+        id: {type: string, format: uuid}
+        at: {type: string, format: date-time}
+        actor: {type: string}
+        tokenId: {type: string, nullable: true}
+        action: {type: string}
+        resource: {type: string}
+        outcome: {type: string, enum: [APPLIED, REFUSED]}
+        reason: {type: string, nullable: true}
+        beforeDigest: {type: string, nullable: true}
+        afterDigest: {type: string, nullable: true}
+        traceId: {type: string, nullable: true}
+    AuditPage:
+      type: object
+      required: [items]
+      properties: {items: {type: array, items: {$ref: '#/components/schemas/AuditRecord'}}, nextCursor: {type: string, nullable: true}}
     DecisionPage:
       type: object
       required: [items]

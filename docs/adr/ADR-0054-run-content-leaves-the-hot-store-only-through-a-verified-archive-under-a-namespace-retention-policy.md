@@ -15,6 +15,7 @@ are excluded and their retention is ADR-0058's), ADR-0027 (purge releases conten
 existing triggers), ADR-0039 (after the source identity guard, rerun and reset read the purge state and
 refuse a purged source) and the append-only enforcement of `run_events` and `payloads` (migration
 `20261009000100_execution`). Supersedes none. Revised 2026-10-27 after independent review.
+**Refined in part by:** [ADR-0132](ADR-0132-the-journal-is-partitioned-by-the-month-a-run-was-created-and-a-run-owns-its-payloads.md) (2026-11-24, design 049): a run owns its payloads, so the purge of one run deletes by its key with no cross-run reference check; whole months may also be dropped once every run in them is purged (option 3 below, for whole months only); references come from the registry this decision already plans. The stub, the eligibility rule and the verified archive are unchanged.
 **Requires a constitution amendment:** retention changes an obligation of principle I, so it is a MINOR
 amendment, not a clarification (see "Required amendment of principle I" below). This ADR proposes the
 text; it does not edit the constitution. Nothing in it may be implemented before that amendment's pull

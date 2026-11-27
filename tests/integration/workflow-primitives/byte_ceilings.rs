@@ -940,6 +940,7 @@ async fn a_scoped_output_refusal_rechecks_binding_after_the_checked_path_is_drop
     let mut report_request = worker_request(
         &flow.api,
         CompleteStepRequest {
+            step_logs: None,
             task_id: task.task_id.clone(),
             run_id: task.run_id.clone(),
             step_id: task.step_id.clone(),

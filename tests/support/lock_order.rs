@@ -79,7 +79,21 @@ pub enum Slot {
     /// Bookkeeping rows of a transaction whose subject is one existing run (a batch job, then its
     /// item).
     Bookkeeping,
-    /// Quota, rate and usage rows, always last.
+    /// Design 041, L1: the policy fences of a namespace's step-log resources, the tenant's then the namespace's, shared
+    /// by a writer (an ingest's T3, a carry tries them) and exclusive by a change of the resource.
+    StepLogPolicyFences,
+    /// L1b: the attempt's stream lock, an advisory lock on (tenant, run, step, attempt, generation): an ingest waits
+    /// for it at T3, a carry only tries it; the purge, the delete route and the script marker never take it.
+    StepLogStreamLock,
+    /// L2: a row of `step_log_streams`: an ingest's T4, the purge and the delete route (`SKIP LOCKED`).
+    StepLogStream,
+    /// L3: the policy fences of the quota classes, content, log then step-log, shared by a charge and the finalizer,
+    /// exclusive by a change of a tenant class limit.
+    QuotaClassFences,
+    /// L3b: the writer's own step-log quota lease (`step_log_quota_leases`), only ever tried: no transaction waits for
+    /// a quota lease it does not own (ADR-0097).
+    StepLogQuotaLease,
+    /// Quota, rate and usage rows, always last (L4 of design 041: the tenant's `tenant_retained_usage` row).
     Usage,
 }
 

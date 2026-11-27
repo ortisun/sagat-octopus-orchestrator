@@ -18,7 +18,7 @@ duration, §3). Heartbeat intervals, poll waits and retry backoff stay on the SD
 
 ```text
 TestEnvironment.connect({apiUrl, grpcUrl, namespace, adminToken, workerToken}) -> env
-    GET /version; requires capabilities ∋ "virtual-clock", else NOT_FOUND / UNSUPPORTED_BY_SERVER
+    GET /version; requires capabilities ∋ "testing.virtual-clock", else NOT_FOUND / UNSUPPORTED_BY_SERVER
 env.clock                       // Clock: system now + offset of the last clock answer
 env.client(config?)             // a client with clock = env.clock (interceptors and, with feature 031, a data
                                 //  converter allowed; the environment adds neither)

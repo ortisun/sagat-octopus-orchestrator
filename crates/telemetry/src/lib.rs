@@ -36,14 +36,15 @@ pub use lake::{
 pub use leaf_certification::{LEAF_CERTIFICATION_SPAN, LeafCertificationOutcome};
 pub use logging::{LogFormat, Telemetry, TelemetryConfig, init, init_logging};
 pub use metrics::{
-    Metrics, WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
+    Metrics, StepLogBatchOutcome, StepLogQuotaRefusalCause, StepLogRedactionRule,
+    WorkflowPrimitiveKind, WorkflowPrimitiveMetric, WorkflowPrimitiveOutcome,
     WorkflowPrimitiveRejectionCode,
 };
 pub use otlp::{
     AttrValue, ExportError, GaugeData, LogData, OtlpClient, OtlpConfig, OtlpConfigError, OtlpLayer,
     SpanData, SpanEvent, SpanKind, SpanLink, SpanSink, SpanStatus, start,
 };
-pub use redact::{MAX_VALUE_CHARS, REDACTED, is_sensitive_name, scrub};
+pub use redact::{MAX_VALUE_CHARS, REDACTED, is_sensitive_name, scrub, scrub_shapes_with};
 pub use span::{
     SpanId, WorkflowPrimitiveSpan, WorkflowPrimitiveSpanField, attempt_span_id, event_span_id,
     keeps, run_span_id, traceparent,

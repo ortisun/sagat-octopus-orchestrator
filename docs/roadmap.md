@@ -14,7 +14,7 @@
 | 10 | 010 Scale & HA | sharding, fairness, HA and benchmarks | Throughput and recoverability |
 | 11 | 011 GitOps & Versioning | versioning, promotion, diff, rollback | Old runs preserved |
 | 12 | 012 Developer Experience | CLI, local testing on the real engine (no emulator), docs and examples | End-to-end onboarding |
-| 13 | 013 Federated Login | Studio sign-in through each organization's OIDC or SAML provider | Draft specification only |
+| 13 | 013 Federated Login | Studio and CLI sign-in through each organization's OIDC or SAML provider, just-in-time provisioning, SCIM 2.0 users and groups, member management, session revocation ([design](designs/013-federated-login.md)) | In 0.3.0 (Owner decision 2026-11-24-1); design drafted 2026-11-24, in review; ADR-0140 to ADR-0142 proposed |
 | 14 | 014 Workflow Primitives | forEach/map, loops, approval, switch, Query/Update, Continue-As-New | 0.3 work in progress; two tasks remain open in [tasks.md](../specs/014-workflow-primitives/tasks.md) (Task 014-043, the release gates, and Task 014-044, the documentation); [increment evidence](../specs/014-workflow-primitives/implementation-ledger.md) |
 | 39 | 039 Nested Collections | General nesting of the 014 primitives and the capacity program it needs (holder discovery, sweeper, creator, runnable predicate, activation), moved out of 014 by OD-2026-11-12-6 ([design](designs/039-nested-collections.md)) | Draft placeholder; needs ADR-0078 accepted and its open items decided by the owner |
 | 40 | 040 OCSF Event Standard | The audit trail, then security incidents and alerts, available in the Open Cybersecurity Schema Framework shape as a projection of the native record, so a SIEM reads them without a custom parser ([design](designs/040-ocsf-event-standard.md)) | Draft; needs the owner's answers to O040-001 to O040-007 |
@@ -36,7 +36,7 @@
 | 29 | 029 Custom Roles and Folders | custom roles, groups, folders with ACLs, per-operation access lists ([spec](../specs/029-custom-roles-folders/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0064 proposed; IdP groups depend on 013 |
 | 30 | 030 Cross-namespace Services | Nexus-like service contracts and operations within one tenant ([spec](../specs/030-cross-namespace-services/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0065 proposed |
 | 31 | 031 Client-side Encryption | SDK payload codecs with customer-held keys, codec server, opacity checks at publication ([spec](../specs/031-client-side-encryption/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0066 proposed |
-| 32 | 032 Multi-region Failover | active-passive cells with fenced region epochs ([spec](../specs/032-multi-region-failover/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), not built; ADR-0067 proposed (direction accepted); constitution amended in 5.0.0 (O1560 answered by Owner decision 2026-11-24-2); production use of cross-region failover waits for its drill report and commit-latency benchmark |
+| 32 | 032 Multi-region Failover | active-passive cells with fenced region epochs ([spec](../specs/032-multi-region-failover/spec.md)) | Approved for implementation (Owner decision 2026-11-11-1), in 0.3.0, not built; ADR-0067 accepted (Owner decision 2026-11-24-507); the constitution amendment is applied in 5.0.0 (Owner decision 2026-11-24-2); builds after design 048 |
 | 35 | 035 Iceberg Writes and Step-Output Destinations | managed workflow steps that append, overwrite or upsert records into customer Apache Iceberg tables (REST, Glue, Hive, JDBC catalogs; S3, GCS, ADLS storage) through a new 017 connection kind, recovered by an effect-key lookup in the table history; synchronous step-output destinations (Iceberg, PostgreSQL, object storage, ClickHouse, broker streams), with the asynchronous mode in 020 ([spec](../specs/035-iceberg-write-steps/spec.md)) | Specified and planned (2026-10-27); ADR-0071 accepted and implementation started 2026-11-02; 20 of its 129 tasks ticked with their evidence in [tasks.md](../specs/035-iceberg-write-steps/tasks.md) |
 | 41 | 041 Step Logs per Run | The lines a step's code logs are sent by the worker (protocol 1.7, six SDKs), stored per attempt beside the journal with ceilings, redaction and a retention period, and read through `GET /runs/{runId}/logs`, a live stream and a Studio screen, chosen for 0.3.0 by OD-2026-11-13-9 ([design](designs/041-step-logs.md)) | Approved on 2026-11-16 ([design doc](designs/041-step-logs.md), its Status line and approval record), after the architecture, security and correctness reviews and `egm-review`; owner answers OD-2026-11-13-14 and OD-2026-11-13-18; ADR-0084 and ADR-0085 accepted (OD-2026-11-13-17) and revised; 2 of its 32 tasks ticked |
 
@@ -51,11 +51,12 @@ Feature036 (Elastic scaling driven by telemetry) was proposed 2026-10-28 as the 
 feature010: lag for Kafka, NATS and SQS consumers, balanced Kafka partition assignment, scaling signals and
 policies declared by configuration and through the management interface, pulled sources, and horizontal and
 vertical decisions with an explanation. It has a [spec](../specs/036-elastic-scaling/spec.md) with five
-clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (proposed) and
+clarifications, a [plan](../specs/036-elastic-scaling/plan.md), ADR-0072 to ADR-0074 (accepted 2026-11-24 under the owner's delegation) and
 [94 tasks](../specs/036-elastic-scaling/tasks.md) for the first delivery; the owner approved it for implementation on
 2026-11-11 (Owner decision 2026-11-11-1); nothing implemented. The owner decided O1703 and O1706–O1709 (first delivery: consumer lag, balanced
-partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). Still
-open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator acts through the API).
+partitions, policies by configuration and API, pulled sources, export to the autoscaling provider). O1700–O1702,
+O1704 and O1710 were decided on 2026-11-24 under the owner's delegation, as recommended (Owner decisions 2026-11-24-500
+to 2026-11-24-504); the plan's "Readiness against `develop` (2026-11-24)" lists the build slices.
 
 **Dependencies:** `001 → 002 → {003,004,009} → {005,006,007} → {008,011,012} → 010`, with cross-cutting security from 001; later phases can advance in parallel once contracts stabilize.
 
@@ -70,8 +71,13 @@ open: O1700–O1702 and O1704 (recommended defaults) and O1710 (how an operator 
 | 047 | OAuth resources and a curated integration hub |
 | 048 | A reference high-availability topology for PostgreSQL and rolling upgrades with N and N-1 writers |
 | 049 | Partitioning of `run_events`, `payloads` and the other journal tables, joined to the retention of 020 |
-| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log |
+| 050 | The Studio catch-up: every executable node kind, the approvals inbox, the audit log ([design](designs/050-studio-catch-up.md), drafted 2026-11-24, in review; ADR-0143 and ADR-0144 proposed; ADR-0101 accepted with conditions, Owner decision 2026-11-24-700) |
 | 051 | A published benchmark of the same workflow shapes on this platform, Temporal and Windmill, crash-recovery time included |
+
+**Features 027, 028 and 029 are ready for the build (2026-11-24):** re-read against `develop`, their stale lines fixed,
+their open questions answered, ADR-0062, ADR-0063 and ADR-0064 accepted and their checklist items settled under the
+owner's delegation (Owner decisions 2026-11-24-701 to 2026-11-24-716); each `tasks.md` ends with build slices for two
+parallel builders. Identity-provider groups and member management, which 029 waited for, are design 013's.
 
 013 (federated login) and 015 (OpenTelemetry and OpenBao) keep their numbers and get their specifications. The constitution
 is amended to admit this scope (OD-2026-11-24-2): version 5.0.0, described in its

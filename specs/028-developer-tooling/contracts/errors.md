@@ -46,7 +46,7 @@ class.
 
 SDK reasons: `AFTER_RESPONSE` (with `INTERCEPTOR_FAILED`), `PROTECTED_FIELD` (with `VALIDATION_FAILED`, for a
 protected field, the payload value or a protected header),
-`UNSUPPORTED_BY_SERVER` (existing; a test environment against a server without `virtual-clock`).
+`UNSUPPORTED_BY_SERVER` (existing; a test environment against a server without `testing.virtual-clock`).
 
 ## `PlatformVersion` (additive)
 
@@ -54,11 +54,10 @@ protected field, the payload value or a protected header),
 PlatformVersion:
   properties:
     capabilities:
-      type: array
-      description: >-
-        Closed vocabulary that only grows. `git-sync` and `template-catalog` when enabled; `virtual-clock` and
-        `history-replay` only on a test server. Absent on older servers (treat as empty).
-      items: {type: string, enum: [git-sync, template-catalog, virtual-clock, history-replay]}
+      # The field is design 050's (Architecture decision 0143): strings matching ^[a-z]+(\.[a-z0-9-]+)+$,
+      # x-known-values (never an enum), readers ignore unknown names. Feature 028 adds four names:
+      #   tooling.git-sync and tooling.template-catalog when enabled;
+      #   testing.virtual-clock and testing.history-replay only on a test server.
 ```
 
 ## Permission catalog (`crates/domain/src/identity.rs`, additive)

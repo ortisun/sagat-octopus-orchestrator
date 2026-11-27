@@ -223,12 +223,13 @@ class WorkerServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def AppendStepLogs(self, request, context):
-        """Added in 1.7 (feature 041). Stores the log records of one leased attempt. Answered only after the
-        records are committed; a record is stored at most once (attempt, generation, sequence).
+        """Added in 1.7 (feature 041). Stores log records of one leased attempt that is still running. Answered
+        only after the records are committed; a record is stored at most once (attempt, generation, sequence).
+        The attempt's last records and its final mark travel on its report instead (StepLogCarry).
         Verdicts, not errors, say what the worker does next (StepLogVerdict).
         Errors: UNAUTHENTICATED; PERMISSION_DENIED (no worker:execute, or a runner or database-runner
         token); INVALID_ARGUMENT a malformed
-        batch (more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
+        batch (no record, more than 500 records, more than 192 KiB encoded, sequences not increasing, a sequence at or
         above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
         by admission; UNAVAILABLE the database or the serving gate.
         """

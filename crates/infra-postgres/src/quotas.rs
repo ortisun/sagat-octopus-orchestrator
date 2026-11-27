@@ -1551,6 +1551,23 @@ mod secrets_lock_rule {
             0,
             "a scoped transaction runs the shared check and must not take the exclusive lock"
         );
+        // Design 041, task T041-6 (data-model.md §8, T7): the step-log ingest reads its authority without a lock, so it
+        // never delays a report, a lease, a heartbeat, a secret change or a managed-database admission.
+        let step_logs = include_str!("step_logs.rs");
+        for lock in [
+            "share_secrets_lock(",
+            "lock_secrets(",
+            "hold_worker_binding(",
+            "bound_patterns(",
+            "sagat_lock_memberships",
+        ] {
+            let calls = step_logs
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(lock))
+                .count();
+            assert_eq!(calls, 0, "step_logs.rs calls `{lock}`");
+        }
     }
 }
 

@@ -100,9 +100,16 @@ impl std::fmt::Debug for pb::AppendStepLogsRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AppendStepLogsRequest")
             .field("records", &self.records.len())
-            .field("final_batch", &self.final_batch)
-            .field("highest_sequence", &self.highest_sequence)
             .finish_non_exhaustive()
+    }
+}
+// The last records of an attempt on its report (design 041 section 2a): its counts only.
+impl std::fmt::Debug for pb::StepLogCarry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepLogCarry")
+            .field("records", &self.records.len())
+            .field("highest_sequence", &self.highest_sequence)
+            .finish()
     }
 }
 impl std::fmt::Debug for pb::StepLogRecord {

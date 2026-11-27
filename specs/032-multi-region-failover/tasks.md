@@ -3,7 +3,10 @@
 **Input**: [spec.md](./spec.md), [plan.md](./plan.md), [research.md](./research.md),
 [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md).
 
-Status: Proposed — not started. No task is done. A task is ticked only with the named test passing and the
+Status: approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision 2026-11-24-1), not
+started. No task is done. The readiness of 2026-11-24 (`plan.md`, "Readiness against `develop` (2026-11-24)") lists the
+corrections, adds Tasks T032-065 to T032-069 at the end of this file, and orders the build slices; where a task below
+names a stale path, number or count, that section is right. A task is ticked only with the named test passing and the
 command and its output recorded (AGENTS.md "Start here"). Tests are written first and seen failing for
 the right reason (AGENTS.md rule 18); races use barriers or held locks, never sleeps.
 
@@ -12,13 +15,17 @@ files and no dependency on an unfinished task.
 
 ## Phase 1: Setup
 
-- [ ] T032-001 Owner gate: record the answers to O1560 (acceptance of ADR-0067's **direction**), O1561 and
+- [x] T032-001 Owner gate: record the answers to O1560 (acceptance of ADR-0067's **direction**), O1561 and
   O1562 in `docs/owner-decisions.md`. ADR-0067 stays `Proposed (direction accepted)`; its `Accepted`
   status, ADR-0009's line and the constitution amendment are T032-063, after the evidence exists. No
   implementation task starts before this. — FR-032-031 — evidence: the owner's recorded decision.
-  *Note (2026-11-24):* O1560 is answered by Owner decision 2026-11-24-2 and the constitution amendment
-  is applied in 5.0.0, so it leaves T032-063 (which keeps ADR-0067's `Accepted` and ADR-0009's line).
-  O1561 and O1562 are still open, so this task stays unticked.
+  Owner-gate: OD-2026-11-24-2
+  Note 2026-11-24: O1560 is answered by Owner decision 2026-11-24-2; O1561 and O1562 by Owner decisions
+  2026-11-24-508 and 2026-11-24-509; ADR-0067 is accepted (Owner decisions 2026-11-24-507 and 2026-11-24-514).
+  Note 2026-11-26: constitution 5.0.0, which admits this feature, is merged into `develop` (`81e87775`), so
+  nothing of this task remains; it is ticked with that evidence.
+  Evidence (2026-11-26): `git log origin/develop` shows `81e87775 Merge pull request #275 from ortisun/docs/constitution-5.0.0`;
+  `docs/owner-decisions.md` holds Owner decisions 2026-11-24-2, 2026-11-24-507, 2026-11-24-508, 2026-11-24-509 and 2026-11-24-514.
 
 IDs T032-058 to T032-064 were added in the review round of 2026-10-27 and keep their numbers (IDs are never
 renumbered); they sit in the phase where they run.
@@ -339,14 +346,44 @@ renumbered); they sit in the phase where they run.
   their environment and failures, the owner decides acceptance; then set ADR-0067 `Accepted`, add
   "Superseded in part by ADR-0067" to ADR-0009, and open the constitution amendment pull request with the
   text kept in ADR-0067 and its Sync Impact Report (D1583). — FR-032-031 — evidence: the owner's decision
-  referencing both reports. *Note (2026-11-24):* the amendment part is done by constitution 5.0.0 (Owner
-  decision 2026-11-24-2); what remains here is the acceptance of ADR-0067, ADR-0009's line and the
-  production statement of the "Regions" bullet, all on those two reports.
+  referencing both reports.
+  Note 2026-11-24: overtaken in part. ADR-0067 is accepted and ADR-0009 carries its line already (Owner decision
+  2026-11-24-507), and the amendment is drafted by the coordinating session now (Owner decision 2026-11-24-2). This
+  task becomes the release gate of feature 032: the reports of T032-045 and T032-046, with their environment and
+  failures, are linked from ADR-0067's Evidence section before 032 is released.
 - [ ] T032-057 Traceability: `specs/032-multi-region-failover/traceability.md` mapping every FR/NFR/SC to
   tasks and tests with their state; the coordinator updates `docs/traceability.md`. — all — evidence:
   every FR has at least one passing test or an explicit open gap.
 
+## Added by the readiness of 2026-11-24
+
+These run in the phase named in each; their reasons are in `plan.md`, "Readiness against `develop` (2026-11-24)".
+
+- [ ] T032-065 [Phase 2] Order the region check before the instance registry's serving gate, exempt `/v1/region`
+  from both, and make a passive process skip the registry heartbeat; a passive process answers `REGION_PASSIVE`, never
+  `BINARY_CAPABILITY_MISSING`. — FR-032-002, FR-032-005, D032-002 — evidence: an integration test with a read-only
+  standby and the registry on.
+- [ ] T032-066 [US02] Remove, in the activation transaction, the serving-instance rows of earlier epochs, so that the
+  registry's census and `platform_requirement_activate` do not count the former region's processes. — FR-032-007,
+  D032-002 — evidence: a fault test that crashes after the activation and reads the census.
+- [ ] T032-067 [Phase 2] Add the registry capability `region-v1`; `region-init` refuses while the census shows a live
+  process without it. — FR-032-031, D032-002 — evidence: an integration test with one process lacking the capability.
+- [ ] T032-068 [US01] Give the `secret-cleanup` CronJob and every one-shot command that opens the platform's database
+  its region identity (`sagat.region`), and gate every engine loop that writes (instance heartbeat, housekeeping,
+  trigger schedules, schedules, batches, resets, blob cleanup) by role. — FR-032-001, FR-032-005 — evidence: the role
+  test extended to every loop, and a chart contract test for the CronJob.
+- [ ] T032-069 [US04] Carry the region epoch in the step-log cursor of design 041 (`(stored_xid, sequence)` becomes
+  `(epoch, stored_xid, sequence)` on the wire, unchanged at epoch 0), with a reset after an unplanned activation. —
+  Architecture decision 0067 decision 9, D032-003 — evidence: a fault test with a reused transaction id after a lossy
+  activation.
+
 ## Dependencies and order
+
+- Readiness of 2026-11-24, revised 2026-11-26: design 048 (the in-region topology, its commit, Task T048-7, and its
+  confirmation, Task T048-10) comes before slice 3; T032-058 builds the durability lease on the registry's confirmed
+  identity of T048-10; T032-024 uses T048-7's commit; T032-009 allows `server_incarnation` by name; the error reason is
+  design 048's `DATABASE_UNCONFIRMED` and the deadline its `SAGAT_DB_COMMIT_DEADLINE_MS` (plan, readiness item 7). With design 049, whichever lands second writes its migration against the other's
+  `run_events`. T032-065 to T032-067 come before US02.
 
 - T032-001 blocks everything. Phase 2 blocks every story.
 - US01 (T032-011..017) precedes US02 and US03 (they need roles and `region-init`).

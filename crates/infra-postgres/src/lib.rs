@@ -243,6 +243,9 @@ pub use reveal_grants::has_effective_payload_reveal_grant;
 pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
 pub use sqlx::PgPool;
+pub use step_logs::{
+    PgStepLogStore, PgStepLogTx, STEP_LOG_LOCK_TIMEOUT, step_log_policy_fence_keys, stream_lock_key,
+};
 pub use telemetry::PROJECTOR_LEASE;
 pub use trigger_schedules::{
     Census, HandoverWritten, complete_handover, engine_census, handover_step, may_hand_over,
