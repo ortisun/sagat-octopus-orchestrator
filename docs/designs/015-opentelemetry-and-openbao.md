@@ -144,7 +144,7 @@ applied the drain's epoch, which its next heartbeat records (about 12 seconds).
 
 | Transition | Command | Guard, checked in the command's transaction | Registry requirements |
 |---|---|---|---|
-| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners; the command holds the ring, whose keys' check values and ids it records (way-back step 2) | `key-authority-transit-v1` recorded |
+| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners; the command holds the ring, whose keys' check values and ids it records (way-back step 2); it is refused, naming the key ids, while a `local` value of any re-seal inventory entry carries a key id that ring does not hold | `key-authority-transit-v1` recorded |
 | `migrating` to `transit` | `key-authority finish-migration` | under the state row's lock: zero `local` values in every entry of the re-seal inventory, zero secrets of custody `local`, zero pending intents at binding version 1, zero artifacts without a Transit signature at or above `scripts_min_version` | `key-authority-transit-v1` recorded |
 | `transit` to `returning` | `key-authority begin-return` | the mode is `transit` | `key-authority-return-v1` recorded; `key-authority-ring-absent-v1` not recorded |
 | `returning` to `local` | `key-authority finish-return` | under the state row's lock: zero `transit` values in every inventory entry, zero secrets of custody `transit`, zero pending intents at binding version 2, zero artifacts without a local signature | `key-authority-return-v1` recorded |
@@ -202,7 +202,11 @@ day-long wait.
    `sagat/ring-check/v1`; it reveals nothing of the key. `key-authority begin-migration` records, through the
    owner-role `key_authority_record_retired_ring`, the check value and the id of every key of the ring the command
    holds, whether or not it sealed a row, in `key_authority_state.retired_ring_check_values` and
-   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. The record only
+   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. `begin-migration` is
+   the only point at which a check value can be recorded, so it is refused, and names the key ids, while a `local`
+   value of any re-seal inventory entry carries a key id the command's ring does not hold: every key that sealed a
+   value is then recorded, and no installation can be left in `migrating` with values that no permitted ring may
+   re-seal. The record only
    grows: `key_authority_record_retired_ring` adds values and never removes or replaces one, and the state row's
    `ENABLE ALWAYS` trigger refuses any update after which either array lacks a value it held before, so a second
    migration keeps the first ring's values beside the second's and every ring ever retired stays refused. In
@@ -1468,7 +1472,9 @@ Two lanes that can run at the same time; where they touch the same file the orde
   function, with tests that a return ring holding archived material under a new id, or an old key that sealed no row,
   keeps the gate closed and is refused by `reseal-secrets --to local`; that an update shrinking either array is
   refused by the trigger; that `reseal-secrets --to transit` refuses a ring holding a key whose check value is not
-  recorded; and a two-cycle test (migrate with ring R, return with a fresh ring R2, migrate again, then bring R back,
+  recorded; that `begin-migration` is refused, naming the key id, when a `local` value of a re-seal inventory entry
+  (of `secret_versions` and of a second registered entry) carries a key id its ring does not hold, and succeeds once
+  the ring holds it; and a two-cycle test (migrate with ring R, return with a fresh ring R2, migrate again, then bring R back,
   under its old ids and under new ones, on the second return) that sees the gate stay closed; the `secret_versions` trigger on insert
   and on update of the sealed columns, with the floor and the ceiling; `secrets.authority` widened; `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the
   representation constraint with no key id on a `transit` row; the intent binding version and key version under the
