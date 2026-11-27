@@ -7,7 +7,9 @@
 
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
-mod canonical;
+pub mod canonical;
+mod code_chain;
+pub use code_chain::Sha256CommandDigester;
 mod capabilities;
 mod collection_chain;
 pub use capabilities::{reset_reapply_enabled, set_reset_reapply};
