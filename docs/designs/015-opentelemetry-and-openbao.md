@@ -123,7 +123,7 @@ serving process's gate.
 | Mode | Control plane needs | Execution engine needs | Allowed, unused, with a warning |
 |---|---|---|---|
 | `local` | today's rules: the ring for the secret routes, the script-signing key for the script routes, the intent key file with feature 017's provider | the ring, as today | Transit: it never seals, signs or binds with it (the triggers refuse) |
-| `migrating` | the ring (to open and re-seal `local` values), the script-signing key when the script routes are enabled (to publish the legacy public key until `scripts resign` reports zero), the intent key file with feature 017's provider (to verify pending intents at binding version 1), and Transit | the ring and Transit | none |
+| `migrating` | the ring (to open and re-seal `local` values), the script-signing key when the script routes are enabled (to publish the legacy public key until `scripts resign` reports zero), the intent key file with feature 017's provider (to verify the replays of intents at binding version 1 that are pending or younger than 24 hours), and Transit | the ring and Transit | none |
 | `transit` | Transit | Transit | any local key, during the hand-over window only: it never seals, signs or binds with it, logs `key_authority.local_key_configured` once per mode change, sets `key_authority_local_key_configured{key}` to 1, and the alert `KeyAuthorityLocalKeyConfigured` fires after 24 hours; once the registry requirement `key-authority-ring-absent-v1` is recorded, a local key closes the gate |
 | `returning` | a fresh ring (to re-seal under it; one holding a key whose check value or id was recorded at `begin-migration` closes the gate), the script-signing key (only the local key signs in this mode), the intent key file with feature 017's provider (new intents are bound at binding version 1), and Transit | the ring and Transit | none |
 
@@ -142,15 +142,29 @@ applied the drain's epoch, which its next heartbeat records (about 12 seconds).
 
 **The transitions.**
 
-| Transition | Command | Guard, checked in the command's transaction | Registry requirements |
+Every guard of these four commands runs inside `key_authority_set_mode`, after it has taken the state row
+`FOR UPDATE`, in the transaction that changes the mode; none is checked before the lock. A seal, a signature or a
+binding takes the row `FOR SHARE` through its trigger, so it either commits before the guard (and the guard sees it)
+or waits until the mode has changed (and its trigger then judges it under the new mode).
+
+| Transition | Command | Guard, checked after the state row is taken `FOR UPDATE` | Registry requirements |
 |---|---|---|---|
-| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners; the command holds the ring, whose keys' check values and ids it records (way-back step 2); it is refused, naming the key ids, while a `local` value of any re-seal inventory entry carries a key id that ring does not hold | `key-authority-transit-v1` recorded |
-| `migrating` to `transit` | `key-authority finish-migration` | under the state row's lock: zero `local` values in every entry of the re-seal inventory, zero secrets of custody `local`, zero pending intents at binding version 1, zero artifacts without a Transit signature at or above `scripts_min_version` | `key-authority-transit-v1` recorded |
+| `local` to `migrating` | `key-authority begin-migration` | the mode is `local`; the runner gate below; the operator's attestation for stopped runners; the command holds the ring, whose keys' check values and ids it records (way-back step 2); every key id of `key_authority_local_key_ids()` (every entry's `local` values) is in that ring, and, for each such id, one `local` value sealed under it is opened with the command's key of that id and discarded, so a key with the right id and other material is refused; no live control plane or engine (seen within 30 seconds) has published in its registry row a ring check value the command's ring lacks; each refusal names the key ids | `key-authority-transit-v1` recorded |
+| `migrating` to `transit` | `key-authority finish-migration` | zero `local` values in every entry of the re-seal inventory, zero secrets of custody `local`, zero intents at binding version 1 that are pending or were created in the last 24 hours, zero artifacts without a Transit signature at or above `scripts_min_version` | `key-authority-transit-v1` recorded |
 | `transit` to `returning` | `key-authority begin-return` | the mode is `transit` | `key-authority-return-v1` recorded; `key-authority-ring-absent-v1` not recorded |
-| `returning` to `local` | `key-authority finish-return` | under the state row's lock: zero `transit` values in every inventory entry, zero secrets of custody `transit`, zero pending intents at binding version 2, zero artifacts without a local signature | `key-authority-return-v1` recorded |
+| `returning` to `local` | `key-authority finish-return` | zero `transit` values in every inventory entry, zero secrets of custody `transit`, zero intents at binding version 2 that are pending or were created in the last 24 hours, zero artifacts without a local signature | `key-authority-return-v1` recorded |
+
+*Ring check values in the registry.* Each control plane and execution engine computes the check value of every key of
+its ring at start (way-back step 2 defines it) and passes them to `instance_register` in a new, additive argument,
+`p_ring_check_values bytea[]`, stored in its registry row; the ring changes only with a restart, so the registration
+carries it, and the runtime role still writes nothing but its own row through the registry's own functions (ADR-0082
+decision 1). `begin-migration` reads the live rows' values under its lock, so a serving process whose ring holds a key
+the command's ring lacks (during a ring rotation, or a command built from an older Secret) refuses the passage
+instead of being stranded with its gate closed in `migrating`.
 
 Between the two commands of a passage the operator runs `reseal-secrets --to transit` (or `--to local`), which
-re-seals every inventory entry, and `scripts resign`, and waits until no intent of the old binding version is pending.
+re-seals every inventory entry, and `scripts resign`, and waits until no intent of the old binding version is pending
+or younger than 24 hours.
 
 **The runner gate.** A sandbox runner of 0.2.x trusts one key fetched once and would refuse every Transit signature.
 Every runner of this design sends `Sagat-Runner-Trust` on each request, and the control plane records sightings per
@@ -170,7 +184,8 @@ day-long wait.
 3. Record the registry requirement `key-authority-transit-v1` for both kinds.
 4. `key-authority begin-migration`. Within a heartbeat every process sees `migrating`, has what the table asks, and
    stays open.
-5. `reseal-secrets --to transit`, `scripts resign`, and wait until no intent at binding version 1 is pending.
+5. `reseal-secrets --to transit`, `scripts resign`, and wait until no intent at binding version 1 is pending or
+   younger than 24 hours.
 6. `key-authority finish-migration`. Every process sees `transit`; each still holds its local keys, so it stays open,
    never uses them, and warns.
 7. Remove the ring, the script-signing key and the intent key file from every control plane and engine by a rolling
@@ -202,11 +217,15 @@ day-long wait.
    `sagat/ring-check/v1`; it reveals nothing of the key. `key-authority begin-migration` records, through the
    owner-role `key_authority_record_retired_ring`, the check value and the id of every key of the ring the command
    holds, whether or not it sealed a row, in `key_authority_state.retired_ring_check_values` and
-   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id it re-seals away from. `begin-migration` is
-   the only point at which a check value can be recorded, so it is refused, and names the key ids, while a `local`
-   value of any re-seal inventory entry carries a key id the command's ring does not hold: every key that sealed a
-   value is then recorded, and no installation can be left in `migrating` with values that no permitted ring may
-   re-seal. The record only
+   `retired_ring_key_ids`; `reseal-secrets --to transit` adds every key id of its ring once, in the command's first
+   transaction, before any re-seal (safe because the record only grows), never inside a re-seal's transaction, which
+   already holds the state row `FOR SHARE` through its trigger and would deadlock asking for `FOR UPDATE`.
+   `begin-migration` is the only point at which a check value can be recorded, so, under the state row's lock, it is
+   refused, and names the key ids, while a `local` value of any re-seal inventory entry carries a key id the command's
+   ring does not hold, while a key id's sample `local` value does not open with the command's key of that id, or while
+   a live serving process has published a check value the command's ring lacks (the transitions table): every key that
+   sealed a value, and every key a serving process holds, is then recorded by its true material, and no installation
+   can be left in `migrating` with values that no permitted ring may re-seal. The record only
    grows: `key_authority_record_retired_ring` adds values and never removes or replaces one, and the state row's
    `ENABLE ALWAYS` trigger refuses any update after which either array lacks a value it held before, so a second
    migration keeps the first ring's values beside the second's and every ring ever retired stays refused. In
@@ -217,7 +236,8 @@ day-long wait.
    closed, and `reseal-secrets --to local` refuses such a ring.
 3. Record the registry requirement `key-authority-return-v1` for both kinds.
 4. `key-authority begin-return`. Every process sees `returning` within a heartbeat and has what the table asks.
-5. `reseal-secrets --to local`, `scripts resign`, and wait until no intent at binding version 2 is pending.
+5. `reseal-secrets --to local`, `scripts resign`, and wait until no intent at binding version 2 is pending or
+   younger than 24 hours.
 6. `key-authority finish-return`. Every process sees `local`; Transit stays configured and unused.
 7. Remove the registry requirements `key-authority-return-v1` and `key-authority-transit-v1` (both phases), then, if
    the operator wishes, Transit by a rolling restart.
@@ -369,8 +389,11 @@ it for regulated work.
 
   *Where signatures live.* Artifact bytes stay immutable (`script_artifacts_immutable`, `ENABLE ALWAYS`, is not
   touched): every signature of an artifact is a row of a new insert-only table `script_artifact_signatures` (Technical
-  Plan 5), the first one written with the artifact in its transaction, and the migration copies each existing
-  artifact's own `signature` and `key_id` into it as its first row. A local signature has the signer `local`, the key
+  Plan 5). The first one is written by the database, not by the writer: an `AFTER INSERT` trigger `ENABLE ALWAYS` on
+  `script_artifacts` copies the new artifact's own `signature` and `key_id`, so an artifact inserted by a 0.2.x
+  control plane during the rolling upgrade (`crates/infra-postgres/src/scripts.rs`), or after a rollback of one
+  replica, still gets its first signature row; and the migration copies each existing artifact's own `signature` and
+  `key_id` into it as its first row. A local signature has the signer `local`, the key
   id `key_id_of` of the public key as today (16 hexadecimal characters) and no key version; a Transit signature has the
   signer `transit`, the key version `N` parsed from Transit's `vault:v<N>:` prefix, the key id `transit-v<N>`, and the
   64 raw bytes of the Ed25519 signature. The control plane serves, from `/script-runner/artifacts/{digest}`, the newest
@@ -412,8 +435,13 @@ it for regulated work.
   SHA-256 of the value, never the value itself, under a binding version 2 that records the key version. A replay MUST
   read the stored intent first, outside the provider lock, and verify against its stored binding version and key
   version (the file key for binding version 1, `transit/verify` at the stored key version for binding version 2), never
-  by recomputing at the newest key version. Bindings at binding version 1 are verified with the file key until no
-  pending intent at binding version 1 remains. From `begin-migration` on, a new intent is bound only at binding version
+  by recomputing at the newest key version. Today a replay of an activated intent returns its receipt at any age
+  (`crates/infra-postgres/src/managed_secrets.rs`; only an unactivated intent expires, after 24 hours), so a key may
+  leave only when no intent of its binding version or key version is pending or younger than 24 hours: the guards of
+  `finish-migration`, `finish-return` and `intents retire-key-versions` count both. A replay of an activated intent
+  older than 24 hours whose binding key is no longer available (the file key after step 7 of the way in, or a retired
+  Transit key version) MUST be answered as an expired request id, the answer an unactivated expired intent gets today,
+  never as a key-service refusal. From `begin-migration` on, a new intent is bound only at binding version
   2, and a trigger refuses a new binding-version-1 row outside `local` and `returning` (in `returning`, new intents are
   bound at binding version 1 and the trigger refuses a new binding-version-2 row); a binding at a key version below
   `intent_min_version` is refused too (Technical Plan 5). The immutability trigger of `secret_provider_operations`
@@ -497,9 +525,12 @@ it for regulated work.
   peers listed and refuses global ones, MUST NOT allow a customer key service: the operator lists those services'
   address blocks in `networkPolicy.customerKeyServices`, and the chart refuses to render when any egress `ipBlock` of
   a platform pod overlaps one of them (Technical Plan 11).
-- **Requirement 015-022** A delivery and a step report MUST compare a secret's logical identity (the version row's id,
-  its version number and its custody) between their two reads, never its sealed bytes, so that a rewrap, re-key or
-  re-seal committed in between does not fail them.
+- **Requirement 015-022** A delivery and a step report MUST compare a secret's logical identity (the version row's id
+  and its secret version number, nothing else) between their two reads, never its sealed bytes nor its custody, so
+  that a rewrap, re-key or re-seal committed in between does not fail them: a re-seal updates the version row in place
+  (`crates/infra-postgres/src/secrets.rs`) and changes its custody between `local` and `transit` without changing what
+  the secret is. A move to KV custody through feature 017's `migrate` writes a new version row, so it still changes
+  the identity.
 
 ### Non-functional
 
@@ -874,8 +905,9 @@ representation trigger. Delivery and the report path compare a secret's logical 
   and starts over with a fresh data key at the `seal_version` it then reads, at most twice, after which the write
   fails `KEY_AUTHORITY_UNAVAILABLE` (retryable); a signature or a binding refused by its floor does the same with a
   newer key version.
-- *Every `SECURITY DEFINER` function of this design* (`key_authority_share`, the five state functions, the two sums
-  of the re-seal inventory, every count function an entry registers, and every trigger function that calls
+- *Every `SECURITY DEFINER` function of this design* (`key_authority_share`, the five state functions, the four
+  combining functions of the re-seal inventory, the four functions every entry registers, `<entry>_local_key_ids`
+  included, and every trigger function that calls
   `key_authority_share`) sets `search_path = pg_catalog, pg_temp` and qualifies every relation and function it uses
   with its schema (`public.key_authority_state`, `public.key_authority_share()`), as the instance registry's functions
   do (`public.platform_requirement_epoch`). A trigger function runs as its owner inside the session of `sagat_app`,
@@ -913,21 +945,27 @@ representation trigger. Delivery and the report path compare a secret's logical 
   remains. An entry is added by the feature that owns the table, in its own delivery, and has these parts:
   - the columns of a `transit` value beside its sealed bytes: the wrapped key, its `wrapped_key_version` and its
     `data_key_issued_at`, with the representation constraint of `secret_versions` below;
-  - two counting functions owned by the schema-owning role, `<entry>_sealed_count(custody text) RETURNS bigint` (values
-    in a custody) and `<entry>_count_below(key_version integer) RETURNS bigint` (`transit` values whose wrapped key
-    version is below it), registered in the owner-only table `key_authority_reseal_inventory (name text PRIMARY KEY,
-    sealed_count regprocedure, count_below regprocedure)`;
+  - four functions owned by the schema-owning role, not executable by `sagat_app`, each `SECURITY DEFINER` with
+    `search_path = pg_catalog, pg_temp`: `<entry>_sealed_count(custody text) RETURNS bigint` (values in a custody),
+    `<entry>_count_below(key_version integer) RETURNS bigint` (`transit` values whose wrapped key version is below it),
+    `<entry>_count_issued_before(issued_before timestamptz) RETURNS bigint` (`transit` values whose
+    `data_key_issued_at` is before it) and `<entry>_local_key_ids() RETURNS SETOF text` (the distinct ring key ids of
+    its `local` values), registered in the owner-only table `key_authority_reseal_inventory (name text PRIMARY KEY,
+    sealed_count regprocedure, count_below regprocedure, count_issued_before regprocedure, local_key_ids
+    regprocedure)`, so the generic privilege-audit row reaches all four;
   - a trigger on its table that calls `key_authority_share()` and refuses a new value in the custody the mode forbids
     and a `transit` value below `min_seal_version` or above `seal_version`, as the `secret_versions` trigger does;
   - an implementation of the application trait `ResealTarget` (`crates/application/src/key_authority.rs`): `name`,
     `reseal_batch(to, limit)`, `rewrap_batch(to_key_version, limit)` and `rekey_batch(issued_before, limit)`, each
     guarded per value by its old sealed bytes and audited per batch, listed in the control plane's wiring.
 
-  `reseal-secrets`, `secrets rewrap` and `secrets rekey` run every `ResealTarget`. Two owner-role functions sum every
-  registered count: `key_authority_count_sealed(custody)`, called by `key_authority_set_mode` under its `FOR UPDATE`;
-  and `key_authority_count_below(n)`, called by `retire-key-versions` after its floor is committed and by
-  `trim-key-versions` in its own transaction while it holds the state row `FOR SHARE`, so that no entry, of this
-  design or a later one, can be left out of a retirement or a trim. `secret_versions` is the first entry; design 040's
+  `reseal-secrets`, `secrets rewrap` and `secrets rekey` run every `ResealTarget`. Four owner-role functions combine
+  the registered functions of every entry: `key_authority_count_sealed(custody)` and `key_authority_local_key_ids()`
+  (the union of every entry's `local_key_ids`), both called by `key_authority_set_mode` under its `FOR UPDATE`;
+  `key_authority_count_below(n)`, called by `retire-key-versions` after its floor is committed and by
+  `trim-key-versions` in its own transaction while it holds the state row `FOR SHARE`; and
+  `key_authority_count_issued_before(t)`, called by `rekey` at its end; so that no entry, of this design or a later
+  one, can be left out of a passage, a retirement, a trim or a re-key. `secret_versions` is the first entry; design 040's
   `audit_sinks` columns are the second (Tasks 040-22 and 040-26). A test fails when a `ResealTarget` has no registered
   entry or a registered entry has no `ResealTarget`.
 - `secret_versions` gains `wrapped_key text` (at most 1,024 characters, starting `vault:v`), `wrapped_key_version
@@ -950,7 +988,12 @@ representation trigger. Delivery and the report path compare a secret's logical 
   `key_id = 'transit-v' || key_version`. Triggers `ENABLE ALWAYS` refuse every `UPDATE`, `DELETE` and `TRUNCATE`, as
   for `script_artifacts`, and a `BEFORE INSERT` trigger calls `key_authority_share()` and refuses a `local` row in
   `migrating` and `transit`, a `transit` row in `returning` and `local`, and a `transit` row whose `key_version` is
-  below `scripts_min_version`. `sagat_app` gets `SELECT, INSERT` only. The migration inserts one row per existing
+  below `scripts_min_version`. `sagat_app` gets `SELECT, INSERT` only. The first row of every artifact comes from the
+  `AFTER INSERT` trigger `script_artifacts_first_signature` (`ENABLE ALWAYS`) on `script_artifacts`, which inserts the
+  artifact's own `signature` and `key_id` with the signer `transit` and the key version `N` when the key id matches
+  `^transit-v[0-9]+$`, and the signer `local` otherwise; new code no longer inserts the first row itself. Because the
+  signer trigger then judges that row, an old writer's `local` artifact in `migrating` or `transit` fails closed at
+  build time, its insert refused with the artifact, instead of existing unsigned. The migration inserts one row per existing
   artifact from its own `signature` and `key_id` (signer `local`). The counts are made in SQL from the state row, never
   from Transit: `finish-migration` counts artifacts with no `transit` row at or above `scripts_min_version`;
   `finish-return` counts artifacts with no `local` row; `scripts retire-key-versions --below N`, after raising
@@ -965,7 +1008,8 @@ representation trigger. Delivery and the report path compare a secret's logical 
   both covered by its immutability trigger; the binding stays 32 bytes. Its new `BEFORE INSERT` trigger calls
   `key_authority_share()` and refuses a binding version the mode forbids (Requirement 015-014) and a binding version 2
   below `intent_min_version`; `intents retire-key-versions --below N`, after raising `intent_min_version` to `N`,
-  counts the pending intents at binding version 2 below `N`.
+  counts the intents at binding version 2 below `N` that are pending or were created in the last 24 hours, on the
+  database clock (Requirement 015-014).
 - Every new variable-width column has its entry in `crates/infra-postgres/storage-classification.json`, which lists
   each such column with one of its four classes (the review's "classification registry"; ADR-0033 classifies payload
   fields, not columns, so it is not what changes). The registry gains no new class: `secret_versions.wrapped_key` is
@@ -1029,13 +1073,13 @@ The commands of the key versions, each over every entry of the re-seal inventory
 | `secrets rotate` | rotates `sagat-secrets` in Transit with the operator's token, in the three steps above | the mode is `transit` or `migrating` |
 | `secrets advance-seal-version --to N` | advances `seal_version` to key version `N` | `N` is above the current `seal_version` and exists in Transit (`key_info`); the attested snapshot time is after Transit's creation time of `N` |
 | `secrets rewrap` | runs `rewrap_batch` of every `ResealTarget`: rewraps the values whose wrapped key version is below the target, batches of 250 ordered by id with an id cursor (`id > $after`) within a run, so a value that fails is counted once per run and never selected again in that run; each batch's updates, its per-value failures and its audit record in one transaction | per value `WHERE id = $id AND wrapped_key = $old`; the target is at most `seal_version`; a restart begins again from the start, which is idempotent |
-| `secrets rekey --issued-before T` | runs `rekey_batch` of every `ResealTarget`: re-seals the values whose `data_key_issued_at` is before `T` with new data keys, one per transaction, audited, with an id cursor; reports the write-ahead log position of its last commit and waits for the standbys | per value `WHERE id = $id AND wrapped_key = $old AND nonce = $old_nonce` |
+| `secrets rekey --issued-before T` | runs `rekey_batch` of every `ResealTarget`: re-seals the values whose `data_key_issued_at` is before `T` with new data keys, one per transaction, audited, with an id cursor; a value whose guard misses (a rewrap or a re-seal committed between its read and its update, which keeps the compromised data key) is read again and retried, at most 3 times, while it is still selected; then `key_authority_count_issued_before(T)` sums `<entry>_count_issued_before(T)` over every inventory entry, and the command reports the write-ahead log position of its last commit and waits for the standbys | per value `WHERE id = $id AND wrapped_key = $old AND nonce = $old_nonce`; the final count over every entry is zero, else the command exits non-zero naming the entries and counts, and the operator runs it again |
 | `secrets retire-key-versions --below N` | raises `min_seal_version` to `N` (`key_authority_raise_floor`), then `key_authority_count_below(N)` over every inventory entry, waits for the standbys past the position read after the count, then sets Transit's `min_decryption_version`, in the three steps above | `N` is at most `seal_version` (checked again under the lock); a sum of zero over every entry and zero failures of the last rewrap below `N`, else the floor stays raised and the command exits non-zero |
 | `secrets trim-key-versions --below N` | sets `min_available_version` with the operator's token, in the three steps above | `key_authority_count_below(N)` over every entry, in its own transaction holding the state row `FOR SHARE`, is zero; `N` is at most `min_decryption_version` and not above the oldest key version of the oldest retained backup the operator declares |
 | `scripts rotate-key` | rotates `sagat-scripts`, in the three steps above; the new key version signs 5 minutes after its rotation (Requirement 015-013) | the mode is `migrating` or `transit` |
 | `scripts retire-key-versions --below N` | raises `scripts_min_version` to `N`, counts the artifacts with no `transit` signature at or above `N`, then sets Transit's `min_decryption_version`, in the three steps above | `N` is at most the newest key version published for 5 minutes (`key_info`); a count of zero after the floor committed, else the floor stays raised and the command exits non-zero |
 | `intents rotate-key` | rotates `sagat-intent`, in the three steps above; the new key version binds at once, since verification reads the stored key version | the mode is `migrating` or `transit` |
-| `intents retire-key-versions --below N` | raises `intent_min_version` to `N`, counts the pending intents at binding version 2 below `N`, then sets Transit's `min_decryption_version`, in the three steps above | `N` is at most the newest key version (`key_info`); a count of zero after the floor committed, else the floor stays raised and the command exits non-zero |
+| `intents retire-key-versions --below N` | raises `intent_min_version` to `N`, counts the intents at binding version 2 below `N` that are pending or younger than 24 hours, then sets Transit's `min_decryption_version`, in the three steps above | `N` is at most the newest key version (`key_info`); a count of zero after the floor committed, else the floor stays raised and the command exits non-zero |
 
 The runbook's procedure after a token is stolen: revoke the token's accessor and every token issued to its role (rotate
 the Kubernetes service account), then rotate, advance the sealing version, rekey (which waits for the standbys),
@@ -1169,6 +1213,17 @@ versions, the batch size of Non-functional requirement 015-003, makes one call p
 most one Transit round trip. During an outage a report whose data keys are all cached is scanned; any other, including
 one whose older secret versions are not cached, is refused as retryable (CUJ 3), so the scan fails closed. Task 015-30
 builds this.
+
+*A refusal for a wrapped key that has since changed.* Delivery, the report path, webhook signing and every other
+reader read the stored rows, commit, open them through Transit, then read again. Between the first read and the
+Transit call, a rewrap can move the row to a newer key version and a retirement can then raise Transit's
+`min_decryption_version`, so the call sends a wrapped key Transit now refuses although the row is healthy. Before a
+Transit refusal (`below_minimum` or `unwrap_failed`) is classified `Refused`, the reader compares the wrapped key it
+sent with the row's current one, which its second read (or, for a reader with one read, one extra read by row id)
+returns. When they differ, it opens once more with the current wrapped key and classifies only that result; when they
+are the same, or the second attempt fails too, the refusal stands as `Refused`. A healthy row is therefore never
+failed for good, and no integrity alert or `key_authority.refused` record is written for it. The retry is once only,
+so a row rewrapped repeatedly cannot loop a reader.
 
 Each Transit client bounds its calls: at most 64 in flight per process and 8 per tenant, a call beyond either waiting
 at most its budget of Requirement 015-018 and then failing `Unavailable`; `transit_calls_in_flight` (a gauge) and
@@ -1448,8 +1503,10 @@ Two lanes that can run at the same time; where they touch the same file the orde
   on `Refused`); add the
   `secret-resolve-never-discards` rule to `scripts/check-architecture.py` with a negative fixture per forbidden pattern
   and a fixture proving an unrelated `.resolve(` is not matched, and its row, and the `transit` trigger's row, in
-  `docs/engineering/architecture-principles.md`; delivery and the report path compare logical identity; the existing
-  secret suites pass unchanged, and a test holds a delivery between its reads while a re-seal commits.
+  `docs/engineering/architecture-principles.md`; delivery and the report path compare logical identity (version row
+  id and secret version number only); the existing secret suites pass unchanged, and barrier tests hold a delivery and
+  a step report between their reads while a re-seal commits, once `local` to `transit` and once `transit` to `local`,
+  and see both succeed.
   Refs: Requirement 015-010, Requirement 015-011, Requirement 015-017
 - [ ] T015-11 First prove against the pinned OpenBao 2.7.1 that `datakey` honours `key_version`, that `rotate`,
   `config` and `trim` take exactly the parameters of Requirement 015-016, that the key types and creation parameters of
@@ -1474,13 +1531,22 @@ Two lanes that can run at the same time; where they touch the same file the orde
   refused by the trigger; that `reseal-secrets --to transit` refuses a ring holding a key whose check value is not
   recorded; that `begin-migration` is refused, naming the key id, when a `local` value of a re-seal inventory entry
   (of `secret_versions` and of a second registered entry) carries a key id its ring does not hold, and succeeds once
-  the ring holds it; and a two-cycle test (migrate with ring R, return with a fresh ring R2, migrate again, then bring R back,
-  under its old ids and under new ones, on the second return) that sees the gate stay closed; the `secret_versions` trigger on insert
+  the ring holds it; that `begin-migration` is refused when its ring holds a key id with other material (the sample
+  value does not open), and when a live serving process has published a ring check value its ring lacks; a barrier
+  test in which a `local` seal under a key the command's ring does not hold takes `key_authority_share()` and holds it
+  while `begin-migration` waits for `FOR UPDATE`, then commits, and the command is refused; that
+  `reseal-secrets --to transit` records its ring ids in its first transaction, so two concurrent runs never deadlock;
+  and a two-cycle test (migrate with ring R, return with a fresh ring R2, migrate again, then bring R back,
+  under its old ids and under new ones, on the second return) that sees the gate stay closed; the
+  `script_artifacts_first_signature` trigger, with a test that inserts an artifact as 0.2.x does (no signature row)
+  in `local`, where its first row appears and it runs, and in `migrating`, where the insert is refused; the `secret_versions` trigger on insert
   and on update of the sealed columns, with the floor and the ceiling; `secrets.authority` widened; `wrapped_key`, `wrapped_key_version`, `data_key_issued_at` and the
   representation constraint with no key id on a `transit` row; the intent binding version and key version under the
   immutability trigger, and the binding-version trigger of Requirement 015-014; `script_artifact_signatures` with its
   constraints, its insert-only `ENABLE ALWAYS` triggers, its signer trigger and the copy of every existing artifact's
-  signature, leaving `script_artifacts` and its immutability trigger untouched; `script_runner_trust_sightings`;
+  signature, leaving the bytes of `script_artifacts` and its immutability trigger untouched;
+  `script_runner_trust_sightings`; the registry row's `ring_check_values` and the additive argument of
+  `instance_register`;
   `key_authority_reseal_inventory` with `secret_versions` as its first entry; the entries of
   `storage-classification.json` of Technical Plan 5; a refusal when a row has `key_id = 'transit'`; a `down` that
   refuses while a `transit` row, a `transit` authority, a `transit` signature or a non-`local` mode exists) with the
@@ -1515,12 +1581,15 @@ Two lanes that can run at the same time; where they touch the same file the orde
   outcome (the rerun does not rotate twice), of a retirement refused for `N` above `seal_version`, of a count that is
   not zero leaving the floor raised, of a secret whose last version is re-sealed changing its authority, and of a
   rewrap whose 250 lowest-id values all fail per item while a rewrappable value follows them: the run rewraps that
-  value, counts 250 failures once each, and ends.
+  value, counts 250 failures once each, and ends; and a barrier test that holds `rekey` between its read of a value
+  and its update, commits a rewrap of that value, releases it, and sees the value re-keyed (a new data key and issue
+  time) or the command exit non-zero with the count of `key_authority_count_issued_before`, never a silent success.
   Refs: Requirement 015-012, Requirement 015-015
 - [ ] T015-15 Sign scripts through Transit at a key version published 5 minutes earlier; extend `/script-runner/signing-key`
   to list the versions at or above the minimum and the legacy local key until `scripts resign` reports zero; write each
-  new signature as a row of `script_artifact_signatures` (signer, key id `transit-v<N>`, key version, the 64 raw bytes)
-  and serve from `/script-runner/artifacts/{digest}` the newest trusted one with `signer` and `keyVersion`; the sandbox
+  new signature as a row of `script_artifact_signatures` (signer, key id `transit-v<N>`, key version, the 64 raw bytes),
+  the first one through the artifact's own `signature` and `key_id`, which the `script_artifacts_first_signature`
+  trigger copies, and serve from `/script-runner/artifacts/{digest}` the newest trusted one with `signer` and `keyVersion`; the sandbox
   runner sends `Sagat-Runner-Trust` on every request, refreshes every 5 minutes and on an unknown version (a retryable
   refusal), verifies a `transit` signature by its key version and a `local` one by its key id, records the verifying
   key in its artifact cache and evicts on refresh; record the sightings in `script_runner_trust_sightings` and gate
@@ -1534,8 +1603,11 @@ Two lanes that can run at the same time; where they touch the same file the orde
   Refs: Requirement 015-013, Success criterion 015-006
 - [ ] T015-16 Bind feature 017's intents with Transit HMAC (`sha2-256`) under binding version 2; verify a replay against
   the stored binding version and key version, outside the provider lock; verify binding version 1 with the file key
-  until none is pending; change the
-  chart's validation and environment; a test replays an intent across a rotation.
+  until none is pending or younger than 24 hours; answer the replay of an activated intent older than 24 hours whose
+  binding key is no longer available as an expired request id, never as a key-service refusal; change the
+  chart's validation and environment; tests that replay an intent across a rotation, replay a completed intent after
+  `intents retire-key-versions` and after step 7 of the way in (within 24 hours it is answered with its receipt, and
+  the retirement and `finish-migration` are refused meanwhile; after 24 hours it is answered as an expired request id).
   Refs: Requirement 015-014
 - [ ] T015-17 Extend the bootstrap scripts of `infra/openbao/` with Transit, the three keys and this design's policies,
   for the development OpenBao of `infra/docker/compose.database.yaml` and for Kubernetes, with the configured mount
@@ -1568,7 +1640,10 @@ Two lanes that can run at the same time; where they touch the same file the orde
 - [ ] T015-19 Integration tests on a real OpenBao: rotation, rewrap, recount and retire with no restart (Success
   criterion 015-002), cross-tenant unwrap refused (Success criterion 015-003), migration under load (Success criterion
   015-004), outage with the cache, the output scan, inbound webhook verification and the managed-database reader
-  (Success criterion 015-005).
+  (Success criterion 015-005); and a barrier test that holds a step report and a cold-cache delivery after their first
+  read, runs `secrets rewrap` and then `secrets retire-key-versions` past the key version they read, releases them,
+  and sees both succeed with no `refused` outcome, audit record or alert, while a row whose current wrapped key is
+  itself refused is still `Refused`.
   Refs: Success criterion 015-002, Success criterion 015-003, Success criterion 015-004, Success criterion 015-005
 - [ ] T015-20 The canary test: marked key material, tokens, contexts and wrapped keys, under ordinary and unlucky field
   names, never in a log, span, metric, audit record or error, with both authorities.
@@ -1647,12 +1722,15 @@ Two lanes that can run at the same time; where they touch the same file the orde
   Refs: Requirement 015-017, Requirement 015-018
 - [ ] T015-34 Build the re-seal inventory of Technical Plan 5: the trait `ResealTarget` in
   `crates/application/src/key_authority.rs` with `reseal_batch`, `rewrap_batch` and `rekey_batch`, the `secret_versions`
-  entry (its two count functions, registration and target), the sums `key_authority_count_sealed` and
-  `key_authority_count_below` and their use in `key_authority_set_mode`, retire and trim, and the test that every
-  `ResealTarget` has a registered entry and the reverse; a test registers a second entry with one `local` value left
-  and sees `finish-migration` refused; another gives that entry one `transit` value whose wrapped key version is below
-  `N` and sees `secrets retire-key-versions --below N` and `secrets trim-key-versions --below N` both refused, then
-  sees `secrets rewrap` rewrap that value and both commands succeed.
+  entry (its four functions, `<entry>_local_key_ids` and `<entry>_count_issued_before` included, registration and
+  target), the four combining functions and their use in `key_authority_set_mode` (under its `FOR UPDATE`), retire,
+  trim and re-key, and the test that every `ResealTarget` has a registered entry and the reverse; a test registers a
+  second entry with one `local` value left and sees `finish-migration` refused; another gives that entry one
+  `transit` value whose wrapped key version is below `N` and sees `secrets retire-key-versions --below N` and
+  `secrets trim-key-versions --below N` both refused, then sees `secrets rewrap` rewrap that value and both commands
+  succeed; another gives it one `local` value under a key id the command's ring lacks and sees `begin-migration`
+  refused, naming that id; another gives it one `transit` value issued before `T` that `rekey` cannot re-key and sees
+  `secrets rekey --issued-before T` exit non-zero.
   Refs: Requirement 015-012, Requirement 015-015
 - [ ] T015-35 The chart's key-authority values of Technical Plan 11 (`openbao.transit.*`, `keyAuthority.localKeys`,
   `scripts.signingKeySecret`, `networkPolicy.customerKeyServices` with the helper `sagat.networkPolicy.validateCustomerKeyServices`) and their
