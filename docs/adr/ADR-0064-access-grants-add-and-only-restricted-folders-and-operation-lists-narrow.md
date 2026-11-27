@@ -1,7 +1,7 @@
 # ADR-0064: Access grants only add; only a restricted folder or an operation list narrows them; one evaluator decides every operation
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24), with the additions under "Acceptance"
+**Decided by:** agent proposal (2026-10-26); accepted by delegate (OD-2026-11-24-4) on 2026-11-24, row OD-2026-11-24-710 of `docs/owner-decisions.md`
 **Refines / supersedes:** supersedes none. Refines: ADR-0031 (per-name audience left to "another decision";
 its operation permissions may also be held by explicit grant and through the `runner` folder level, while
 its disclosure, receipt and audit rules are unchanged); ADR-0028, ADR-0035 and ADR-0018 (their permissions
@@ -128,6 +128,16 @@ upgrade (the control-plane runbook upgrades the schema first).
   protected, G1459, 018 G1607). Each API admission reads the registry epoch (measured in the benchmark).
 - Operational: rollback disables narrowing per kind; binary downgrade requires removing every restriction
   and list and then the requirement. Runs in flight are unaffected: no IR, protocol or transition change.
+
+## Acceptance (2026-11-24)
+
+Accepted under Owner decision 2026-11-24-4 after a re-read against `develop` at `2c94064f` (Decision 029-001 of
+`specs/029-custom-roles-folders/research.md`). Additions that change no rule above: the catalog counts 53 permissions on
+`develop` (five were added by features 018 and 035 since this record was written), 58 with feature 029, and design
+013's `identity:manage` is classified reserved; identity-provider groups join the evaluator from design 013's two
+source kinds under the amended group-source contract (Architecture decision 0142); the per-kind gates are advertised as
+names of design 050's capability list (Architecture decision 0143); feature 018's instance-capability registry is built
+and ships in the same release, so the narrowing guard needs no earlier release.
 
 ## Evidence
 

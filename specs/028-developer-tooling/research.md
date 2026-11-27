@@ -394,6 +394,66 @@ to this feature: D1400–D1439, G1400–G1439, O1400–O1439, ADR-0063.
 - **G1420 — Retention ages run on workflow time in a test deployment.** Advancing the clock far can purge run content
   that a test still wants to inspect; this is the consequence of measuring retention over workflow-class instants.
 
+## Readiness decisions (2026-11-24)
+
+Taken by the agent the coordinating session briefed for the product surface, under Owner decision 2026-11-24-4
+("delegate (OD-2026-11-24-4)"), each weighed over its options for the most architectural and business advantage, after
+a re-read against `develop` at `2c94064f`. New entries use the feature-scoped form of
+`docs/governance/identifier-scheme.md`. Where an older entry of this register says five SDKs, read six (the Rust SDK,
+feature 034, ADR-0070); the register is append-only, so the older text is left as written.
+
+- **Decision 028-001 — O1400 answered: GitHub Releases in 0.3.0, registries when the owner opens the accounts.**
+  Options: GitHub Releases only; also Open VSX and the Visual Studio Marketplace. The marketplaces are where VS Code
+  users find extensions, which matters for adoption against Temporal and Windmill, but publishing there needs publisher
+  accounts, which only the owner can create (Owner decision 2026-11-24-4 keeps accounts with the owner). Chosen: the
+  release attaches the VSIX with checksums and attestations (T028-048), built so that the same file can be published
+  to both registries unchanged; publishing there is listed for the owner and gates nothing. Recorded as
+  OD-2026-11-24-706.
+- **Decision 028-002 — O1401 answered: a merge never publishes by itself.** Options: Windmill's automatic deploy on
+  merge; drafts and, with `DRAFT_AND_REQUEST`, a publication request bound to the digest. Chosen: drafts and requests,
+  as recommended. A team that wants "merge is deploy" already has it without a second publication authority: its
+  repository's pipeline runs `sagat publish` (feature 011) with its own credentials and the namespace's approval
+  policy, and every publication stays an audited platform act. An automatic publish by the synchronizer would publish
+  as `system:git-sync`, a principal that read no diff. Recorded as OD-2026-11-24-707.
+- **Decision 028-003 — O1402 answered: operator indexes, yes.** Deployment-level only, each with its own pinned Ed25519
+  keys and the same verification; no tenant source and no public submission, the exact boundary constitution 5.0.0
+  ("Admitted scope") states. The index format is shared with design 047 (OAuth resources and the integration hub),
+  which adds item kinds and a revocation list to it; Tasks T028-062 to T028-066 therefore come before 047's hub slice.
+  Recorded as OD-2026-11-24-708.
+- **Decision 028-004 — ADR-0063 accepted.** Options: accept; shift the whole database clock; keep back-dating rows.
+  Chosen: accept, as written, because it keeps one engine and production query plans while making virtual time
+  impossible outside a test deployment, and it is the only option under which time skipping can be offered to SDK users
+  (Temporal's test server is the bar). Two additions at acceptance: every 0.3.0 design that adds an instant classifies
+  it in [contracts/time-classes.md](contracts/time-classes.md) (design 044's code runs read workflow time from the
+  journal, so a virtual clock reaches them unchanged; design 045's step deadlines are workflow time and its
+  per-activity heartbeat timeout is infrastructure time, as leases are); and the baseline counts of the plan (37
+  column defaults, 43 function bodies) are figures of 2026-10-26, so the catalog test, not the plan, is the authority
+  at build. Recorded as OD-2026-11-24-705.
+- **Decision 028-005 — One SDK test environment.** Design 044 gives each SDK a replayer and "the test environment" for
+  code workflows. Options: two test environments; one. Chosen: one, this feature's, which design 044's code worker
+  registration joins (T028-076); the replayer of workflow code stays design 044's, and this feature's US03 stays the
+  engine-side check that a build reads and folds exported histories.
+- **Decision 028-006 — One history document.** Feature 020 defines `sagat-run-history-v1` for export and archival;
+  design 044 serves `GET /runs/{runId}/history` (JSON lines, `history:export`) for its replayers. Options: two formats;
+  one. Chosen: one. US03 reads the document design 044 serves, which is built in 0.3.0 for replay; it needs that
+  route to cover graph runs too, and feature 020's archive to store the same document. Both are other designs' choices,
+  handed to the coordinating session; until they agree, Gap 1404 stays and US03 waits (A5 of the build slices).
+- **Decision 028-007 — The shared graph package holds the model and the layout only.** `frontend/packages/workflow-graph`
+  carries no React component and no Astryx (ADR-0101) dependency, so the VS Code webview loads it under its own strict
+  content security policy and the Studio and the webview draw it with their own components. It is extracted after
+  design 050's editor slice, which rewrites the registry it starts from.
+- **Decision 028-008 — The capabilities are `testing.virtual-clock` and `testing.history-replay` in design 050's one
+  list** (ADR-0143); FR-028-045's "additive `capabilities` list" is that list, and the unprefixed names of Decision 1409
+  (`virtual-clock`, `history-replay`) are written with the `testing.` prefix; the Git sync and template catalog names
+  are `tooling.git-sync` and `tooling.template-catalog` (corrected 2026-11-26 in `contracts/errors.md`, which had kept
+  the closed, unprefixed list).
+- **Decision 028-009 — The extension follows step logs.** Feature 041 stores step logs read under their own permission
+  (ADR-0085). The extension's "follow" may show them through the CLI when the caller holds that permission; it adds no
+  route.
+- **Decision 028-010 — Script templates follow design 046.** When design 046's package manifests exist, a script
+  template carries its manifest and resolves under the namespace's supply-chain policy when it is published; an import
+  still creates only a draft.
+
 ## Owner questions
 
 - **O1400 — Where is the VS Code extension published?** Options: GitHub Releases only (VSIX attached with checksums and

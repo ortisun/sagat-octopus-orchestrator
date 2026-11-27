@@ -28,7 +28,7 @@ worker-protocol, AsyncAPI, run-transition or scheduler change.
 
 ## Technical Context
 
-**Language/Version**: Rust 1.98.0 (`rust-toolchain.toml`); TypeScript Studio; five SDKs at their pinned
+**Language/Version**: Rust 1.98.0 (`rust-toolchain.toml`); TypeScript Studio; six SDKs at their pinned
 toolchains. No toolchain change.
 
 **Primary Dependencies**: existing Axum, SQLx, Tokio, OTel crates. No new dependency.
@@ -39,7 +39,7 @@ column.
 
 **Testing**: domain unit and property tests; real PostgreSQL integration as `sagat_app`
 (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); REST contract, opacity battery and canary scan; barrier tests; fault
-injection per statement; Chromium e2e; five-SDK conformance; benchmark.
+injection per statement; Chromium e2e; six-SDK conformance; benchmark.
 
 **Target Platform**: existing single-region deployment (Compose, Helm). No new process.
 
@@ -52,7 +52,7 @@ new transaction; audit in the same transaction; closed metric labels; runtime-ro
 
 **Scale/Scope**: 5 new permissions (built-in roles are additive: other drafts add machine roles and grants,
 so tests assert set properties, never counts); 34 new REST operations; `x-access` on every operation (160 today); every
-role-only decision migrated: 154 `principal.authorize(Permission::…)` sites in 25 application files plus the
+role-only decision migrated: 154 `principal.authorize(Permission::…)` sites in 25 application files at the baseline (199 `authorize(Permission::…)` calls across the crates on `develop` at 2026-11-24; the architecture rule of T029-016, not a count, is the authority) plus the
 other role reads listed under "Enforcement migration".
 
 ## Architecture and crate placement
@@ -75,7 +75,7 @@ apps/control-plane/src/                     # checks 018's registry requirement 
 apps/cli/src/access.rs                      # NEW `sagat access ...`
 scripts/check-architecture.py               # NEW rule: no role-only decision outside domain::access
 frontend/apps/studio/src/features/access/   # NEW Access screens; folder tree in existing features
-sdks/{typescript,go,python,dotnet,java}/    # reasons only; conformance scenario
+sdks/{typescript,go,python,dotnet,java,rust}/  # reasons only; conformance scenario
 tests/{integration,contract,fault,e2e}/custom-roles-folders/, tests/performance/reports/
 ```
 
@@ -100,7 +100,7 @@ counted.
 ## Enforcement migration
 
 1. **Inventory and a check that keeps it complete.** Every role-only decision moves to the evaluator:
-   the 154 `.authorize(Permission::…)` sites; the variable-permission calls in
+   every `.authorize(Permission::…)` site (154 at the baseline, more on `develop` now); the variable-permission calls in
    `crates/application/src/{api_admission,database_results,payloads,runs}.rs` and `runs/ad_hoc.rs`; route
    checks in `crates/api-http/src/routes/{outbound,runner}.rs`; direct role reads in
    `crates/domain/src/{secrets.rs,execution/approval.rs}`,
@@ -129,7 +129,7 @@ counted.
    compares it with each operation's `x-access` (`class`, `permission`/`anyOf`, `kind`, `discloses`). A
    contract test fails when a response schema carries `workflowId`, `runId`, `scriptId`, a connection name or
    a folder without `discloses`.
-5. **Gates per item kind.** `GET /version` reports `accessControl` per kind. Custom roles, groups and open
+5. **Gates per item kind.** `GET /version` reports, in design 050's capability list, `access.custom-roles`, `access.folders.<kind>`, `access.restricted.<kind>` and `access.operation-lists`. Custom roles, groups and open
    folders enable when their slice gates pass (an unmigrated route ignores a custom grant: fail closed).
    Restricted mode and lists enable for a kind only after (a) its opacity battery over every operation that
    names or discloses the kind, as every built-in human role and a level-only member, (b) a canary scan of
@@ -292,7 +292,7 @@ benchmark (T029-064) decides whether these limits are published as measured.
   [data-model.md](./data-model.md), `UNIQUE (tenant_id, namespace_id, id)` on `scripts`, quota resources,
   role-change trigger, `sagat_app` grants, classification entries. Down refuses while access rows exist.
 - **Contracts**: OpenAPI grows additively (new paths, optional `folder` omitted when absent, `namespaceId`
-  on auth context, `accessControl` on `/version`, recorded in the `*.baseline.json` compatibility files);
+  on auth context, the `access.*` capability names on `/version`, recorded in the `*.baseline.json` compatibility files);
   every operation gains `x-access`, which clients ignore. The manifest gains an optional `folder`; an older CLI
   rejects manifests that use it.
 - **Rolling upgrade**: during the rollout, old replicas ignore custom grants and folder levels (fail closed)
@@ -309,7 +309,7 @@ Design checks, not implementation approval.
 | I — durable atomic transitions | Pass | Pass | No run transition changes; each change commits with its audit; fences serialize decisions (T029-012, T029-059, T029-060) |
 | II — pure domain, inward deps, no empty mappers | Pass | Pass | Pure `domain/src/access.rs`; one store call per decision; new architecture rule (T029-005, T029-016) |
 | III — at-least-once effects, honest compensation | Pass | Pass | No external effect; connection writes need secret authority (T029-056) |
-| IV — pinned versions, compatible contracts, five SDKs | Pass | Pass | No IR/protocol change; additive REST/manifest with declared carve-out (T029-062, T029-065, T029-066) |
+| IV — pinned versions, compatible contracts, six SDKs | Pass | Pass | No IR/protocol change; additive REST/manifest with declared carve-out (T029-062, T029-065, T029-066) |
 | V — isolation, tenant boundary, secrets, fail closed | Pass | Justified | Fails closed in this design (`worker:bind`, `secret:manage` reserved); pre-guard binaries cannot be protected, so restriction needs the prerequisite release (Complexity Tracking; T029-003, T029-026, T029-036, T029-039, T029-042) |
 | VI — OTel, audit, typed errors | Pass | Pass | Closed metrics, audit per change, reasons with remediation, canaries (T029-008, T029-009, T029-061) |
 | VII — inbox/outbox, redeliverable events | Pass | Pass | Nothing published; external group deliveries left to their source feature with an inbox-style contract |
@@ -348,3 +348,22 @@ Studio `npm --prefix frontend run typecheck|test|build` and the Chromium journey
 run, with failures and skips; nothing in this plan is evidence.
 
 *Note 2026-11-08 (018 T018-080, G2001).* The request path below reads the epoch row `FOR SHARE`, and the runtime role has `SELECT` only on `platform_requirement_epoch` (a share lock needs `UPDATE`): it needs a definer function the runtime role can execute, not a bare statement. And a `FOR SHARE` held for a whole tenant transaction makes a queued activation's `FOR UPDATE` wait, and that wait stalls the registration of every new process: read the epoch, do not hold it. Not built here (029 is not approved).
+
+## Readiness against `develop` (2026-11-24)
+
+Re-read against `develop` at `2c94064f`. The decisions are in research.md ("Readiness decisions"); the build slices in
+[tasks.md](tasks.md).
+
+| Change on `develop` or in release 0.3.0 | Effect on this plan |
+|---|---|
+| Feature 018's instance-capability registry is built (T018-080 ticked; ADR-0082 accepted) and ships in 0.3.0 | T029-003 is no longer a separate release: the registry refuses the operator's activation of `access-narrowing-v1` while any live control plane lacks it, which is the guarantee the earlier release gave; the 2026-11-08 note above on reading the epoch without holding it still applies |
+| Five permissions were added since the baseline (`schedule:read`, `schedule:write`, `schedule:operate`, `run:batch`, `database:browse`) | Classified in `contracts/permission-catalog.json` (Decision 029-005); the catalog has 58 entries with this feature's five, plus design 013's `identity:manage`, reserved |
+| The `authorize(Permission::…)` sites grew from 154 to about 200 | The inventory is regenerated at build by the T029-016 rule; the plan's count is the baseline's |
+| Design 013 delivers external groups and member management (O1440, O1442) | US08 changes from "refuse" to "evaluate fresh external groups, read-only here"; `EXTERNAL_GROUP_READ_ONLY` joins the reasons; the group-source contract is amended (SCIM in 0.3.0) |
+| Design 050's one capability list (ADR-0143) | `accessControl` becomes the `access.*` names of that list |
+| The Rust SDK (feature 034) | Six SDKs in the scenario and the reasons (T029-062) |
+| Astryx (ADR-0101) | The Access screens use the interface module; the folder tree on the list pages follows design 050's editor slice |
+| Feature 027 in the same release | The app item kind joins the catalog's item kinds through T027-038, after T029-013 |
+| Workflow as code (design 044) | A code workflow is a workflow item: it is placed, hidden and evaluated as one; its declared Queries and Updates take operation lists like a graph's |
+| Constitution 5.0.0 | No principle this plan cites changed; the Check stands |
+

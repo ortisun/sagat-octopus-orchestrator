@@ -12,6 +12,8 @@
 - [x] Focused on user value and business needs (delegation, team access, hiding work, explainability).
 - [ ] Written for non-technical stakeholders — partly: the stories are plain, but FR-029-015/020/021 are
   necessarily precise about evaluation and revocation semantics. Accepted for a security feature.
+  *Accepted as it stands, 2026-11-24, delegate (Owner decision 2026-11-24-4, row OD-2026-11-24-714):* the evaluation rules are
+  the security contract; a looser wording could not be tested by the shared vectors.
 - [x] All mandatory sections completed.
 
 ## Requirement Completeness
@@ -22,6 +24,7 @@
 - [x] Success criteria are measurable (counts, byte equality, time bounds, 100% coverage checks).
 - [ ] Success criteria are technology-agnostic — partly: SC-029-004/005 refer to the API contract and
   SC-029-001 to the runtime database role, because the guarantee is about those boundaries.
+  *Accepted as it stands, 2026-11-24, delegate (row OD-2026-11-24-714):* the same reason.
 - [x] All acceptance scenarios are defined (US01–US08, Given/When/Then).
 - [x] Edge cases are identified (concurrency, revocation, role change, external source failure, ceilings,
   cross-tenant, crash points).
@@ -35,6 +38,7 @@
   operations, explain) and the dependent flows (scripts/connections; identity-provider groups refused).
 - [ ] Feature meets measurable outcomes defined in Success Criteria — not applicable yet: nothing is
   implemented; the outcomes are release gates.
+  *Accepted as it stands, 2026-11-24, delegate (row OD-2026-11-24-714):* checked at build by the success criteria.
 - [x] No implementation details leak into the requirement statements beyond the baseline references noted
   above.
 
@@ -62,4 +66,5 @@
 
 - The unchecked items are honest partial passes, not blockers for planning.
 - Built-in role count: the code has seven (G1440); the input said six.
-- Owner review is required for ADR-0064 and O1440–O1442 before implementation (T029-001).
+- Owner review is required for ADR-0064 and O1440–O1442 before implementation (T029-001). *Done 2026-11-24 under
+  Owner decision 2026-11-24-4* (research.md, "Readiness decisions").
