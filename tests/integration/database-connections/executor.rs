@@ -571,6 +571,11 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .contains("cannot roll back step credential roles"),
         "{refused}"
     );
+    // The downs of every later migration committed, each in its own transaction, before this one refused: the services
+    // resume only on the whole schema, so it is upgraded again first.
+    sagat_infra_postgres::migrate(&w.db.pool)
+        .await
+        .expect("bring back what was undone before the refusal");
     let drained = sqlx::query("DELETE FROM step_database_credentials WHERE secret_role<>'primary'")
         .execute(&w.db.pool)
         .await

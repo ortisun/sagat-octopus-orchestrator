@@ -388,6 +388,11 @@ async fn zero_policy_writer_and_downgrade_obey_both_relation_lock_orders() {
             .execute(&mut *writer)
             .await
             .expect("restore positive fixture policy");
+            // A refused rollback still committed the downs of every later migration, each in its own transaction, before
+            // this one refused: the binaries resume only on the whole schema, so it is upgraded again first.
+            migrate(&flow.api.db.pool)
+                .await
+                .expect("schema-first upgrade after the refused rollback");
         } else {
             let mut down_tx = down.begin().await.expect("hold actual downgrade prefix");
             sqlx::query("LOCK TABLE tenant_collection_policies IN ACCESS EXCLUSIVE MODE")

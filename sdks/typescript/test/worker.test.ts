@@ -370,7 +370,7 @@ test('a worker registers its activities and the newest protocol it speaks, with 
   assert.ok(register);
   assert.deepEqual(register.request, {
     worker_name: 'test-worker', namespace: 'payments',
-    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.5' },
+    capabilities: { languages: ['typescript'], activities: ['a.undo', 'b.second', 'c.lookup'], pools: [], max_inflight: 7, protocol_version: '1.5', declines_acknowledgement: false },
   });
   assert.equal(register.metadata.get('authorization')[0], 'Bearer tok');
   assert.equal(h.protocolVersion, '1.2');

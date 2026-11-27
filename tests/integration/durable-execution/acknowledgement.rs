@@ -881,13 +881,19 @@ async fn a_run_of_another_tenant_is_recorded_once_and_a_run_of_its_own_is_not() 
             .await
             .expect("checked")
     );
-    let recorded: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, resource_id FROM audit_records WHERE tenant_id = $1 AND actor = 'mallory'",
-    )
-    .bind(lab.p.other_tenant.as_uuid())
-    .fetch_all(&lab.p.api.db.pool)
-    .await
-    .expect("the audit trail");
+    // the denial is written off the response path (`IdentityStore::record_denial`), so the trail is read until it holds it
+    let recorded: Vec<(String, String)> =
+        crate::support::eventually("the cross-tenant record", || async {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT action, resource_id FROM audit_records WHERE tenant_id = $1 AND actor = 'mallory'",
+            )
+            .bind(lab.p.other_tenant.as_uuid())
+            .fetch_all(&lab.p.api.db.pool)
+            .await
+            .expect("the audit trail");
+            (!rows.is_empty()).then_some(rows)
+        })
+        .await;
     assert_eq!(
         recorded,
         [(
