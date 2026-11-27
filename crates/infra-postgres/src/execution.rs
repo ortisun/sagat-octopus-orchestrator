@@ -2057,6 +2057,19 @@ impl RunStore for PgRunStore {
     }
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for PgRunStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        sagat_application::tenant_boundary::BoundaryAudit::record_boundary_denial(
+            &self.identity,
+            denial,
+        )
+        .await
+    }
+}
+
 /// Pins the effective instance and depth ceilings of a run that was just inserted.
 ///
 /// The row of `run_instance_usage` starts at the platform ceilings (100000 and 8). The author's

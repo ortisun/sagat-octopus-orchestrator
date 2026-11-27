@@ -143,6 +143,17 @@ groups:
           summary: Requests are being refused for exceeding a quota.
           runbook: docs/runbooks/security-governance.md
 
+      # Lookups that named another tenant's resource (feature 009, D60; gap G041-028): a leaked identifier being tried,
+      # or a client pointed at the wrong tenant. Counted before the bounded platform audit writes, so a flood is seen
+      # even when the table keeps only its first records. The caller is found in `security_audit_records`.
+      - alert: SagatCrossTenantProbing
+        expr: sum(increase(cross_tenant_probes_total[10m])) > 20
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Callers keep naming resources of other tenants.
+          runbook: docs/runbooks/security-governance.md#4-symptoms
+
   # Scale and availability of the scheduler (feature 010, FR-010-001, FR-010-004): its work is split
   # in 64 shards, each held by one engine replica under a lease. See docs/runbooks/scaling.md.
   - name: sagat-scheduler

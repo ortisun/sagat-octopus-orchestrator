@@ -978,7 +978,7 @@ async fn changing_a_quota_is_audited_and_a_foreign_namespace_looks_missing_and_i
     let foreign_ns = w.namespace.id().to_string();
     let audited = crate::support::eventually("the cross-tenant access is audited", || async {
         let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 \
+            "SELECT resource_id FROM security_audit_records WHERE caller_tenant_id = $1 \
              AND action = 'access.denied.cross_tenant' AND resource_type = 'namespace'",
         )
         .bind(w.other_admin.tenant_id().as_uuid())

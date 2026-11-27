@@ -8959,6 +8959,91 @@
         "crates/infra-postgres/migrations/20261226000000_capacity_transfer_receipts.up.sql",
         "crates/infra-postgres/src/capacity_vacate.rs"
       ]
+    },
+    {
+      "table": "security_audit_records",
+      "column": "action",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK `security_audit_records_action_valid` permits only `access.denied.cross_tenant`. Writer: `crates/infra-postgres/src/security_audit.rs`; platform scope (feature 009, D60), bounded per caller's tenant and actor, never charged to a tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/security_audit.rs"
+      ]
+    },
+    {
+      "table": "security_audit_records",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject of the caller, CHECK `security_audit_records_actor_bounded` limits it to 255 characters. Writer: `crates/infra-postgres/src/security_audit.rs`; platform scope (feature 009, D60), bounded per caller's tenant and actor, never charged to a tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/security_audit.rs"
+      ]
+    },
+    {
+      "table": "security_audit_records",
+      "column": "resource_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The identifier the caller gave, a UUID of a typed identifier; CHECK `security_audit_records_resource_id_bounded` limits it to 255 characters. Writer: `crates/infra-postgres/src/security_audit.rs`; platform scope (feature 009, D60), bounded per caller's tenant and actor, never charged to a tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/security_audit.rs"
+      ]
+    },
+    {
+      "table": "security_audit_records",
+      "column": "resource_type",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed vocabulary of `ResourceType::as_str`; CHECK `security_audit_records_resource_type_bounded` limits it to 64 characters. Writer: `crates/infra-postgres/src/security_audit.rs`; platform scope (feature 009, D60), bounded per caller's tenant and actor, never charged to a tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/security_audit.rs"
+      ]
+    },
+    {
+      "table": "security_audit_records",
+      "column": "trace_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed W3C trace identifier, exactly 32 lowercase hexadecimal characters when present (CHECK `security_audit_records_trace_id_format`). Writer: `crates/infra-postgres/src/security_audit.rs`; platform scope (feature 009, D60), bounded per caller's tenant and actor, never charged to a tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/security_audit.rs"
+      ]
     }
   ],
   "external_content": [

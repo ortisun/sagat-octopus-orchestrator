@@ -57,6 +57,7 @@ struct Store {
     /// The namespace exists only in another tenant.
     foreign: bool,
     denials: std::sync::Arc<std::sync::Mutex<Vec<AuditRecord>>>,
+    probes: std::sync::Arc<std::sync::Mutex<Vec<sagat_domain::audit::CrossTenantProbe>>>,
 }
 impl Store {
     fn new(role: Role, grant: bool) -> Self {
@@ -68,6 +69,7 @@ impl Store {
             lookups: std::sync::Arc::default(),
             foreign: false,
             denials: std::sync::Arc::default(),
+            probes: std::sync::Arc::default(),
         }
     }
 
@@ -84,6 +86,23 @@ impl Store {
         Ok(())
     }
 }
+impl sagat_application::tenant_boundary::BoundaryAudit for Store {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        self.denials
+            .lock()
+            .expect("denials")
+            .push(denial.tenant_record().clone());
+        self.probes
+            .lock()
+            .expect("probes")
+            .extend(denial.probe().cloned());
+        Ok(())
+    }
+}
+
 impl NamespaceDirectory for Store {
     async fn namespace_exists(&self, _: TenantId, _: NamespaceId) -> Result<bool, StoreError> {
         Ok(!self.foreign)
@@ -409,7 +428,8 @@ async fn roles_without_event_read_are_refused_before_lookup() {
 }
 
 /// Constitution V: a probe of a resource of another tenant is audited whatever it reads. The three
-/// event read operations answer the opaque 404 and write one `CrossTenantAccessDenied`.
+/// event read operations answer the opaque 404, write the record a missing namespace leaves in the caller's tenant, and
+/// give the platform's security audit the probe (feature 009, D60).
 #[tokio::test]
 async fn a_cross_tenant_probe_of_each_event_read_is_audited() {
     use sagat_application::error::AppError;
@@ -418,6 +438,7 @@ async fn a_cross_tenant_probe_of_each_event_read_is_audited() {
         let mut store = Store::new(Role::Developer, true);
         store.foreign = true;
         let denials = std::sync::Arc::clone(&store.denials);
+        let probes = std::sync::Arc::clone(&store.probes);
         let lookups = std::sync::Arc::clone(&store.lookups);
         let service = EventPayloadService::new(store, FixedClock, Projector);
         let caller = principal(Role::Developer);
@@ -459,11 +480,15 @@ async fn a_cross_tenant_probe_of_each_event_read_is_audited() {
         );
         let denials = denials.lock().expect("denials");
         assert_eq!(denials.len(), 1, "{operation}: one audit record");
-        assert_eq!(denials[0].action(), AuditAction::CrossTenantAccessDenied);
+        assert_eq!(denials[0].action(), AuditAction::ResourceNotFoundDenied);
         assert_eq!(denials[0].resource_type(), ResourceType::Namespace);
         assert_eq!(denials[0].tenant_id(), caller.tenant_id());
         assert_eq!(denials[0].actor(), caller.subject());
-        assert_eq!(denials[0].resource_id(), foreign.to_string());
+        assert_eq!(denials[0].resource_id(), "");
+        let probes = probes.lock().expect("probes");
+        assert_eq!(probes.len(), 1, "{operation}: one probe");
+        assert_eq!(probes[0].resource_id(), foreign.to_string());
+        assert_eq!(probes[0].caller_tenant_id(), caller.tenant_id());
     }
 }
 

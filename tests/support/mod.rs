@@ -361,6 +361,40 @@ pub fn subject(value: &str) -> Subject {
     Subject::parse(value).expect("valid subject")
 }
 
+/// What `actor` left in the trail of its own tenant, as that tenant reads it (action, resource type, resource, reason),
+/// in a fixed order: the record of a lookup across the tenant boundary must be the same for a missing and a foreign
+/// identifier (feature 009, D60; gap G041-028).
+pub async fn trail_of(
+    pool: &sqlx::PgPool,
+    tenant: sagat_domain::identity::TenantId,
+    actor: &str,
+) -> Vec<(String, String, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT action, resource_type, resource_id, reason FROM audit_records \
+         WHERE tenant_id = $1 AND actor = $2 ORDER BY action, resource_type, resource_id, reason",
+    )
+    .bind(tenant.as_uuid())
+    .bind(actor)
+    .fetch_all(pool)
+    .await
+    .expect("the tenant's trail")
+}
+
+/// The platform's security audit of `caller_tenant`: (actor, resource type, resource, the tenant that holds it).
+pub async fn probes_of(
+    pool: &sqlx::PgPool,
+    caller_tenant: sagat_domain::identity::TenantId,
+) -> Vec<(String, String, String, Option<uuid::Uuid>)> {
+    sqlx::query_as(
+        "SELECT actor, resource_type, resource_id, owner_tenant_id FROM security_audit_records \
+         WHERE caller_tenant_id = $1 AND action = 'access.denied.cross_tenant' ORDER BY actor, resource_type, resource_id",
+    )
+    .bind(caller_tenant.as_uuid())
+    .fetch_all(pool)
+    .await
+    .expect("the platform's security audit")
+}
+
 /// Two isolated tenants, each with an administrator, persisted through the real store.
 pub struct TwoTenants {
     pub store: PgIdentityStore,

@@ -354,8 +354,8 @@ async fn scoped_identity_storage_rejects_foreign_tenant_keys_and_reads_look_miss
 
     let audited = eventually("the cross-tenant run read is audited", || async {
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records \
-             WHERE tenant_id = $1 AND action = 'access.denied.cross_tenant' \
+            "SELECT count(*) FROM security_audit_records \
+             WHERE caller_tenant_id = $1 AND action = 'access.denied.cross_tenant' \
                AND resource_type = 'run' AND resource_id = $2",
         )
         .bind(foreign.as_uuid())

@@ -86,9 +86,14 @@ pub enum AuditAction {
     PayloadRevealRevoked,
     /// A signal was delivered to a waiting run.
     RunSignalled,
-    /// The caller asked for a resource that exists only in another tenant. The record carries the
-    /// identifier the caller supplied and nothing about the other tenant.
+    /// The caller asked for a resource that exists only in another tenant. Since gap G041-028 (feature 009, D60) it is
+    /// the action of the platform's security audit ([`CrossTenantProbe`]), never of a tenant's trail; records of it
+    /// written in a tenant's trail before that are withheld from the tenant ([`AuditAction::WITHHELD_FROM_TENANT`]).
     CrossTenantAccessDenied,
+    /// The caller named a resource by an identifier that names nothing in its tenant: it does not exist, or it is another
+    /// tenant's, which this record never tells apart (feature 009, D60). It carries the kind of resource and no
+    /// identifier, and is built only by [`BoundaryDenial`].
+    ResourceNotFoundDenied,
     /// A known caller of the tenant was refused with a `403` / `PERMISSION_DENIED`: the role lacks
     /// a permission, or the identity is not allowed this work. One record per denial, bounded by
     /// the per-subject request budget that every call is charged to first. It names the call by its
@@ -255,7 +260,8 @@ impl AuditAction {
     /// Actions that are kept for whoever runs the platform and never read back by the tenant they
     /// are written on. A denial is recorded only when the resource exists in another tenant, so a
     /// trail that listed it would tell anyone who can read it whether an identifier they tried
-    /// exists elsewhere, which the `404` is careful not to say.
+    /// exists elsewhere, which the `404` is careful not to say. Nothing writes it in a tenant's trail any more (D60); the
+    /// records written before stay withheld.
     pub const WITHHELD_FROM_TENANT: &'static [Self] = &[Self::CrossTenantAccessDenied];
 
     /// Whether doing the same thing again, to the same resource and for the same stated reason, adds
@@ -364,6 +370,7 @@ impl AuditAction {
             Self::PayloadRevealRevoked => "payload.reveal_revoked",
             Self::RunSignalled => "run.signalled",
             Self::CrossTenantAccessDenied => "access.denied.cross_tenant",
+            Self::ResourceNotFoundDenied => "access.denied.not_found",
             Self::PermissionDenied => "access.denied.permission",
             Self::SecretStored => "secret.stored",
             Self::SecretProvisioningStarted => "secret.provisioning_started",
@@ -811,6 +818,127 @@ impl AuditRecord {
     #[must_use]
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
+    }
+
+    #[must_use]
+    pub fn trace_id(&self) -> Option<&str> {
+        self.trace_id.as_deref()
+    }
+
+    #[must_use]
+    pub const fn created_at(&self) -> OffsetDateTime {
+        self.created_at
+    }
+}
+
+/// A lookup by an identifier the caller gave that found nothing in the caller's tenant (feature 009, D60; gap G041-028).
+///
+/// The caller's tenant gets [`Self::tenant_record`], which is the same whether the identifier names nothing or another
+/// tenant's resource: the kind of resource, no identifier, a fixed reason. Only when it is another tenant's does the
+/// denial carry a [`CrossTenantProbe`] for the platform's security audit, which no tenant reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundaryDenial {
+    tenant_record: AuditRecord,
+    probe: Option<CrossTenantProbe>,
+}
+
+impl BoundaryDenial {
+    /// The reason of the tenant's record: one text for every case, so that it says nothing the `404` does not.
+    pub const TENANT_REASON: &'static str =
+        "no such resource in this tenant: it does not exist or is not accessible";
+
+    /// The denial of `principal`'s lookup of `resource_id`, a `resource_type`; `elsewhere` when the identifier names a
+    /// resource of another tenant.
+    #[must_use]
+    pub fn new(
+        principal: &Principal,
+        resource_type: ResourceType,
+        resource_id: impl Into<String>,
+        elsewhere: bool,
+        trace_id: Option<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        let tenant_record = AuditRecord::by(
+            principal,
+            AuditAction::ResourceNotFoundDenied,
+            resource_type,
+            String::new(),
+            trace_id.clone(),
+            now,
+        )
+        .with_reason(Self::TENANT_REASON);
+        let probe = elsewhere.then(|| CrossTenantProbe {
+            id: AuditId::generate(),
+            caller_tenant_id: principal.tenant_id(),
+            actor: principal.subject().clone(),
+            resource_type,
+            resource_id: resource_id.into(),
+            trace_id,
+            created_at: now,
+        });
+        Self {
+            tenant_record,
+            probe,
+        }
+    }
+
+    /// The record for the caller's tenant: the same for a missing and a foreign identifier.
+    #[must_use]
+    pub const fn tenant_record(&self) -> &AuditRecord {
+        &self.tenant_record
+    }
+
+    /// The record for the platform's security audit, when the identifier names another tenant's resource.
+    #[must_use]
+    pub const fn probe(&self) -> Option<&CrossTenantProbe> {
+        self.probe.as_ref()
+    }
+}
+
+/// A lookup that named another tenant's resource, for the platform's security audit (`security_audit_records`), which no
+/// tenant reads: who asked, from which tenant, for what. The tenant that owns the resource is read by the store that
+/// writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrossTenantProbe {
+    id: AuditId,
+    caller_tenant_id: TenantId,
+    actor: Subject,
+    resource_type: ResourceType,
+    resource_id: String,
+    trace_id: Option<String>,
+    created_at: OffsetDateTime,
+}
+
+impl CrossTenantProbe {
+    #[must_use]
+    pub const fn id(&self) -> AuditId {
+        self.id
+    }
+
+    /// Always [`AuditAction::CrossTenantAccessDenied`].
+    #[must_use]
+    pub const fn action(&self) -> AuditAction {
+        AuditAction::CrossTenantAccessDenied
+    }
+
+    #[must_use]
+    pub const fn caller_tenant_id(&self) -> TenantId {
+        self.caller_tenant_id
+    }
+
+    #[must_use]
+    pub const fn actor(&self) -> &Subject {
+        &self.actor
+    }
+
+    #[must_use]
+    pub const fn resource_type(&self) -> ResourceType {
+        self.resource_type
+    }
+
+    #[must_use]
+    pub fn resource_id(&self) -> &str {
+        &self.resource_id
     }
 
     #[must_use]

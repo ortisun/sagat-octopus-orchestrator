@@ -6,7 +6,7 @@
 
 use std::future::Future;
 
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::audit::{AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Principal, TenantId};
 
 use crate::clock::Clock;
@@ -14,7 +14,7 @@ use crate::error::{AppError, StoreError};
 use crate::identity::RequestContext;
 
 /// What a store must answer to check a namespace id on behalf of a caller.
-pub trait NamespaceDirectory: Send + Sync {
+pub trait NamespaceDirectory: crate::tenant_boundary::BoundaryAudit + Send + Sync {
     /// Whether the namespace exists in `tenant`.
     fn namespace_exists(
         &self,
@@ -56,22 +56,15 @@ pub async fn require_namespace<D: NamespaceDirectory, C: Clock>(
     {
         return Ok(());
     }
-    if let Ok(true) = directory
-        .namespace_exists_outside(principal.tenant_id(), namespace)
-        .await
-    {
-        let record = AuditRecord::by(
-            principal,
-            AuditAction::CrossTenantAccessDenied,
-            ResourceType::Namespace,
-            namespace.to_string(),
-            ctx.trace_id.clone(),
-            clock.now(),
-        )
-        .with_reason("resource not accessible from this tenant");
-        if let Err(error) = directory.record_denial(&record).await {
-            tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-        }
-    }
+    crate::tenant_boundary::deny_unresolved(
+        directory,
+        principal,
+        ResourceType::Namespace,
+        namespace.to_string(),
+        directory.namespace_exists_outside(principal.tenant_id(), namespace),
+        ctx.trace_id.clone(),
+        clock.now(),
+    )
+    .await;
     Err(AppError::NotFound)
 }

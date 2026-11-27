@@ -109,7 +109,7 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
             path.rsplit('/').next().expect("id").to_owned(),
         ));
     }
-    // A plain miss is NOT a security event and must not be recorded.
+    // A plain miss gives the platform's security audit nothing (its tenant gets the record a foreign id gets, D60).
     let nobody = api
         .get_as(
             &format!("/workspaces/{}", Uuid::nil().to_string().replace('0', "7")),
@@ -124,7 +124,7 @@ async fn each_attempt_is_audited_in_the_actors_tenant_and_correlates_with_its_tr
     let query = || async {
         let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
             "SELECT a.action, a.actor, a.resource_id, a.trace_id, t.slug \
-             FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+             FROM security_audit_records a JOIN tenants t ON t.id = a.caller_tenant_id \
              WHERE a.action = 'access.denied.cross_tenant' ORDER BY a.created_at, a.id",
         )
         .fetch_all(&api.db.pool)
@@ -249,7 +249,7 @@ async fn a_cross_tenant_404_does_not_wait_for_the_audit_write() {
         .execute(&mut *blocker)
         .await
         .expect("begin");
-    sqlx::query("LOCK TABLE audit_records IN ACCESS EXCLUSIVE MODE")
+    sqlx::query("LOCK TABLE audit_records, security_audit_records IN ACCESS EXCLUSIVE MODE")
         .execute(&mut *blocker)
         .await
         .expect("lock");
@@ -287,7 +287,7 @@ async fn a_cross_tenant_404_does_not_wait_for_the_audit_write() {
         "the denial to be recorded once the table is free",
         || async {
             let n: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+                "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant'",
             )
             .fetch_one(&api.db.pool)
             .await
@@ -353,7 +353,7 @@ async fn the_whole_flow_works_when_the_api_runs_as_the_least_privilege_role() {
         "the denial to be recorded by the least-privilege role",
         || async {
             let n: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+                "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant'",
             )
             .fetch_one(&api.db.pool)
             .await

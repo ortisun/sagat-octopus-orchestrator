@@ -13,7 +13,10 @@ use sagat_application::error::{AccessDenial, AppError, ConflictKind, StoreError}
 use sagat_application::identity::{
     IdentityService, IdentityStore, MAX_PAGE_SIZE, PageRequest, RequestContext,
 };
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_application::tenant_boundary::BoundaryAudit;
+use sagat_domain::audit::{
+    AuditAction, AuditRecord, BoundaryDenial, CrossTenantProbe, ResourceType,
+};
 use sagat_domain::identity::{
     IdentityError, Membership, Namespace, NamespaceId, Permission, Principal, Role, Slug, Subject,
     Tenant, TenantId, Workspace, WorkspaceId,
@@ -37,6 +40,8 @@ struct State {
     workspaces: Vec<Workspace>,
     namespaces: Vec<Namespace>,
     audits: Vec<AuditRecord>,
+    /// What the platform's security audit was given (feature 009, D60).
+    probes: Vec<CrossTenantProbe>,
     /// `(tenant, scope, key, fingerprint, resource)` of every idempotent write, like `command_dedupe`.
     dedupe: Vec<(TenantId, String, String, Vec<u8>, String)>,
     fail_audit_writes: bool,
@@ -71,6 +76,22 @@ impl FakeStore {
 
     fn check(&self) -> Result<(), StoreError> {
         self.with(|s| s.fail_everything.clone().map_or(Ok(()), Err))
+    }
+}
+
+impl BoundaryAudit for FakeStore {
+    async fn record_boundary_denial(&self, denial: &BoundaryDenial) -> Result<(), StoreError> {
+        self.check()?;
+        self.with(|s| {
+            if s.fail_audit_writes {
+                return Err(StoreError::Internal {
+                    detail: "audit table unavailable".into(),
+                });
+            }
+            s.audits.push(denial.tenant_record().clone());
+            s.probes.extend(denial.probe().cloned());
+            Ok(())
+        })
     }
 }
 
@@ -369,6 +390,25 @@ fn grant(w: &World, tenant: &Tenant, who: &str, role: Role) -> Principal {
 
 fn audits(w: &World) -> Vec<AuditRecord> {
     w.store.with(|s| s.audits.clone())
+}
+
+fn probes(w: &World) -> Vec<CrossTenantProbe> {
+    w.store.with(|s| s.probes.clone())
+}
+
+/// What the caller's tenant can read of a record: everything but its own identifier.
+fn shape(record: &AuditRecord) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{:?}|{:?}|{}",
+        record.tenant_id(),
+        record.actor(),
+        record.action(),
+        record.resource_type(),
+        record.resource_id(),
+        record.reason(),
+        record.trace_id(),
+        record.created_at()
+    )
 }
 
 // ------------------------------------------------------------- denials (G9)
@@ -684,16 +724,20 @@ async fn any_role_with_workspace_read_can_get_a_workspace() {
 }
 
 #[tokio::test]
-async fn getting_a_missing_workspace_is_not_found_and_not_audited() {
+async fn getting_a_missing_workspace_is_not_found_and_leaves_no_identifier_and_no_probe() {
     let w = world();
     let err = w
         .svc
         .get_workspace(&w.admin_a, WorkspaceId::generate(), &ctx())
         .await;
     assert_eq!(err, Err(AppError::NotFound));
+    let log = audits(&w);
+    assert_eq!(log.len(), 1, "a miss is recorded as a foreign one is (D60)");
+    assert_eq!(log[0].action(), AuditAction::ResourceNotFoundDenied);
+    assert_eq!(log[0].resource_id(), "");
     assert!(
-        audits(&w).is_empty(),
-        "a plain miss is not a security event"
+        probes(&w).is_empty(),
+        "nothing for the platform: it exists nowhere"
     );
 }
 
@@ -716,8 +760,8 @@ async fn getting_another_tenants_workspace_is_not_found_and_audited_without_leak
     );
     let log = audits(&w);
     assert_eq!(log.len(), before + 1);
-    let denial = log.last().expect("denial record");
-    assert_eq!(denial.action(), AuditAction::CrossTenantAccessDenied);
+    let denial = log.last().expect("denial record").clone();
+    assert_eq!(denial.action(), AuditAction::ResourceNotFoundDenied);
     assert_eq!(denial.resource_type(), ResourceType::Workspace);
     assert_eq!(
         denial.tenant_id(),
@@ -725,16 +769,27 @@ async fn getting_another_tenants_workspace_is_not_found_and_audited_without_leak
         "recorded in the ACTOR's tenant"
     );
     assert_eq!(denial.actor().as_str(), "alice");
-    assert_eq!(
-        denial.resource_id(),
-        foreign.id().to_string(),
-        "only the id the caller sent"
-    );
     let rendered = format!("{denial:?}");
     assert!(
-        !rendered.contains(&w.tenant_b.id().to_string()) && !rendered.contains("secret-ws"),
-        "audit entry must not carry data of the other tenant: {rendered}"
+        !rendered.contains(&w.tenant_b.id().to_string())
+            && !rendered.contains(&foreign.id().to_string())
+            && !rendered.contains("secret-ws"),
+        "the tenant's record carries nothing of the other tenant, not even the id: {rendered}"
     );
+    // The same record a missing workspace leaves (feature 009, D60; gap G041-028).
+    let _ = w
+        .svc
+        .get_workspace(&w.admin_a, WorkspaceId::generate(), &ctx())
+        .await;
+    let missing = audits(&w).last().expect("the miss's record").clone();
+    assert_eq!(shape(&denial), shape(&missing));
+    // The platform's security audit holds the detail, once: the miss gave it nothing.
+    let probes = probes(&w);
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].caller_tenant_id(), w.tenant_a.id());
+    assert_eq!(probes[0].actor().as_str(), "alice");
+    assert_eq!(probes[0].resource_type(), ResourceType::Workspace);
+    assert_eq!(probes[0].resource_id(), foreign.id().to_string());
 }
 
 #[tokio::test]
@@ -800,8 +855,9 @@ async fn namespace_creation_in_a_foreign_workspace_is_not_found_and_audited() {
     assert_eq!(err, Err(AppError::NotFound));
     let log = audits(&w);
     let denial = log.last().expect("record");
-    assert_eq!(denial.action(), AuditAction::CrossTenantAccessDenied);
+    assert_eq!(denial.action(), AuditAction::ResourceNotFoundDenied);
     assert_eq!(denial.tenant_id(), w.tenant_a.id());
+    assert_eq!(probes(&w)[0].resource_id(), foreign.id().to_string());
     assert!(
         w.store.with(|s| s.namespaces.is_empty()),
         "nothing was created"
@@ -890,8 +946,9 @@ async fn getting_another_tenants_namespace_is_not_found_and_audited() {
     assert_eq!(err, Err(AppError::NotFound));
     let log = audits(&w);
     let denial = log.last().expect("record");
-    assert_eq!(denial.action(), AuditAction::CrossTenantAccessDenied);
+    assert_eq!(denial.action(), AuditAction::ResourceNotFoundDenied);
     assert_eq!(denial.resource_type(), ResourceType::Namespace);
+    assert_eq!(probes(&w)[0].resource_id(), ns_b.id().to_string());
 }
 
 // --------------------------------------------------------------- pagination

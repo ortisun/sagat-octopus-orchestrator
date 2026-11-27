@@ -104,6 +104,19 @@ struct CountingStore {
     ping_delay: Duration,
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for CountingStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        sagat_application::tenant_boundary::BoundaryAudit::record_boundary_denial(
+            &self.inner,
+            denial,
+        )
+        .await
+    }
+}
+
 impl IdentityStore for CountingStore {
     async fn find_tenant_by_slug(&self, slug: &Slug) -> Result<Option<Tenant>, StoreError> {
         self.lookups.fetch_add(1, Ordering::SeqCst);

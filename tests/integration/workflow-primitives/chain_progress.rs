@@ -999,7 +999,7 @@ async fn chain_inspection_is_tenant_scoped_and_audits_a_foreign_probe() {
     );
     fixture.world.store.flush_denial_writes().await;
     let denied: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM audit_records WHERE tenant_id=$1 \
+        "SELECT EXISTS(SELECT 1 FROM security_audit_records WHERE caller_tenant_id=$1 \
          AND action='access.denied.cross_tenant' AND resource_id=$2)",
     )
     .bind(fixture.world.other_admin.tenant_id().as_uuid())

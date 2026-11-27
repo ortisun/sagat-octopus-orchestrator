@@ -165,14 +165,14 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
             .is_empty()
     );
 
-    // And the attempts are recorded in ALICE's tenant, naming only what she sent. The write is
-    // off the request path, and the third attempt repeats the first one (same actor, same
-    // workspace), so it is collapsed: two records, not three.
+    // And the attempts are recorded in ALICE's tenant as a miss is, naming nothing (feature 009, D60): one record per
+    // kind of resource in the window, so the third attempt (a workspace again) adds nothing. The write is off the request
+    // path.
     let denials = || async {
         audit_rows(&db.pool, "acme")
             .await
             .into_iter()
-            .filter(|row| row.0 == "access.denied.cross_tenant")
+            .filter(|row| row.0 == "access.denied.not_found")
             .collect::<Vec<_>>()
     };
     let alice_rows = eventually("two denial records", || async {
@@ -187,18 +187,36 @@ async fn us04_a_tenant_a_user_cannot_see_tenant_b_data_and_the_attempt_is_record
         alice_rows
     };
     assert_eq!(alice_rows.len(), 2);
-    for (action, actor, _, trace) in &alice_rows {
-        assert_eq!(action, "access.denied.cross_tenant");
+    for (action, actor, resource, trace) in &alice_rows {
+        assert_eq!(action, "access.denied.not_found");
         assert_eq!(actor, "alice");
+        assert_eq!(resource, "", "the tenant's record names no identifier");
         assert_eq!(trace.as_deref(), Some(TRACE));
     }
-    // The records are written off the request path, by tasks that race: which of the two lands first is not
-    // decided, and the test is about what was recorded, not about the order of the writes.
-    let mut recorded: Vec<_> = alice_rows.iter().map(|r| r.2.clone()).collect();
-    recorded.sort();
+    // What she sent is in the platform's security audit, against her tenant, with the tenant that holds it. The records
+    // are written off the request path, by tasks that race: the order of the writes is not decided.
+    let probes = eventually("two probes", || async {
+        let rows: Vec<(String, String, Option<uuid::Uuid>)> = sqlx::query_as(
+            "SELECT p.actor, p.resource_id, p.owner_tenant_id FROM security_audit_records p \
+             JOIN tenants t ON t.id = p.caller_tenant_id WHERE t.slug = 'acme' ORDER BY p.resource_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("probes");
+        (rows.len() >= 2).then_some(rows)
+    })
+    .await;
     let mut expected = vec![ws_b.id().to_string(), ns_b.id().to_string()];
     expected.sort();
-    assert_eq!(recorded, expected);
+    assert_eq!(
+        probes.iter().map(|p| p.1.clone()).collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        probes
+            .iter()
+            .all(|p| p.0 == "alice" && p.2 == Some(ws_b.tenant_id().as_uuid()))
+    );
 
     // Tenant B's audit trail contains only its own creations, nothing about alice's probing
     let bob_actions: Vec<_> = audit_rows(&db.pool, "globex")

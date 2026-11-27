@@ -451,10 +451,10 @@ async fn foreign_run(p: &Platform) -> String {
 }
 
 /// The security review of task T041-7, Minor 6: a batch naming another tenant's run is answered exactly as one naming
-/// a run that does not exist (`STOP_ATTEMPT`, `LEASE`, nothing stored), and only the first is audited as a
-/// cross-tenant access.
+/// a run that does not exist (`STOP_ATTEMPT`, `LEASE`, nothing stored). Both leave the caller's tenant the same record,
+/// naming no run, and only the first gives the platform's security audit a probe (feature 009, D60; D041-155).
 #[tokio::test]
-async fn a_batch_naming_another_tenants_run_is_answered_as_a_missing_run_and_audited() {
+async fn a_batch_naming_another_tenants_run_is_answered_and_recorded_as_a_missing_run() {
     let p = platform().await;
     let (mut worker, _, _) = registered(&p, "wanda", "1.7").await;
     let lease = leased(&p, &mut worker).await;
@@ -475,16 +475,16 @@ async fn a_batch_naming_another_tenants_run_is_answered_as_a_missing_run_and_aud
         let pool = p.api.db.pool.clone();
         async move {
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM audit_records \
+                "SELECT count(*) FROM security_audit_records \
                  WHERE action = 'access.denied.cross_tenant' AND resource_id = $1",
             )
             .bind(run)
             .fetch_one(&pool)
             .await
-            .expect("the cross-tenant audit")
+            .expect("the platform's security audit")
         }
     };
-    crate::support::eventually("the cross-tenant audit", || {
+    crate::support::eventually("the probe of the foreign run", || {
         let count = audited(foreign.clone());
         async move { (count.await == 1).then_some(()) }
     })
@@ -492,7 +492,28 @@ async fn a_batch_naming_another_tenants_run_is_answered_as_a_missing_run_and_aud
     assert_eq!(
         audited(missing.clone()).await,
         0,
-        "a missing run is not audited"
+        "a missing run gives the platform nothing"
+    );
+    // The two batches leave one record in the caller's tenant: the same record within its window adds nothing, so a
+    // record that told the two apart would be a second row.
+    let trail = crate::support::trail_of(&p.api.db.pool, p.tenant, "wanda").await;
+    let boundary: Vec<_> = trail
+        .iter()
+        .filter(|row| row.0.starts_with("access.denied."))
+        .collect();
+    assert_eq!(
+        boundary,
+        [&(
+            "access.denied.not_found".to_owned(),
+            "run".to_owned(),
+            String::new(),
+            Some(sagat_domain::audit::BoundaryDenial::TENANT_REASON.to_owned())
+        )],
+        "{trail:?}"
+    );
+    assert!(
+        !format!("{trail:?}").contains(&foreign),
+        "the foreign run is not on the caller's trail"
     );
     assert_eq!(stored_lines(&p, &lease.run_id).await, 0);
 }

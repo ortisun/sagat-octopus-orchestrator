@@ -6,7 +6,8 @@ use crate::privilege::{self, LeastPrivilegeError};
 use sagat_application::definitions::{Applied, Idempotency};
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::identity::IdentityStore;
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_application::tenant_boundary::BoundaryAudit;
+use sagat_domain::audit::{AuditAction, AuditRecord, BoundaryDenial, ResourceType};
 use sagat_domain::identity::{
     Environment, Membership, Namespace, NamespaceId, Role, Slug, Subject, Tenant, TenantId,
     Workspace, WorkspaceId,
@@ -20,7 +21,8 @@ use time::OffsetDateTime;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-/// Identical cross-tenant denials from one actor are recorded at most once per this window.
+/// Identical denials from one actor are recorded at most once per this window; it is also the window of the platform's
+/// security audit (`crate::security_audit`).
 pub const DEFAULT_DENIAL_WINDOW: Duration = Duration::from_secs(300);
 
 /// Most denial events being written at the same time; beyond this they are dropped (and logged).
@@ -32,6 +34,10 @@ pub struct PgIdentityStore {
     pool: PgPool,
     denial_window: Duration,
     denial_slots: Arc<Semaphore>,
+    /// The gate of the platform's security audit, separate from the tenant's (`crate::security_audit`).
+    probe_slots: Arc<Semaphore>,
+    /// The probes this process wrote lately, so that a repeat costs nothing (`crate::security_audit`).
+    recent_probes: Arc<crate::security_audit::RecentProbes>,
 }
 
 impl PgIdentityStore {
@@ -62,6 +68,8 @@ impl PgIdentityStore {
             pool,
             denial_window: DEFAULT_DENIAL_WINDOW,
             denial_slots: Arc::new(Semaphore::new(MAX_PENDING_DENIALS)),
+            probe_slots: Arc::new(Semaphore::new(crate::security_audit::MAX_PENDING_PROBES)),
+            recent_probes: Arc::default(),
         }
     }
 
@@ -72,7 +80,7 @@ impl PgIdentityStore {
         self
     }
 
-    /// Waits until every denial write already accepted by this store has finished.
+    /// Waits until every denial write already accepted by this store has finished, the platform's security audit's too.
     pub async fn flush_denial_writes(&self) {
         let permits = Arc::clone(&self.denial_slots)
             .acquire_many_owned(MAX_PENDING_DENIALS as u32)
@@ -80,6 +88,13 @@ impl PgIdentityStore {
         match permits {
             Ok(permits) => drop(permits),
             Err(error) => tracing::error!(%error, "denial-write barrier unexpectedly closed"),
+        }
+        let permits = Arc::clone(&self.probe_slots)
+            .acquire_many_owned(crate::security_audit::MAX_PENDING_PROBES as u32)
+            .await;
+        match permits {
+            Ok(permits) => drop(permits),
+            Err(error) => tracing::error!(%error, "probe-write barrier unexpectedly closed"),
         }
     }
 
@@ -608,7 +623,7 @@ impl IdentityStore for PgIdentityStore {
                 }
                 Err(error) => {
                     metrics::counter!("audit_denials_total", "outcome" => "failed").increment(1);
-                    tracing::error!(%error, "failed to record a cross-tenant denial");
+                    tracing::error!(%error, "failed to record a denial");
                 }
             }
         });
@@ -648,6 +663,23 @@ impl IdentityStore for PgIdentityStore {
                 ),
             }))
         }
+    }
+}
+
+impl BoundaryAudit for PgIdentityStore {
+    async fn record_boundary_denial(&self, denial: &BoundaryDenial) -> Result<(), StoreError> {
+        // The platform's probe first, so that nothing the tenant's write does can keep it from its own gate.
+        if let Some(probe) = denial.probe() {
+            crate::security_audit::record_probe(
+                &self.pool,
+                &self.probe_slots,
+                &self.recent_probes,
+                probe,
+                self.denial_window,
+            );
+        }
+        // The caller's tenant: the same record through the same gate, whatever the check found (feature 009, D60).
+        IdentityStore::record_denial(self, denial.tenant_record()).await
     }
 }
 

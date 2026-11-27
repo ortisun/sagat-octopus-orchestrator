@@ -158,7 +158,7 @@ async fn a_leaked_lease_token_of_another_tenant_opens_nothing() {
     // The attempts are on record against acme, and the value reached nothing of acme's.
     crate::support::eventually("the attempts are audited", || async {
         let rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records a JOIN tenants t ON t.id = a.tenant_id \
+            "SELECT count(*) FROM security_audit_records a JOIN tenants t ON t.id = a.caller_tenant_id \
              WHERE t.slug = 'acme' AND a.action = 'access.denied.cross_tenant'",
         )
         .fetch_one(&p.api.db.pool)

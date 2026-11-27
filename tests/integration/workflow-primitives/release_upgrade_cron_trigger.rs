@@ -320,7 +320,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         progress.enter("2. the current migrations, with the released process still up");
         sagat_infra_postgres::migrate(&pool).await.expect("current migrations");
         let after: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&pool).await.expect("current schema boundary");
-        assert_eq!(after, 20270211000300, "the beat that reports a change in progress (feature 006, ADR-0099) is the last migration; the automatic handover's (ADR-0091) is before it");
+        assert_eq!(after, 20270219000000, "the platform security audit (feature 009, D60) is the last migration; the beat that reports a change in progress (feature 006, ADR-0099) and the automatic handover's (ADR-0091) are before it");
         let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover state");
         assert_eq!(state, "LEGACY");
         let schedules: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules").fetch_one(&pool).await.expect("schedules");

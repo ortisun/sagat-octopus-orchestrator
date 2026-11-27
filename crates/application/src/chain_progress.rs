@@ -1013,24 +1013,17 @@ where
         chain_id: RunId,
         ctx: &RequestContext,
     ) -> AppError {
-        if let Ok(true) = self
-            .store
-            .chain_exists_outside(principal.tenant_id(), chain_id)
-            .await
-        {
-            let audit = AuditRecord::by(
-                principal,
-                AuditAction::CrossTenantAccessDenied,
-                ResourceType::Run,
-                chain_id.to_string(),
-                ctx.trace_id.clone(),
-                self.clock.now(),
-            )
-            .with_reason("resource not accessible from this tenant");
-            if let Err(error) = RunStore::record_denial(&self.store, &audit).await {
-                tracing::error!(%error, action = %audit.action(), "failed to record chain denial");
-            }
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Run,
+            chain_id.to_string(),
+            self.store
+                .chain_exists_outside(principal.tenant_id(), chain_id),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         AppError::NotFound
     }
 }

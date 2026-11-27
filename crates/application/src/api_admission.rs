@@ -365,14 +365,17 @@ where
         {
             return Ok(namespace);
         }
-        if let Ok(true) = self
-            .store
-            .workflow_exists_outside(principal.tenant_id(), workflow)
-            .await
-        {
-            self.record_cross_tenant(principal, ResourceType::Workflow, workflow.to_string(), ctx)
-                .await;
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Workflow,
+            workflow.to_string(),
+            self.store
+                .workflow_exists_outside(principal.tenant_id(), workflow),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         Err(AppError::NotFound)
     }
 
@@ -385,14 +388,16 @@ where
         if let Some(namespace) = self.store.run_namespace(principal.tenant_id(), run).await? {
             return Ok(namespace);
         }
-        if let Ok(true) = self
-            .store
-            .run_exists_outside(principal.tenant_id(), run)
-            .await
-        {
-            self.record_cross_tenant(principal, ResourceType::Run, run.to_string(), ctx)
-                .await;
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Run,
+            run.to_string(),
+            self.store.run_exists_outside(principal.tenant_id(), run),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         Err(AppError::NotFound)
     }
 
@@ -409,19 +414,17 @@ where
         {
             return Ok(namespace);
         }
-        if let Ok(true) = self
-            .store
-            .publication_request_exists_outside(principal.tenant_id(), request)
-            .await
-        {
-            self.record_cross_tenant(
-                principal,
-                ResourceType::PublicationRequest,
-                request.to_string(),
-                ctx,
-            )
-            .await;
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::PublicationRequest,
+            request.to_string(),
+            self.store
+                .publication_request_exists_outside(principal.tenant_id(), request),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         Err(AppError::NotFound)
     }
 
@@ -438,44 +441,18 @@ where
         {
             return Ok(namespace);
         }
-        if let Ok(true) = self
-            .store
-            .approval_request_exists_outside(principal.tenant_id(), request)
-            .await
-        {
-            self.record_cross_tenant(
-                principal,
-                ResourceType::ApprovalRequest,
-                request.to_string(),
-                ctx,
-            )
-            .await;
-        }
-        Err(AppError::NotFound)
-    }
-
-    async fn record_cross_tenant(
-        &self,
-        principal: &Principal,
-        resource_type: ResourceType,
-        resource_id: String,
-        ctx: &RequestContext,
-    ) {
-        let record = AuditRecord::by(
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
             principal,
-            AuditAction::CrossTenantAccessDenied,
-            resource_type,
-            resource_id,
+            ResourceType::ApprovalRequest,
+            request.to_string(),
+            self.store
+                .approval_request_exists_outside(principal.tenant_id(), request),
             ctx.trace_id.clone(),
             self.clock.now(),
         )
-        .with_reason("resource not accessible from this tenant");
-        if self.store.record_denial(&record).await.is_err() {
-            tracing::error!(
-                action = %record.action(),
-                "failed to record cross-tenant API denial"
-            );
-        }
+        .await;
+        Err(AppError::NotFound)
     }
 
     async fn audit_approval_denial(
@@ -526,6 +503,8 @@ mod tests {
         approval_denial: Result<(), StoreError>,
         charges: Vec<(TenantId, NamespaceId)>,
         denials: usize,
+        /// Probes given to the platform's security audit (feature 009, D60).
+        probes: usize,
     }
 
     impl Default for State {
@@ -541,7 +520,20 @@ mod tests {
                 approval_denial: Ok(()),
                 charges: Vec::new(),
                 denials: 0,
+                probes: 0,
             }
+        }
+    }
+
+    impl crate::tenant_boundary::BoundaryAudit for Store {
+        async fn record_boundary_denial(
+            &self,
+            denial: &sagat_domain::audit::BoundaryDenial,
+        ) -> Result<(), StoreError> {
+            let mut state = self.0.lock().unwrap();
+            state.denials += 1;
+            state.probes += usize::from(denial.probe().is_some());
+            Ok(())
         }
     }
 
@@ -783,6 +775,7 @@ mod tests {
         let state = store.0.lock().unwrap();
         assert!(state.charges.is_empty());
         assert_eq!(state.denials, 1);
+        assert_eq!(state.probes, 1);
     }
 
     #[tokio::test]
@@ -866,6 +859,7 @@ mod tests {
         let state = store.0.lock().unwrap();
         assert!(state.charges.is_empty());
         assert_eq!(state.denials, 1);
+        assert_eq!(state.probes, 1);
     }
 
     #[tokio::test]

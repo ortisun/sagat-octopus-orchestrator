@@ -249,7 +249,7 @@ async fn a_404_that_hides_a_foreign_resource_keeps_its_cross_tenant_record_and_i
     assert_eq!(response.status(), 404);
     let cross_tenant = crate::support::eventually("the probe is recorded", || async {
         let rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records WHERE tenant_id = $1 \
+            "SELECT count(*) FROM security_audit_records WHERE caller_tenant_id = $1 \
              AND action = 'access.denied.cross_tenant' AND actor = 'vera'",
         )
         .bind(p.tenant.as_uuid())

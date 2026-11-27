@@ -53,6 +53,8 @@ struct State {
     idempotency: BTreeMap<(String, String), (Vec<u8>, String)>,
     audits: Vec<AuditRecord>,
     denials: Vec<AuditRecord>,
+    /// What the platform's security audit was given (feature 009, D60).
+    probes: Vec<sagat_domain::audit::CrossTenantProbe>,
     calls: Vec<String>,
     /// The workflow quota the fake reports; `None` is the platform default.
     workflow_limit: Option<u64>,
@@ -135,6 +137,19 @@ impl SecretAccessLookup for FakeStore {
                 })
                 .collect()
         }))
+    }
+}
+
+impl sagat_application::tenant_boundary::BoundaryAudit for FakeStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        self.with(|s| {
+            s.denials.push(denial.tenant_record().clone());
+            s.probes.extend(denial.probe().cloned());
+        });
+        Ok(())
     }
 }
 
@@ -950,15 +965,40 @@ async fn reading_another_tenants_workflow_is_not_found_and_audited_in_the_actors
         intruder.tenant_id(),
         "recorded in the actor's tenant"
     );
-    assert_eq!(denials[0].action(), AuditAction::CrossTenantAccessDenied);
+    assert_eq!(denials[0].action(), AuditAction::ResourceNotFoundDenied);
+    assert_eq!(
+        denials[0].resource_id(),
+        "",
+        "the tenant's record names no identifier"
+    );
+    let probes = f.store.with(|s| s.probes.clone());
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].resource_id(), mine.workflow.id().to_string());
+    assert_eq!(probes[0].caller_tenant_id(), intruder.tenant_id());
 
-    // A workflow that exists nowhere leaves no trace.
+    // A workflow that exists nowhere leaves the same record in the actor's tenant, and nothing for the platform (D60).
     let nowhere = f
         .service
         .get_workflow(&intruder, WorkflowId::generate(), &ctx())
         .await;
     assert_eq!(nowhere.map(|_| ()), Err(AppError::NotFound));
-    assert_eq!(f.store.with(|s| s.denials.len()), 1);
+    let denials = f.store.with(|s| s.denials.clone());
+    assert_eq!(denials.len(), 2);
+    assert_eq!(
+        (
+            denials[0].action(),
+            denials[0].resource_type(),
+            denials[0].resource_id(),
+            denials[0].reason()
+        ),
+        (
+            denials[1].action(),
+            denials[1].resource_type(),
+            denials[1].resource_id(),
+            denials[1].reason()
+        )
+    );
+    assert_eq!(f.store.with(|s| s.probes.len()), 1);
 }
 
 #[tokio::test]

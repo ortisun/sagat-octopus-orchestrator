@@ -3194,24 +3194,16 @@ where
     }
 
     async fn missing(&self, principal: &Principal, id: RunId, ctx: &RequestContext) -> AppError {
-        if let Ok(true) = self
-            .store
-            .run_exists_outside(principal.tenant_id(), id)
-            .await
-        {
-            let record = AuditRecord::by(
-                principal,
-                AuditAction::CrossTenantAccessDenied,
-                ResourceType::Run,
-                id.to_string(),
-                ctx.trace_id.clone(),
-                self.clock.now(),
-            )
-            .with_reason("resource not accessible from this tenant");
-            if let Err(error) = RunStore::record_denial(&self.store, &record).await {
-                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-            }
-        }
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Run,
+            id.to_string(),
+            self.store.run_exists_outside(principal.tenant_id(), id),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .await;
         AppError::NotFound
     }
 }

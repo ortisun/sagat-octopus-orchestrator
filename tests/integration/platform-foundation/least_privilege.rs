@@ -215,6 +215,7 @@ async fn each_append_only_table_of_the_execution_plane_is_guarded_too() {
         "payloads",
         "workflow_versions",
         "leaf_collection_success_certifications",
+        "security_audit_records",
     ] {
         for (privilege, finding) in [
             ("UPDATE", PrivilegeFinding::CanRewriteAppendOnly(table)),

@@ -2808,26 +2808,19 @@ where
     }
 
     async fn missing_task_error(&self, principal: &Principal, task: &TaskRef<'_>) -> AppError {
-        // A run of another tenant is indistinguishable from a missing one: a stale attempt. It is
-        // audited all the same, like every other path that reaches for a foreign run.
-        if let Ok(true) = self
-            .store
-            .run_exists_outside(principal.tenant_id(), task.run_id)
-            .await
-        {
-            let record = AuditRecord::by(
-                principal,
-                AuditAction::CrossTenantAccessDenied,
-                ResourceType::Run,
-                task.run_id.to_string(),
-                None,
-                self.clock.now(),
-            )
-            .with_reason("worker call on a resource not accessible from this tenant");
-            if let Err(error) = RunStore::record_denial(&self.store, &record).await {
-                tracing::error!(%error, action = %record.action(), "failed to record audit entry");
-            }
-        }
+        // A run of another tenant is indistinguishable from a missing one: a stale attempt, and the
+        // same record in the caller's tenant (feature 009, D60).
+        crate::tenant_boundary::deny_unresolved(
+            &self.store,
+            principal,
+            ResourceType::Run,
+            task.run_id.to_string(),
+            self.store
+                .run_exists_outside(principal.tenant_id(), task.run_id),
+            None,
+            self.clock.now(),
+        )
+        .await;
         AppError::StaleAttempt
     }
 

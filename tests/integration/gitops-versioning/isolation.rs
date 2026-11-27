@@ -291,7 +291,7 @@ async fn only_a_request_that_exists_elsewhere_leaves_a_trace_of_the_probe() {
     let _ = w.publishing.get_request(theirs, request.id(), &ctx()).await;
     let recorded = crate::support::eventually("the probe of a real request", || async {
         let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+            "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant' \
              AND resource_type = 'publication_request'",
         )
         .fetch_one(&w.db.pool)
@@ -304,7 +304,7 @@ async fn only_a_request_that_exists_elsewhere_leaves_a_trace_of_the_probe() {
     // The writes are off the response path: give any other one the time to land.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let later: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant' \
+        "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant' \
          AND resource_type = 'publication_request'",
     )
     .fetch_one(&w.db.pool)

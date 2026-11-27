@@ -114,13 +114,14 @@ FROM pg_roles r \
 LEFT JOIN pg_class c ON c.oid = to_regclass('public.audit_records')::oid \
 WHERE r.rolname = current_user";
 
-/// Tables nobody may rewrite or erase: the journal, the payloads and the published versions. Checked
-/// when they exist (a schema migrated only up to feature 001 has none of them).
-const APPEND_ONLY: [&str; 4] = [
+/// Tables nobody may rewrite or erase: the journal, the payloads, the published versions and the platform's security
+/// audit (feature 009, D60). Checked when they exist (a schema migrated only up to feature 001 has none of them).
+const APPEND_ONLY: [&str; 5] = [
     "run_events",
     "payloads",
     "workflow_versions",
     "leaf_collection_success_certifications",
+    "security_audit_records",
 ];
 
 const INSPECT_APPEND_ONLY: &str = "\

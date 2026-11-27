@@ -827,6 +827,85 @@ async fn a_lease_renewed_after_the_candidate_was_read_is_not_reclaimed() {
 
 // ------------------------------------------------------------- other tenants and secrets
 
+/// Feature 009, D60 (gap G041-028): a worker of another tenant that reports on a run of this tenant leaves in its own
+/// tenant's trail exactly what a report on a run that exists nowhere leaves; the run and the tenant that holds it are in the
+/// platform's security audit, which no tenant reads.
+#[tokio::test]
+async fn a_report_on_a_foreign_run_leaves_the_callers_tenant_what_a_missing_run_leaves() {
+    let w = world().await;
+    let (wf, _) = w.publish(document("mine", "a", vec![activity("a")])).await;
+    let run = w.start(wf, &json!({})).await;
+    let mine = w.session(&["act.a"]).await;
+    let task = w.one_task(&mine).await;
+    let other = w.other_admin.tenant_id();
+    let identities = sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone());
+    let mut probers = Vec::new();
+    for name in ["prober-foreign", "prober-missing"] {
+        let prober = Principal::new(other, subject_of(name), Role::Worker);
+        identities
+            .insert_membership(&sagat_domain::identity::Membership::restore(
+                other,
+                prober.subject().clone(),
+                Role::Worker,
+                crate::support::now(),
+            ))
+            .await
+            .expect("a worker membership of the other tenant");
+        let _session = w.session_as(&prober, &["act.a"], 10).await;
+        probers.push(prober);
+    }
+    let foreign = task_ref(&task);
+    let missing = sagat_application::worker::TaskRef {
+        run_id: sagat_domain::execution::RunId::generate(),
+        ..task_ref(&task)
+    };
+    for (prober, target) in [(&probers[0], &foreign), (&probers[1], &missing)] {
+        let heartbeat = w.workers.heartbeat(prober, target).await.map(|_| ());
+        assert_eq!(heartbeat, Err(AppError::StaleAttempt));
+        let completed = w.workers.complete(prober, target, b"{}", "probe-1").await;
+        assert_eq!(completed.map(|_| ()), Err(AppError::StaleAttempt));
+        let failed = w
+            .workers
+            .fail(prober, target, "PROBE", false, "probe-2")
+            .await;
+        assert_eq!(failed.map(|_| ()), Err(AppError::StaleAttempt));
+    }
+    w.store.flush_denial_writes().await;
+
+    let left_by_foreign = crate::support::trail_of(&w.db.pool, other, "prober-foreign").await;
+    let left_by_missing = crate::support::trail_of(&w.db.pool, other, "prober-missing").await;
+    assert_eq!(
+        left_by_foreign, left_by_missing,
+        "the caller's tenant tells a foreign run from a missing one"
+    );
+    assert!(
+        left_by_foreign
+            .iter()
+            .any(|row| row.0 == "access.denied.not_found" && row.1 == "run" && row.2.is_empty()),
+        "the lookups are on the caller's trail, naming no run: {left_by_foreign:?}"
+    );
+    assert!(
+        !format!("{left_by_foreign:?}").contains(&run.to_string()),
+        "the foreign run is not on the caller's trail"
+    );
+    assert_eq!(
+        crate::support::probes_of(&w.db.pool, other).await,
+        vec![(
+            "prober-foreign".to_owned(),
+            "run".to_owned(),
+            run.to_string(),
+            Some(w.admin.tenant_id().as_uuid())
+        )],
+        "the platform's security audit holds the foreign run and its tenant, once"
+    );
+    assert!(
+        crate::support::probes_of(&w.db.pool, w.admin.tenant_id())
+            .await
+            .is_empty()
+    );
+    assert_eq!(w.step_status(run, "a").await, Some(StepStatus::Leased));
+}
+
 #[tokio::test]
 async fn a_worker_of_another_tenant_is_refused_and_the_attempt_is_audited() {
     let w = world().await;
@@ -865,7 +944,7 @@ async fn a_worker_of_another_tenant_is_refused_and_the_attempt_is_audited() {
         let pool = w.db.pool.clone();
         async move {
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM audit_records WHERE tenant_id = $1 \
+                "SELECT count(*) FROM security_audit_records WHERE caller_tenant_id = $1 \
                  AND action = 'access.denied.cross_tenant' AND resource_id = $2",
             )
             .bind(tenant.as_uuid())

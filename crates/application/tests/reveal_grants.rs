@@ -38,6 +38,19 @@ struct FakeStore {
     audits: Arc<Mutex<Vec<AuditRecord>>>,
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for FakeStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        self.audits
+            .lock()
+            .expect("audits")
+            .push(denial.tenant_record().clone());
+        Ok(())
+    }
+}
+
 impl NamespaceDirectory for FakeStore {
     async fn namespace_exists(
         &self,

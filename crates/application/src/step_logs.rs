@@ -18,7 +18,7 @@
 use std::future::Future;
 use std::time::Instant;
 
-use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::audit::ResourceType;
 use sagat_domain::binding::{ActivityPattern, first_uncovered};
 use sagat_domain::execution::{
     ExecutionInstanceId, Fence, ReportFence, RunId, report_fence_allows,
@@ -37,6 +37,7 @@ use uuid::Uuid;
 use crate::clock::Clock;
 use crate::entropy::Token;
 use crate::error::{AppError, StoreError};
+use crate::tenant_boundary::Tenancy;
 
 /// The protocol minor a session must have been accepted at for its batches to be stored (protocol 1.7); one
 /// constant, beside the other minors of the worker protocol.
@@ -343,24 +344,19 @@ pub struct CounterUpdate {
 }
 
 /// The step-log storage port (data-model.md §8). Implemented by `sagat-infra-postgres`.
-pub trait StepLogStore: Send + Sync {
+pub trait StepLogStore: crate::tenant_boundary::BoundaryAudit + Send + Sync {
     type Tx: StepLogTx;
 
     /// Opens the transaction of one batch (`begin_safely`); its lock timeout (200 ms by default) is set by T1.
     fn begin(&self) -> impl Future<Output = Result<Self::Tx, StoreError>> + Send;
 
-    /// Whether `run` belongs to another tenant (no lock): the cross-tenant audit of a `LEASE` answer.
-    fn run_exists_outside(
+    /// Whose `run` is (one statement, no lock), for the audit of a `LEASE` answer: a lease no longer held on a run of the
+    /// caller's tenant is no lookup across the boundary; a missing and a foreign run are recorded alike (D041-155).
+    fn run_tenancy(
         &self,
         tenant: TenantId,
         run: RunId,
-    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
-
-    /// Records the audit of a denial, outside any transaction of the ingest.
-    fn record_denial(
-        &self,
-        audit: &AuditRecord,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    ) -> impl Future<Output = Result<Tenancy, StoreError>> + Send;
 }
 
 /// The transaction of one batch: the steps T1 to T10 of design section 2, one method each, holding no rule.
@@ -574,8 +570,6 @@ struct Transacted {
     stored: Vec<InsertedRow>,
     /// The drop counts the commit added to the stream, per reason, after saturation.
     dropped: Vec<(DropReason, u64)>,
-    /// The run of the batch belongs to another tenant: audited after the transaction.
-    cross_tenant: bool,
 }
 
 impl Transacted {
@@ -584,7 +578,6 @@ impl Transacted {
             answer,
             stored: Vec::new(),
             dropped: Vec::new(),
-            cross_tenant: false,
         }
     }
 }
@@ -686,9 +679,6 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
         let prepared: Vec<PreparedRecord> = batch.records.iter().map(prepare).collect();
         match self.transact(principal, batch, &prepared).await {
             Ok(done) => {
-                if done.cross_tenant {
-                    self.audit_cross_tenant(principal, batch.run_id).await;
-                }
                 count_stored(&done.stored, &prepared, &done.dropped);
                 let lines = done.stored.iter().filter(|row| !row.marker).count() as u64;
                 count_batch(done.answer.outcome(lines));
@@ -738,23 +728,25 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             }
             Ok(Within::NoLease) => {
                 tx.rollback().await?;
-                let cross_tenant = match self.store.run_exists_outside(tenant, batch.run_id).await {
-                    Ok(found) => found,
-                    Err(error) => {
-                        tracing::warn!(
-                            kind = error.kind(),
-                            sqlstate = error.sqlstate(),
-                            "the cross-tenant check of a step-log batch failed"
-                        );
-                        metrics::counter!("step_log_cross_tenant_check_failures_total")
-                            .increment(1);
-                        false
-                    }
-                };
-                Ok(Transacted {
-                    cross_tenant,
-                    ..Transacted::answer(BatchAnswer::stop(StopReason::Lease))
-                })
+                // A missing run and another tenant's run are recorded alike (feature 009, D60; D041-155).
+                crate::tenant_boundary::deny_unless_own(
+                    &self.store,
+                    principal,
+                    ResourceType::Run,
+                    batch.run_id.to_string(),
+                    async {
+                        let tenancy = self.store.run_tenancy(tenant, batch.run_id).await;
+                        if tenancy.is_err() {
+                            metrics::counter!("step_log_cross_tenant_check_failures_total")
+                                .increment(1);
+                        }
+                        tenancy
+                    },
+                    None,
+                    self.clock.now(),
+                )
+                .await;
+                Ok(Transacted::answer(BatchAnswer::stop(StopReason::Lease)))
             }
             Ok(Within::Failed { lease, failure }) => {
                 // A lock timeout or a store error at T3 or T4 still answers a revoked caller `AUTHORITY` (D041-050):
@@ -888,7 +880,6 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
             },
             dropped: saturated_drops(&stream.counters, &counters, &plan.drops),
             stored: inserted,
-            cross_tenant: false,
         }))
     }
 
@@ -990,21 +981,6 @@ impl<S: StepLogStore, C: Clock> StepLogIngest<S, C> {
                 metrics::counter!("step_log_lock_timeouts_total").increment(1);
             }
             Ok(Transacted::answer(BatchAnswer::stop(StopReason::Authority)))
-        }
-    }
-
-    async fn audit_cross_tenant(&self, principal: &Principal, run: RunId) {
-        let record = AuditRecord::by(
-            principal,
-            AuditAction::CrossTenantAccessDenied,
-            ResourceType::Run,
-            run.to_string(),
-            None,
-            self.clock.now(),
-        )
-        .with_reason("worker call on a resource not accessible from this tenant");
-        if let Err(error) = self.store.record_denial(&record).await {
-            tracing::error!(%error, action = %record.action(), "failed to record audit entry");
         }
     }
 }

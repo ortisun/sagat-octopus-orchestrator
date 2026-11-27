@@ -282,7 +282,7 @@ async fn foreign_resources_never_debit_their_namespace_or_escape_through_tenant_
         .await;
     }
     assert_eq!(buckets(&api, foreign).await, before);
-    let restricted: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action='access.denied.cross_tenant' AND resource_id=$2")
+    let restricted: i64 = sqlx::query_scalar("SELECT count(*) FROM security_audit_records WHERE caller_tenant_id=$1 AND action='access.denied.cross_tenant' AND resource_id=$2")
         .bind(tenant.as_uuid()).bind(&foreign_run).fetch_one(&api.db.pool).await.expect("restricted audit witness");
     assert!(restricted > 0);
     let audit = call(

@@ -319,7 +319,7 @@ async fn another_tenants_script_is_not_found_and_the_probe_is_audited() {
     // The probe is written off the response path, against the tenant that made it.
     let probes = crate::support::eventually("the probe is audited", || async {
         let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT resource_id FROM audit_records WHERE tenant_id = $1 AND action = $2",
+            "SELECT resource_id FROM security_audit_records WHERE caller_tenant_id = $1 AND action = $2",
         )
         .bind(w.other_admin.tenant_id().as_uuid())
         .bind(AuditAction::CrossTenantAccessDenied.as_str())

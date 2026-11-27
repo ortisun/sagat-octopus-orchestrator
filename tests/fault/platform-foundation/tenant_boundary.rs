@@ -166,7 +166,7 @@ async fn no_tenant_ever_sees_anothers_data_under_concurrency_and_a_database_fail
     // 3 callers x 2 foreign tenants x 2 resource kinds = 12, however many requests were made.
     crate::support::eventually("every distinct denial to be recorded", || async {
         let n: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+            "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant'",
         )
         .fetch_one(&api.db.pool)
         .await
@@ -176,7 +176,7 @@ async fn no_tenant_ever_sees_anothers_data_under_concurrency_and_a_database_fail
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_records WHERE action = 'access.denied.cross_tenant'",
+        "SELECT count(*) FROM security_audit_records WHERE action = 'access.denied.cross_tenant'",
     )
     .fetch_one(&api.db.pool)
     .await

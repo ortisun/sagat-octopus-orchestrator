@@ -787,6 +787,19 @@ impl DefinitionStore for PgDefinitionStore {
     }
 }
 
+impl sagat_application::tenant_boundary::BoundaryAudit for PgDefinitionStore {
+    async fn record_boundary_denial(
+        &self,
+        denial: &sagat_domain::audit::BoundaryDenial,
+    ) -> Result<(), StoreError> {
+        sagat_application::tenant_boundary::BoundaryAudit::record_boundary_denial(
+            &self.identity,
+            denial,
+        )
+        .await
+    }
+}
+
 const VERSION_SELECT_ONE: &str = "SELECT id, tenant_id, workflow_id, version_number, digest, \
      document, release_notes, published_by, published_at, classification_rules \
      FROM workflow_versions WHERE tenant_id = $1 AND workflow_id = $2 AND workflow_id IN (SELECT id FROM workflows WHERE tenant_id=$1 AND NOT internal) AND version_number = $3";
