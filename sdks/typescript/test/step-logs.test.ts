@@ -435,6 +435,46 @@ test('stopping the host leaves an attempt in its report wait to its report, and 
   assert.deepEqual(sequences(waiting.request['step_logs'].records), range(257, 260));
 });
 
+for (const [answer, expected] of [
+  [undefined, []],
+  [{ code: grpc.status.UNAVAILABLE }, [['send_failed', 10]]],
+] as Array<[Scripted | undefined, Array<[string, number]>]>) {
+  test(`a shutdown batch of a handler that then honours the cancel is counted only when it fails (${answer ? 'UNAVAILABLE' : 'CONTINUE'})`, async () => {
+    const drops: Array<[string, number]> = [];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    fake.appendAnswers = [answer ? { hold: held, then: undefined } : { hold: held }];
+    if (answer) fake.appendAnswers = [{ code: grpc.status.UNAVAILABLE }];
+    const h = host({ onEvent: (e) => { if (e.type === 'steplogs.dropped') drops.push([e.reason, e.records]); } });
+    let logged: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => { logged = resolve; });
+    h.registerActivity('work', async (_input, context) => {
+      for (let n = 1; n <= 10; n++) context.log.info(`running ${n}`);
+      logged();
+      await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve()));
+      throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+    });
+    await h.start();
+    fake.leases = [lease()];
+    await ready;
+    const stopping = h.stop(50);
+    await until(() => fake.of('appendStepLogs').length === 1, 'the shutdown batch');
+    release();
+    await stopping;
+    await until(() => !answer || drops.length > 0, 'the count of the failed batch');
+    assert.equal(fake.of('appendStepLogs').length, 1, 'never sent again');
+    assert.deepEqual(drops, expected);
+  });
+}
+
+test('an UNAUTHENTICATED answer counts its batch as one the attempt gave up on', async () => {
+  const drops: Array<[string, number]> = [];
+  fake.appendAnswers = [{ code: grpc.status.UNAUTHENTICATED }];
+  const report = await runOne(260, { onEvent: (e) => { if (e.type === 'steplogs.dropped') drops.push([e.reason, e.records]); } });
+  assert.equal(report['step_logs'], null);
+  assert.deepEqual(drops.sort(), [['send_failed', 260]]);
+});
+
 test('a batch holds at most 500 records when more are buffered as its turn comes', async () => {
   let release: () => void = () => undefined;
   fake.appendAnswers = [{ hold: new Promise<void>((resolve) => { release = resolve; }) }];
