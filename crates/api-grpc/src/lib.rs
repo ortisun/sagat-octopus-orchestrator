@@ -5,6 +5,7 @@
 //! pipeline as the REST API ([`sagat_api_http::authenticate_bearer`]), maps errors with the same
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
+mod acknowledgement;
 mod blobs;
 /// The wire answer to a managed database or lake step (`response`).
 pub mod database;
@@ -41,7 +42,8 @@ impl std::fmt::Debug for pb::ResolvedSecret {
 }
 
 pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
-pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
+pub use limits::ConnectionProbe;
+pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, WorkerApi, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
 pub use step_logs::{DEFAULT_STEP_LOG_TENANT_CALLS, StepLogAppender, StepLogBudgets};
@@ -130,5 +132,95 @@ impl std::fmt::Debug for pb::StepLogField {
 impl std::fmt::Debug for pb::step_log_field::Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("StepLogField::Value(<redacted>)")
+    }
+}
+
+// Every message with a field whose name ends in `_token` (a lease token or a session token, the bearer authority of a worker)
+// skips the generated `Debug` and prints counts and fences only (delivery acknowledgement, Task 006-043; `stream-completion.md`,
+// "Wire"): no token, no identity, no payload. A report keeps the counts of its step-log carry (feature 041, FR-041-007 (d)).
+impl std::fmt::Debug for pb::RegisterWorkerResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterWorkerResponse")
+            .field("accepted_protocol_version", &self.accepted_protocol_version)
+            .field("step_logs", &self.step_logs.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::PollTasksRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollTasksRequest")
+            .field("max_tasks", &self.max_tasks)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::TaskLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskLease")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .field("input_bytes", &self.input_json.len())
+            .field("acknowledge_before_start", &self.acknowledge_before_start)
+            .field("attempt_deadline_epoch_ms", &self.attempt_deadline_epoch_ms)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::HeartbeatRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeartbeatRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::CompleteStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::FailStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::ResolveSecretsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolveSecretsRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::WriteBlobHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteBlobHeader")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::ReadBlobRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadBlobRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for pb::TaskAcknowledgement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskAcknowledgement")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
     }
 }

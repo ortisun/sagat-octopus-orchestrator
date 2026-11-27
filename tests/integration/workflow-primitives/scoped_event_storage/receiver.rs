@@ -535,7 +535,20 @@ async fn the_lookback_index_migration_round_trips_with_admitted_waits_present() 
         .undo(&fixture.world.db.pool, 20261222000000)
         .await
         .expect("index-only rollback with current waits and retained payloads");
-    assert_eq!(guards::snapshot(&fixture).await, before);
+    // The rollback to 20261222000000 also takes back every later migration; of those, the marks of delivery acknowledgement
+    // (20270216000000) are columns of `steps`, which leave the rows with them and come back, empty, with the upgrade below.
+    let rolled_back = guards::snapshot(&fixture).await;
+    assert!(
+        rolled_back["steps"]
+            .as_array()
+            .expect("the steps")
+            .iter()
+            .all(|step| DELIVERY_ACKNOWLEDGEMENT_MARKS
+                .iter()
+                .all(|mark| step.get(*mark).is_none())),
+        "the marks left with their migration"
+    );
+    assert_eq!(rolled_back, without_marks(before.clone()));
     assert_eq!(
         store
             .unscanned_waits(None, 8)
@@ -565,4 +578,28 @@ async fn the_lookback_index_migration_round_trips_with_admitted_waits_present() 
         .verify_run(fixture.world.admin.tenant_id(), fixture.run)
         .await
         .expect("migration preserves native replay");
+}
+
+/// The columns of `steps` that migration 20270216000000 adds (feature 006, delivery acknowledgement).
+const DELIVERY_ACKNOWLEDGEMENT_MARKS: [&str; 9] = [
+    "lease_hand_back_generation",
+    "lease_offered_generation",
+    "lease_capability_generation",
+    "lease_claimed_at",
+    "lease_claim_incarnation",
+    "lease_acknowledged_at",
+    "provisional_withdrawn_attempt",
+    "withdrawn_lease_token_hash",
+    "withdrawn_on_hand_back",
+];
+
+/// A snapshot without the marks of delivery acknowledgement: what a rollback below their migration leaves of it.
+fn without_marks(mut snapshot: serde_json::Value) -> serde_json::Value {
+    for step in snapshot["steps"].as_array_mut().expect("the steps") {
+        let row = step.as_object_mut().expect("a step row");
+        for mark in DELIVERY_ACKNOWLEDGEMENT_MARKS {
+            row.remove(mark);
+        }
+    }
+    snapshot
 }

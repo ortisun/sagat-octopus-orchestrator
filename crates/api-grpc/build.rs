@@ -29,6 +29,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         "sagat_octopus_orchestrator.v1.StepLogRecord",
         "sagat_octopus_orchestrator.v1.StepLogField",
         "sagat_octopus_orchestrator.v1.StepLogField.value",
+        // every message with a field ending in `_token` (delivery acknowledgement, Task 006-043): counts and fences only
+        "sagat_octopus_orchestrator.v1.RegisterWorkerResponse",
+        "sagat_octopus_orchestrator.v1.PollTasksRequest",
+        "sagat_octopus_orchestrator.v1.TaskLease",
+        "sagat_octopus_orchestrator.v1.HeartbeatRequest",
+        "sagat_octopus_orchestrator.v1.CompleteStepRequest",
+        "sagat_octopus_orchestrator.v1.FailStepRequest",
+        "sagat_octopus_orchestrator.v1.ResolveSecretsRequest",
+        "sagat_octopus_orchestrator.v1.WriteBlobHeader",
+        "sagat_octopus_orchestrator.v1.ReadBlobRequest",
+        "sagat_octopus_orchestrator.v1.TaskAcknowledgement",
     ]);
     // The chunks of a blob are handed on without being copied.
     config.bytes([

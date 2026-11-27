@@ -163,3 +163,158 @@ mod telemetry;
 pub use telemetry::{EventKind, SdkEvent, SdkTransport, Telemetry};
 
 pub mod workflow;
+
+// Every message with a field whose name ends in `_token` (a lease token or a session token, the bearer authority of a worker)
+// skips the generated `Debug` and prints counts and fences only (delivery acknowledgement, Task 006-043; `stream-completion.md`,
+// "Wire"): no token, no identity, no payload.
+impl std::fmt::Debug for protocol::RegisterWorkerResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterWorkerResponse")
+            .field("accepted_protocol_version", &self.accepted_protocol_version)
+            .field("step_logs", &self.step_logs.is_some())
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::PollTasksRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollTasksRequest")
+            .field("max_tasks", &self.max_tasks)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::TaskLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskLease")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .field("input_bytes", &self.input_json.len())
+            .field("acknowledge_before_start", &self.acknowledge_before_start)
+            .field("attempt_deadline_epoch_ms", &self.attempt_deadline_epoch_ms)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::HeartbeatRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeartbeatRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::CompleteStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompleteStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::FailStepRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FailStepRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            // the carry prints its counts only (feature 041, FR-041-007 (d))
+            .field("step_logs", &self.step_logs)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::ResolveSecretsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolveSecretsRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::WriteBlobHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteBlobHeader")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::ReadBlobRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadBlobRequest")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+impl std::fmt::Debug for protocol::TaskAcknowledgement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskAcknowledgement")
+            .field("attempt", &self.attempt)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod token_canary {
+    use super::protocol;
+
+    /// Delivery acknowledgement, Task 006-043: no message of the protocol prints a lease or session token.
+    #[test]
+    fn no_token_prints() {
+        const LEASE: &str = "canary-lease-token-2b7d";
+        const SESSION: &str = "canary-session-token-e41f";
+        let printed = [
+            format!(
+                "{:?}",
+                protocol::PollTasksResponse {
+                    tasks: vec![protocol::TaskLease {
+                        lease_token: LEASE.into(),
+                        ..Default::default()
+                    }],
+                    retry_after_ms: 0,
+                }
+            ),
+            format!(
+                "{:?}",
+                protocol::RegisterWorkerResponse {
+                    session_token: SESSION.into(),
+                    ..Default::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                protocol::PollTasksRequest {
+                    session_token: SESSION.into(),
+                    ..Default::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                protocol::HeartbeatRequest {
+                    lease_token: LEASE.into(),
+                    ..Default::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                protocol::FailStepRequest {
+                    lease_token: LEASE.into(),
+                    ..Default::default()
+                }
+            ),
+            format!(
+                "{:?}",
+                protocol::AcknowledgeTasksRequest {
+                    worker_id: "w".into(),
+                    tasks: vec![protocol::TaskAcknowledgement {
+                        lease_token: LEASE.into(),
+                        ..Default::default()
+                    }],
+                }
+            ),
+        ];
+        for text in printed {
+            assert!(!text.contains(LEASE) && !text.contains(SESSION), "{text}");
+        }
+    }
+}

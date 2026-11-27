@@ -197,6 +197,7 @@ async fn session_replacement_revalidates_the_token_and_lowered_limit_at_the_clai
         pools: Vec::new(),
         max_inflight,
         protocol_version: "1.4".into(),
+        declines_acknowledgement: false,
     };
     let original = w
         .workers

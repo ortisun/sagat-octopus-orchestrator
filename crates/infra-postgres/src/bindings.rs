@@ -18,12 +18,25 @@ pub(crate) async fn hold_worker_binding(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<(), StoreError> {
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))")
-        .bind(format!("binding:{tenant}:{namespace}:{subject}"))
+    sqlx::query(SHARE_ADVISORY_LOCK)
+        .bind(worker_binding_lock_key(tenant, namespace, subject))
         .execute(conn)
         .await
         .map_err(store_error)?;
     Ok(())
+}
+
+/// The statement that takes an advisory lock shared for the rest of the transaction, by the hash of its key (`$1`).
+pub(crate) const SHARE_ADVISORY_LOCK: &str =
+    "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))";
+
+/// The key of a worker binding's advisory lock, which a binding replacement takes exclusively.
+pub(crate) fn worker_binding_lock_key(
+    tenant: TenantId,
+    namespace: NamespaceId,
+    subject: &str,
+) -> String {
+    format!("binding:{tenant}:{namespace}:{subject}")
 }
 
 impl BindingStore for PgRunStore {

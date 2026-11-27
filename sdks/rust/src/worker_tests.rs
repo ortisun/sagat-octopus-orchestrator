@@ -259,6 +259,12 @@ impl pb::worker_service_server::WorkerService for Service {
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    async fn acknowledge_tasks(
+        &self,
+        _: Request<pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
+        Err(Status::unimplemented("AcknowledgeTasks"))
+    }
     async fn resolve_database(
         &self,
         _: Request<pb::ResolveSecretsRequest>,

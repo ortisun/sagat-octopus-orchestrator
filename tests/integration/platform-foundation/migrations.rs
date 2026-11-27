@@ -1098,6 +1098,244 @@ async fn the_probe_of_not_acknowledged_withdrawals_uses_its_partial_index() {
     planner.rollback().await.expect("rolled back");
 }
 
+/// The stamp of the migration before the marks of protocol 1.8 (`20270216000000_delivery_acknowledgement_marks`).
+const BEFORE_THE_MARKS: i64 = 20_270_215_000_200;
+
+/// Task 006-044 (decision D006-102): the marks of protocol 1.8 are additive columns of `steps` and `worker_sessions`, empty
+/// in every row; the rollback refuses while a `LEASED` step holds a provisional mark that can still count, and goes through
+/// once it does not; forward restores the columns.
+#[tokio::test]
+async fn the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark_counts() {
+    let db = migrated_db().await;
+    let columns = || {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT table_name::text, column_name::text, data_type::text FROM information_schema.columns \
+                  WHERE (table_name = 'steps' AND column_name IN ('lease_hand_back_generation', 'lease_offered_generation', \
+                         'lease_capability_generation', 'lease_claimed_at', 'lease_claim_incarnation', 'lease_acknowledged_at', \
+                         'provisional_withdrawn_attempt', 'withdrawn_lease_token_hash', 'withdrawn_on_hand_back')) \
+                     OR (table_name = 'worker_sessions' AND column_name = 'declines_acknowledgement') \
+                  ORDER BY 1, 2",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("columns")
+        }
+    };
+    let found = columns().await;
+    assert_eq!(found.len(), 10, "{found:?}");
+    for (table, column, data_type) in &found {
+        let expected = match column.as_str() {
+            "lease_hand_back_generation"
+            | "lease_offered_generation"
+            | "lease_capability_generation" => "bigint",
+            "lease_claimed_at" | "lease_claim_incarnation" | "lease_acknowledged_at" => {
+                "timestamp with time zone"
+            }
+            "provisional_withdrawn_attempt" => "integer",
+            "withdrawn_lease_token_hash" => "bytea",
+            _ => "boolean",
+        };
+        assert_eq!(data_type, expected, "{table}.{column}");
+    }
+    // a LEASED step whose lease is the one marked provisional, written with the foreign keys and the projection triggers off
+    // in this transaction (the row is a fixture of the rollback's guard, not of a run)
+    let mut tx = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL session_replication_role = replica")
+        .execute(&mut *tx)
+        .await
+        .expect("foreign keys off for this transaction");
+    sqlx::query("ALTER TABLE steps DISABLE TRIGGER USER")
+        .execute(&mut *tx)
+        .await
+        .expect("the projection triggers off in this transaction");
+    sqlx::query(
+        "INSERT INTO steps (tenant_id, run_id, node, step_id, namespace_id, status, generation, lease_token_hash, \
+                            lease_expires_at, lease_offered_generation, updated_at) \
+         VALUES (gen_random_uuid(), gen_random_uuid(), 'a', gen_random_uuid(), gen_random_uuid(), 'LEASED', 1, \
+                 sha256('t'::bytea), now() + interval '1 hour', 1, now())",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("a provisional lease");
+    sqlx::query("ALTER TABLE steps ENABLE TRIGGER USER")
+        .execute(&mut *tx)
+        .await
+        .expect("the triggers back");
+    tx.commit().await.expect("committed");
+    let mut connection = db.pool.acquire().await.expect("a connection");
+    let refused = MIGRATOR
+        .undo(&mut *connection, BEFORE_THE_MARKS)
+        .await
+        .expect_err("the provisional mark blocks the rollback")
+        .to_string();
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .expect("release the migration lock");
+    drop(connection);
+    assert!(refused.contains("holds a provisional mark"), "{refused}");
+    assert_eq!(
+        columns().await.len(),
+        10,
+        "a refused rollback keeps the columns"
+    );
+    // the lease moved on: the mark no longer counts (the same fixture rules)
+    let mut tx = db.pool.begin().await.expect("a transaction");
+    for statement in [
+        "SET LOCAL session_replication_role = replica",
+        "ALTER TABLE steps DISABLE TRIGGER USER",
+        "UPDATE steps SET lease_offered_generation = 0 WHERE node = 'a'",
+        "ALTER TABLE steps ENABLE TRIGGER USER",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    tx.commit().await.expect("the mark of an older generation");
+    MIGRATOR
+        .undo(&db.pool, BEFORE_THE_MARKS)
+        .await
+        .expect("no provisional mark counts: the rollback goes through");
+    assert!(columns().await.is_empty());
+    migrate(&db.pool).await.expect("forward again");
+    assert_eq!(columns().await.len(), 10);
+}
+
+/// Task 006-044: the claim stamps `pg_postmaster_start_time()`, so the runtime role must read it; a crash that the
+/// postmaster recovers without restarting keeps it (decision D006-062), which this test cannot provoke on a shared server
+/// (gap G006-049).
+#[tokio::test]
+async fn the_runtime_role_reads_the_start_time_of_the_server() {
+    let db = migrated_db().await;
+    let runtime = db.runtime_pool().await;
+    let (as_runtime, as_owner): (time::OffsetDateTime, time::OffsetDateTime) = (
+        sqlx::query_scalar("SELECT pg_postmaster_start_time()")
+            .fetch_one(&runtime)
+            .await
+            .expect("the runtime role reads the start time"),
+        sqlx::query_scalar("SELECT pg_postmaster_start_time()")
+            .fetch_one(&db.pool)
+            .await
+            .expect("the owner reads it"),
+    );
+    assert_eq!(as_runtime, as_owner, "one server, one start time");
+}
+
+/// The stamp of the migration before the registry's part of protocol 1.8 (`20270216000100_delivery_acknowledgement_registry`).
+const BEFORE_THE_REGISTRY_OF_1_8: i64 = 20_270_216_000_000;
+
+/// Task 006-046 (decision D006-104): the rollback of the registry's part of 1.8 refuses while a registered process, live or
+/// not, lists `delivery-acknowledgement-v1`, while it is recorded, and while its history names it; with nothing naming it, the
+/// trigger, its function and the requirements read go, and the old checks refuse the capability; forward restores them.
+#[tokio::test]
+async fn the_registry_of_1_8_rolls_back_only_while_nothing_names_it() {
+    let refused_rollback = |pool: sqlx::PgPool| async move {
+        let mut connection = pool.acquire().await.expect("a connection");
+        let refused = MIGRATOR
+            .undo(&mut *connection, BEFORE_THE_REGISTRY_OF_1_8)
+            .await
+            .expect_err("a row blocks the rollback");
+        sqlx::query("SELECT pg_advisory_unlock_all()")
+            .execute(&mut *connection)
+            .await
+            .expect("release the migration lock");
+        refused.to_string()
+    };
+    let db = migrated_db().await;
+    sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', \
+                 ARRAY['lease-withdrawal-v1', 'lease-withdrawal-v2', 'delivery-acknowledgement-v1'], \
+                 now() - interval '1 hour', now() - interval '1 hour', sha256('t'::bytea))",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("a process of 1.8, silent for an hour");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("a registered process lists delivery-acknowledgement-v1"),
+        "{message}"
+    );
+    for (capability, kinds) in [
+        (
+            "lease-withdrawal-v1",
+            "ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']",
+        ),
+        (
+            "lease-withdrawal-v2",
+            "ARRAY['CONTROL_PLANE', 'EXECUTION_ENGINE']",
+        ),
+        ("delivery-acknowledgement-v1", "ARRAY['EXECUTION_ENGINE']"),
+    ] {
+        let recorded: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT out_outcome FROM platform_requirement_activate('{capability}', {kinds}, 'operator')"
+        )))
+        .fetch_one(&db.pool)
+        .await
+        .expect("activate");
+        assert_eq!(recorded, "RECORDED", "{capability}");
+    }
+    sqlx::query("DELETE FROM serving_instances")
+        .execute(&db.pool)
+        .await
+        .expect("the process confirmed stopped");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("delivery-acknowledgement-v1 is a recorded requirement"),
+        "{message}"
+    );
+    let removed: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_remove('delivery-acknowledgement-v1', 'operator')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("remove");
+    assert_eq!(removed, "REMOVED");
+    let message = refused_rollback(db.pool.clone()).await;
+    assert!(
+        message.contains("the requirement history names delivery-acknowledgement-v1"),
+        "{message}"
+    );
+
+    let clean = migrated_db().await;
+    MIGRATOR
+        .undo(&clean.pool, BEFORE_THE_REGISTRY_OF_1_8)
+        .await
+        .expect("nothing names it: the rollback goes through");
+    let present = || {
+        let pool = clean.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM pg_proc WHERE proname IN ('delivery_acknowledgement_required', \
+                        'platform_requirements_delivery_acknowledgement_guard')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("functions")
+        }
+    };
+    assert_eq!(present().await, 0);
+    let refused = sqlx::query(
+        "INSERT INTO serving_instances (instance_id, kind, binary_version, capabilities, started_at, last_seen, token_hash) \
+         VALUES (gen_random_uuid(), 'EXECUTION_ENGINE', '0.3.0', ARRAY['delivery-acknowledgement-v1'], now(), now(), \
+                 sha256('t'::bytea))",
+    )
+    .execute(&clean.pool)
+    .await
+    .expect_err("the old check does not know the capability");
+    assert!(
+        refused
+            .to_string()
+            .contains("serving_instances_capabilities_known"),
+        "{refused}"
+    );
+    migrate(&clean.pool).await.expect("forward again");
+    assert_eq!(present().await, 2);
+}
+
 /// Records `lease-withdrawal-v1` of both kinds, as the operator's activation does.
 async fn record_lease_withdrawal(pool: &sqlx::PgPool) {
     let recorded: String = sqlx::query_scalar(

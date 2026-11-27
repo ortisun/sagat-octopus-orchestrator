@@ -354,6 +354,7 @@ impl Worker<'_> {
             pools: vec![],
             max_inflight,
             protocol_version: "1".into(),
+            declines_acknowledgement: false,
         }
     }
 

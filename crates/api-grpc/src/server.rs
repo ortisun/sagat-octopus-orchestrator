@@ -7,7 +7,7 @@ use sagat_application::execution::MAX_PAYLOAD_BYTES;
 use tokio::net::TcpListener;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
-use crate::limits::{Admission, ConnectionLimits, Incoming};
+use crate::limits::{ACKNOWLEDGE_RESERVE, Admission, ConnectionLimits, ConnectionProbe, Incoming};
 use crate::pb::worker_service_server::{WorkerService, WorkerServiceServer};
 
 /// Largest message the server accepts: an inline output (256 KiB) plus the envelope.
@@ -42,7 +42,8 @@ pub struct GrpcConfig {
     /// Upper bound for one blob transfer (`WriteBlob`, `ReadBlob`). The transport allows the longer of
     /// the two, and every other call is held to `request_timeout`.
     pub transfer_timeout: Duration,
-    /// Calls running at once on one connection.
+    /// Calls running at once on one connection; a call waits for a place. While this build serves delivery acknowledgement
+    /// (protocol 1.8) four of them are kept for `AcknowledgeTasks` (feature 006, Task 006-049).
     pub concurrency_per_connection: usize,
     /// HTTP/2 streams a client may open at once.
     pub max_concurrent_streams: u32,
@@ -115,6 +116,42 @@ pub trait AdmissionProvider {
 pub struct WorkerApi<T> {
     service: WorkerServiceServer<T>,
     admission: Option<Admission>,
+    /// The compiled minor the connection layer judges the reserve of `Acknowledge` by: this build's `PROTOCOL_MINOR`, raised
+    /// by a test only ([`Self::with_compiled_minor_for_tests`]).
+    compiled_minor: u32,
+    connection_probe: Option<ConnectionProbe>,
+}
+
+impl<T> WorkerApi<T> {
+    /// Lets a test judge the places of a connection as a build of the compiled minor `minor` would: from
+    /// `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (8) four places of each connection are kept for `AcknowledgeTasks`. A test
+    /// probe (`test_probe_errors` of `scripts/check-architecture.py` refuses a call of it in a production source).
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_compiled_minor_for_tests(mut self, minor: u32) -> Self {
+        self.compiled_minor = minor;
+        self
+    }
+
+    /// Tells `probe` the method path and the connection ordinal of every call: the conformance platform's hook (Task
+    /// 006-058). A test probe (`test_probe_errors` of `scripts/check-architecture.py` refuses a call of it in a production
+    /// source); the ordinal is never a metric label, a log field or a span attribute.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_connection_probe(mut self, probe: ConnectionProbe) -> Self {
+        self.connection_probe = Some(probe);
+        self
+    }
+}
+
+/// How many of a connection's places are kept for `AcknowledgeTasks` in a build of the compiled minor `minor`: four from
+/// delivery acknowledgement (1.8) on, none below it, so a dormant build changes no class's concurrency.
+pub(crate) const fn acknowledge_reserve(minor: u32) -> usize {
+    if minor >= sagat_application::worker::DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR {
+        ACKNOWLEDGE_RESERVE
+    } else {
+        0
+    }
 }
 
 /// Wraps a handler into the tonic service, applying the message size limit.
@@ -124,6 +161,8 @@ pub fn worker_service<T: WorkerService + AdmissionProvider>(handler: T) -> Worke
     WorkerApi {
         service: WorkerServiceServer::new(handler).max_decoding_message_size(MAX_MESSAGE_BYTES),
         admission,
+        compiled_minor: sagat_application::worker::PROTOCOL_MINOR,
+        connection_probe: None,
     }
 }
 
@@ -145,6 +184,9 @@ pub async fn serve<T: WorkerService>(
         config.max_log_calls,
         config.request_timeout,
     );
+    if let Some(probe) = service.connection_probe {
+        admission.set_connection_probe(probe);
+    }
     let mut builder = Server::builder();
     if let Some(tls) = &config.tls {
         // Name the provider this platform uses instead of letting rustls guess from the features of the build: a
@@ -163,7 +205,8 @@ pub async fn serve<T: WorkerService>(
     }
     builder
         .timeout(config.request_timeout.max(config.transfer_timeout))
-        .concurrency_limit_per_connection(config.concurrency_per_connection)
+        // `concurrency_per_connection` is applied by the admission layer, per connection, under the stamp of a call's
+        // arrival (Task 006-049): tonic's own limit would make a call wait before its arrival is known.
         .max_concurrent_streams(config.max_concurrent_streams)
         .http2_keepalive_interval(Some(config.keepalive_interval))
         .http2_keepalive_timeout(Some(config.keepalive_timeout))
@@ -180,6 +223,8 @@ pub async fn serve<T: WorkerService>(
                     per_peer: config.max_connections_per_peer,
                     first_byte: config.first_byte_timeout,
                     idle: config.idle_timeout,
+                    per_connection: config.concurrency_per_connection,
+                    acknowledge_reserve: acknowledge_reserve(service.compiled_minor),
                 },
             ),
             shutdown,

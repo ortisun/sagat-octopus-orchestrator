@@ -1030,13 +1030,15 @@ async fn validator_and_revision_rejections_are_stable_and_do_not_schedule_work()
     assert_eq!(counts, (1, 2, 1, 0));
 }
 
-/// What an error body says, without the trace identifier it carries. That identifier is thirty-two random hexadecimal digits, so a
-/// short number the test looks for (the balance it tried to write) is spelled by it about once in a hundred and thirty runs: a
-/// check of the whole body is a flaky test, not a check of what leaked. Pull request 168 failed on it, `777` among the digits.
+/// What an error body says, without the trace and request identifiers it carries. Each is thirty-two random hexadecimal digits,
+/// so a short number the test looks for (the balance it tried to write) is spelled by one of them about once in sixty-five runs:
+/// a check of the whole body is a flaky test, not a check of what leaked. Pull request 168 failed on the trace identifier, and
+/// run 45985040459 of pull request 297 on the request identifier, `777` among the digits.
 fn what_a_body_says(body: &Value) -> String {
     let mut said = body.clone();
     if let Some(members) = said.as_object_mut() {
         members.remove("traceId");
+        members.remove("requestId");
     }
     said.to_string()
 }
@@ -1048,6 +1050,11 @@ fn a_trace_identifier_that_spells_a_number_is_not_the_body_saying_it() {
         body.to_string().contains("777"),
         "the whole body does contain it, which is what made the check flaky"
     );
+    assert!(!what_a_body_says(&body).contains("777"));
+    // the request identifier is thirty-two random hexadecimal digits too (run 45985040459 found `777` in it)
+    let body = json!({"code": "INTERNAL", "message": "internal error", "traceId": "0af7651916cd43dd8448eb2c80319",
+        "requestId": "4bf92f3577734da6a3ce929d0e0e4736"});
+    assert!(body.to_string().contains("777"));
     assert!(!what_a_body_says(&body).contains("777"));
     let leaking = json!({"code": "INTERNAL", "message": "balance 777 refused", "traceId": "0af7651916cd43dd8448eb2c80319"});
     assert!(

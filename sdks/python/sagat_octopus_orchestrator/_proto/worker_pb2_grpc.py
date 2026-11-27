@@ -40,6 +40,9 @@ class WorkerServiceStub:
     INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
     ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
     cancelled or finished): stop, do not retry the report
+    FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+    lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+    it first; never run anything for it before the answer ACKNOWLEDGED
     x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
     RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
     UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -108,6 +111,11 @@ class WorkerServiceStub:
                 request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
                 response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
                 _registered_method=True)
+        self.AcknowledgeTasks = channel.unary_unary(
+                '/sagat_octopus_orchestrator.v1.WorkerService/AcknowledgeTasks',
+                request_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksRequest.SerializeToString,
+                response_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksResponse.FromString,
+                _registered_method=True)
 
 
 class WorkerServiceServicer:
@@ -125,6 +133,9 @@ class WorkerServiceServicer:
     INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
     ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
     cancelled or finished): stop, do not retry the report
+    FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+    lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+    it first; never run anything for it before the answer ACKNOWLEDGED
     x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
     RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
     UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -237,6 +248,19 @@ class WorkerServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AcknowledgeTasks(self, request, context):
+        """Added in protocol 1.8 (delivery acknowledgement, ADR-0099). The host acknowledges the flagged leases of one frame, or of
+        one PollTasks answer, before it runs or calls anything else for them. Idempotent: the same lease may be acknowledged
+        again. One result per task, in request order; the acknowledgement renews nothing.
+        Errors: UNAUTHENTICATED; PERMISSION_DENIED; INVALID_ARGUMENT a malformed request (no task or more than 64, tasks of
+        more than one namespace, a repeated task_id, an attempt below 1); RESOURCE_EXHAUSTED (x-sagat-error
+        ACKNOWLEDGEMENT_SHED) shed by admission; UNAVAILABLE (x-sagat-error ACKNOWLEDGEMENT_DEADLINE or
+        ACKNOWLEDGEMENT_STORE_UNREACHABLE) the call's deadline passed or the database could not be reached: ask again.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_WorkerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -295,6 +319,11 @@ def add_WorkerServiceServicer_to_server(servicer, server):
                     request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.FromString,
                     response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.SerializeToString,
             ),
+            'AcknowledgeTasks': grpc.unary_unary_rpc_method_handler(
+                    servicer.AcknowledgeTasks,
+                    request_deserializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksRequest.FromString,
+                    response_serializer=sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'sagat_octopus_orchestrator.v1.WorkerService', rpc_method_handlers)
@@ -318,6 +347,9 @@ class WorkerService:
     INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
     ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
     cancelled or finished): stop, do not retry the report
+    FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+    lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+    it first; never run anything for it before the answer ACKNOWLEDGED
     x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
     RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
     UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -612,6 +644,33 @@ class WorkerService:
             '/sagat_octopus_orchestrator.v1.WorkerService/AppendStepLogs',
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsRequest.SerializeToString,
             sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AppendStepLogsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AcknowledgeTasks(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sagat_octopus_orchestrator.v1.WorkerService/AcknowledgeTasks',
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksRequest.SerializeToString,
+            sagat__octopus__orchestrator_dot___proto_dot_worker__pb2.AcknowledgeTasksResponse.FromString,
             options,
             channel_credentials,
             insecure,

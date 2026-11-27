@@ -18,6 +18,9 @@ option java_package = "dev.sagatoctopusorchestrator.protocol.v1";
 //   INVALID_ARGUMENT    a malformed field, an unsupported protocol version, an invalid output
 //   ABORTED             x-sagat-error: STALE_ATTEMPT        the lease is no longer current (reclaimed,
 //                       cancelled or finished): stop, do not retry the report
+//   FAILED_PRECONDITION x-sagat-error: TASK_NOT_ACKNOWLEDGED  (added in 1.8) a capability call on a
+//                       lease the host has not acknowledged yet (acknowledge_before_start): acknowledge
+//                       it first; never run anything for it before the answer ACKNOWLEDGED
 //                       x-sagat-error: IDEMPOTENCY_KEY_REUSED  the key was used for a different report
 //   RESOURCE_EXHAUSTED  rate limited; `retry-after-ms` metadata
 //   UNAVAILABLE         storage unavailable; retry with the same idempotency key
@@ -74,6 +77,14 @@ service WorkerService {
   //   above 2^62, an unknown level); RESOURCE_EXHAUSTED (x-sagat-error RATE_LIMITED, retry-after-ms) shed
   //   by admission; UNAVAILABLE the database or the serving gate.
   rpc AppendStepLogs(AppendStepLogsRequest) returns (AppendStepLogsResponse);
+  // Added in protocol 1.8 (delivery acknowledgement, ADR-0099). The host acknowledges the flagged leases of one frame, or of
+  // one PollTasks answer, before it runs or calls anything else for them. Idempotent: the same lease may be acknowledged
+  // again. One result per task, in request order; the acknowledgement renews nothing.
+  //   Errors: UNAUTHENTICATED; PERMISSION_DENIED; INVALID_ARGUMENT a malformed request (no task or more than 64, tasks of
+  //   more than one namespace, a repeated task_id, an attempt below 1); RESOURCE_EXHAUSTED (x-sagat-error
+  //   ACKNOWLEDGEMENT_SHED) shed by admission; UNAVAILABLE (x-sagat-error ACKNOWLEDGEMENT_DEADLINE or
+  //   ACKNOWLEDGEMENT_STORE_UNREACHABLE) the call's deadline passed or the database could not be reached: ask again.
+  rpc AcknowledgeTasks(AcknowledgeTasksRequest) returns (AcknowledgeTasksResponse);
 }
 
 message WorkerCapabilities {
@@ -84,6 +95,8 @@ message WorkerCapabilities {
   // The newest additive minor understood by the worker. The server accepts 1.5 only when its
   // scoped claim and report storage path is enabled; otherwise negotiation remains at 1.4.
   string protocol_version = 5;
+  // Added in protocol 1.8. The host asks for no flagged lease (its fallback); the server never marks one for it.
+  bool declines_acknowledgement = 10;
 }
 message RegisterWorkerRequest { string worker_name = 1; string namespace = 2; WorkerCapabilities capabilities = 3; }
 message RegisterWorkerResponse {
@@ -139,6 +152,12 @@ message TaskLease {
   ExecutionInstanceIdentity instance = 17;
   // For compensation and reconciliation, the exact forward instance. Empty for ordinary work.
   ExecutionInstanceIdentity target_instance = 18;
+  // Added in protocol 1.8. Set only on a lease the server marked provisional: the host starts nothing and calls nothing for
+  // it but AcknowledgeTasks and the hand-back (FailStep TASK_NOT_STARTED) before the answer ACKNOWLEDGED.
+  bool acknowledge_before_start = 23;
+  // Added in protocol 1.8. Set only on a flagged lease whose attempt deadline (the claim's time plus timeoutMs) comes before its
+  // expiry; 0 otherwise. The host counts its give-up from the earlier of the two.
+  int64 attempt_deadline_epoch_ms = 24;
 }
 message PollTasksResponse { repeated TaskLease tasks = 1; int32 retry_after_ms = 2; }
 message HeartbeatRequest {
@@ -437,4 +456,42 @@ message AppendStepLogsResponse {
 // Added in 1.7. Sent only when the accepted minor is at least 7.
 message StepLogPolicy {
   bool enabled = 1;                           // the deployment switch and the namespace's capture are both on
+}
+
+// Added in protocol 1.8. One flagged lease, named and fenced as HeartbeatRequest names and fences it.
+message TaskAcknowledgement {
+  string task_id = 1;
+  string run_id = 2;
+  string step_id = 3;
+  int32 attempt = 4;
+  int64 generation = 5;
+  string lease_token = 6;
+  ExecutionInstanceIdentity instance = 7;
+}
+// Added in protocol 1.8. 1 to 64 tasks of one namespace, with distinct task_ids. worker_id is validated and ignored: the lease
+// token is the only authority.
+message AcknowledgeTasksRequest {
+  string worker_id = 1;
+  repeated TaskAcknowledgement tasks = 2;
+}
+// Added in protocol 1.8.
+enum AcknowledgementVerdict {
+  ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED = 0;
+  ACKNOWLEDGEMENT_VERDICT_ACKNOWLEDGED = 1;   // committed: this host holds the lease; run it
+  ACKNOWLEDGEMENT_VERDICT_NOT_HELD = 2;       // not this host's provisional lease (withdrawn, replaced, too late, unbound)
+  ACKNOWLEDGEMENT_VERDICT_CANCELLED = 3;      // run nothing, hand the lease back (asked to stop, or too late to start)
+  ACKNOWLEDGEMENT_VERDICT_RETRY = 4;          // its row was busy: ask again for this task
+}
+// Added in protocol 1.8.
+message TaskAcknowledgementResult {
+  string task_id = 1;
+  AcknowledgementVerdict verdict = 2;
+  // When ACKNOWLEDGED: the time left before the lease's expiry at the server's clock sample; never below 0.
+  int64 lease_time_left_ms = 3;
+  // When ACKNOWLEDGED and the attempt has a deadline: the time left before it, likewise.
+  optional int64 attempt_time_left_ms = 4;
+}
+// Added in protocol 1.8. One result per task, in request order.
+message AcknowledgeTasksResponse {
+  repeated TaskAcknowledgementResult results = 1;
 }

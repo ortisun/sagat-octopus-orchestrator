@@ -148,6 +148,12 @@ impl WorkerService for Fake {
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         Err(Status::unimplemented("AppendStepLogs"))
     }
+    async fn acknowledge_tasks(
+        &self,
+        _: Request<pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
+        Err(Status::unimplemented("AcknowledgeTasks"))
+    }
     async fn resolve_database(
         &self,
         request: Request<pb::ResolveSecretsRequest>,

@@ -10,6 +10,8 @@
 mod collection_plan;
 #[cfg(test)]
 mod instance_port_tests;
+#[cfg(test)]
+mod lease_marks_tests;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -789,6 +791,12 @@ pub trait PathExecutionTx: Send {
         instance: &ExecutionInstanceId,
     ) -> impl Future<Output = Result<Option<LeaseDeadlines>, StoreError>> + Send;
 
+    /// What the statement that wrote the lease of `instance` in this transaction marked (protocol 1.8, Task 006-047), as
+    /// it returned it; `None` when no lease of `instance` was written here, or by an adapter without the marks.
+    fn claim_mark(&self, _instance: &ExecutionInstanceId) -> Option<ClaimMark> {
+        None
+    }
+
     /// Checks this run's shard owner/generation at database time and keeps its shared fence until
     /// commit. A lease of another shard never authorizes this transaction.
     fn holds_shard(
@@ -1019,6 +1027,162 @@ pub struct LeaseDeadlines {
     pub attempt_deadline_at: Option<OffsetDateTime>,
 }
 
+/// The marks of protocol 1.8 of one lease, with its deadlines, as a withdrawal re-reads the row (feature 006, `stream-completion.md`,
+/// "The marks"; Task 006-047, decision D006-108). The pure twin of the adapter's SQL macro, which a parity test compares row by
+/// row: a mark counts only while the step holds the lease of the mark's generation, on the database server it was claimed on,
+/// and, where the requirement's recording is read, claimed after it. The adapter computes whether the lease was claimed on the
+/// server that answers now; this function never sees a server's start time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseMarks {
+    pub deadlines: LeaseDeadlines,
+    /// The step is `LEASED` or `RUNNING`.
+    pub held: bool,
+    /// The step's generation.
+    pub generation: u64,
+    /// `lease_hand_back_generation`: the generation of a lease claimed for a session at 1.8 or later.
+    pub hand_back_generation: Option<u64>,
+    /// `lease_claimed_at`, on the database's clock.
+    pub claimed_at: Option<OffsetDateTime>,
+    /// `lease_claim_incarnation` is not null and equals the start time of the database server that answers now.
+    pub claimed_on_this_server: bool,
+}
+
+impl LeaseMarks {
+    /// The reservation of this lease counts (the form without the recording).
+    #[must_use]
+    pub fn counts(&self) -> bool {
+        self.held
+            && self.hand_back_generation == Some(self.generation)
+            && self.claimed_on_this_server
+    }
+
+    /// The reservation counts and the lease was claimed after `required_since`, the current recording of
+    /// `delivery-acknowledgement-v1` (the form with the recording, which the withdrawals read). An equal time does not count.
+    #[must_use]
+    pub fn counts_since(&self, required_since: OffsetDateTime) -> bool {
+        self.counts() && self.claimed_at.is_some_and(|at| at > required_since)
+    }
+}
+
+/// Why the claim of a session at 1.8 or later did not mark its lease provisional, in the order the reasons are judged
+/// (`stream-completion.md`, "The marks"): the label `reason` of `worker_lease_marks_skipped_total`. The first four are the
+/// engine's to know; the last two are read by the statement that writes the lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkSkip {
+    /// `delivery-acknowledgement-v1` is not recorded for engines, as this engine last read.
+    NotActivated,
+    /// It is, and `lease-withdrawal-v2` is not recorded for both kinds (a hand recording out of order).
+    RequirementMissing,
+    /// `SAGAT_LEASE_WITHDRAWAL=off` on this engine.
+    SwitchOff,
+    /// The session declines acknowledgement.
+    Declined,
+    /// `provisional_withdrawn_attempt` is the attempt being claimed: it was handed back once (decision D006-066).
+    FlaggedBefore,
+    /// The earlier of the time-to-live and `timeoutMs` is under three receive bounds (decision D006-046).
+    ShortDeadline,
+}
+
+impl MarkSkip {
+    pub const ALL: [Self; 6] = [
+        Self::NotActivated,
+        Self::RequirementMissing,
+        Self::SwitchOff,
+        Self::Declined,
+        Self::FlaggedBefore,
+        Self::ShortDeadline,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotActivated => "not_activated",
+            Self::RequirementMissing => "requirement_missing",
+            Self::SwitchOff => "switch_off",
+            Self::Declined => "declined",
+            Self::FlaggedBefore => "flagged_before",
+            Self::ShortDeadline => "short_deadline",
+        }
+    }
+
+    /// The reason a statement returned, by its label.
+    #[must_use]
+    pub fn parse(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == label)
+    }
+
+    /// The first of the engine's reasons that holds, or `None` when the engine would mark: the requirements as this engine
+    /// last read them, its switch, and the session's word.
+    #[must_use]
+    pub const fn of_engine(
+        activated: bool,
+        floor_recorded: bool,
+        switch_on: bool,
+        declines: bool,
+    ) -> Option<Self> {
+        if !activated {
+            Some(Self::NotActivated)
+        } else if !floor_recorded {
+            Some(Self::RequirementMissing)
+        } else if !switch_on {
+            Some(Self::SwitchOff)
+        } else if declines {
+            Some(Self::Declined)
+        } else {
+            None
+        }
+    }
+}
+
+/// The shortest earlier deadline (the earlier of the time-to-live and `timeoutMs`) a provisional lease may have: three receive
+/// bounds of 6 s (decision D006-046).
+pub const MARK_MINIMUM_DEADLINE: std::time::Duration = std::time::Duration::from_secs(18);
+
+/// What the claim asks of the statement that writes its lease (protocol 1.8, Task 006-047).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseMarking {
+    /// The session is below 1.8, as this build judges it: no mark.
+    Unreserved,
+    /// The session is at 1.8 or later: the statement writes the reservation (`lease_hand_back_generation`,
+    /// `lease_claimed_at`, `lease_claim_incarnation`), and the provisional mark unless `skipped` holds a reason of the engine or
+    /// the statement finds one of its own.
+    Reserved { skipped: Option<MarkSkip> },
+}
+
+/// What the statement that wrote a lease marked, returned by that statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkOutcome {
+    /// No reservation: a session below 1.8.
+    Unreserved,
+    /// Reserved and provisional: the lease carries `acknowledge_before_start` (`worker_lease_marks_total`).
+    Provisional,
+    /// Reserved and not provisional, for the first reason that held (`worker_lease_marks_skipped_total{reason}`).
+    Skipped(MarkSkip),
+}
+
+/// The claim's marks of one lease and its deadlines, as the statement that wrote it returned them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaimMark {
+    pub outcome: MarkOutcome,
+    pub deadlines: LeaseDeadlines,
+}
+
+impl ClaimMark {
+    /// The attempt deadline a provisional lease carries to its host (`attempt_deadline_epoch_ms`): only when it comes before
+    /// the expiry, which is never shortened.
+    #[must_use]
+    pub fn attempt_deadline(&self) -> Option<OffsetDateTime> {
+        if self.outcome != MarkOutcome::Provisional {
+            return None;
+        }
+        self.deadlines
+            .attempt_deadline_at
+            .filter(|deadline| *deadline < self.deadlines.expires_at)
+    }
+}
+
 /// The lease handed to a worker. Only the hash of the token is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseGrant {
@@ -1029,6 +1193,8 @@ pub struct LeaseGrant {
     pub ttl: std::time::Duration,
     /// The step's `timeout`, if any: renewals never extend an attempt past it.
     pub attempt_timeout: Option<std::time::Duration>,
+    /// The marks of protocol 1.8 the statement writes with the lease, conditioned in SQL on a new lease.
+    pub marking: LeaseMarking,
 }
 
 /// The lease that reported the attempt of `instance`: the hash of its token, never the token.
@@ -1249,6 +1415,12 @@ pub trait RunTx: Send {
             }
             self.lease_deadlines(instance.node()).await
         }
+    }
+
+    /// What the statement that wrote the lease of `instance` in this transaction marked (protocol 1.8, Task 006-047), as
+    /// it returned it; `None` when no lease of `instance` was written here, or by an adapter without the marks.
+    fn claim_mark(&self, _instance: &ExecutionInstanceId) -> Option<ClaimMark> {
+        None
     }
 
     /// Whether `owner` still holds the shard lease `lease`, as of the database's clock. It takes

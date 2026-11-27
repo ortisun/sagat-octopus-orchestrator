@@ -156,6 +156,7 @@ async fn a_worker_outside_the_pools_is_not_handed_the_lease_and_an_allowed_one_i
                 pools: names(&["trusted"]),
                 max_inflight: 10,
                 protocol_version: "1".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

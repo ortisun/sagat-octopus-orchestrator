@@ -421,8 +421,10 @@ to `WORKER_ERROR` at every minor (Decision 006-028 of the SDK build), and keep a
 - The server's minor becomes 8 (`DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR = 8`) in Task 006-057, after the gate of Task 006-056,
   never before: until then the tests of the 1.8 paths raise a session's stored minor, as Decision 006-030 of the server build does.
   Minors are cumulative: `protocol_ceiling` answers 8 for an ordinary worker when it would answer 7 (design 041, Task 041-7) and the
-  store proves `supports_delivery_acknowledgement()`, a constant of the adapter. Nothing else gates the minor. The database runner
-  keeps 6.
+  store proves `supports_delivery_acknowledgement()`, a constant of the adapter, never above the compiled `PROTOCOL_MINOR`.
+  Nothing else gates the minor. The database runner and the script runner keep 6: neither is offered 7 (Decision 041-149), so
+  neither reaches 8 (Decision 006-117). The PostgreSQL adapter's proof stays false until its paths of 1.8
+  are built (Decision 006-105, Gap 006-042).
 - From the same task every engine of the build lists `delivery-acknowledgement-v1`, meaning it serves `AcknowledgeTasks`, replays
   the cause `NOT_ACKNOWLEDGED`, refuses capabilities to provisional leases, and withdraws a marked provisional lease at its deadline
   and on its hand-back (Architecture decision 0082 decision 7: nothing is listed that the process will not do). The requirement is
@@ -588,7 +590,9 @@ session upsert sets it from the registration, so one that does not decline clear
   not marked, the flag is false, and `worker_lease_marks_skipped_total{reason}` counts it with the first reason that holds, in this
   order: `not_activated`, `requirement_missing`, `switch_off`, `declined`, `flagged_before`, `short_deadline`. Like
   `worker_lease_marks_total`, it is incremented only after the claim's transaction commits, so a run's transaction rolled back
-  because its consumer went before the commit (D006-092) moves neither counter (round 15).
+  because its consumer went before the commit (D006-092) moves neither counter (round 15); a claim of a session below 1.8 is
+  counted by neither. The engine's four reasons travel with the grant; the statement judges the last two from the row it
+  writes and returns, with whether it marked, the lease's two deadlines (Decision 006-106).
 - No statement assigns a column of the marks from a value it read earlier. The allowed forms are: the claim's, in SQL conditioned
   on a new lease (the stored `generation` differs from the one written), never on a bound flag alone; the engine's other statements
   keep them (`ELSE` the column) or clear them with the lease; the acknowledgement sets `lease_acknowledged_at = clock_timestamp()`
@@ -653,19 +657,26 @@ One transaction per call, through a store port of its own (`AcknowledgementTx`: 
    unreachable, or a statement or the `COMMIT` failed with such an error (`57P01` of a planned switchover among them) or with
    `25006` (a server that answers read-only after a failover); the classification is one shared function of
    `crates/infra-postgres`, the registry's rule with `25006` added, not a copy. In the authentication's lookups, once the token has
-   verified, any unavailable store maps to this reason, the safe direction, and the lookups run under the call's deadline, their
+   verified, any unavailable store, and any failure of the lookups that says nothing of the caller (a store error that is
+   not a refusal), maps to this reason, the safe direction, and the lookups run under the call's deadline, their
    acquisition bounded by its time left. A call that reached the
-   handler with too little time left after the concurrency layer answers `ACKNOWLEDGEMENT_DEADLINE`. The
+   handler with too little time left after the concurrency layer (less than one statement timeout, 1 s) answers
+   `ACKNOWLEDGEMENT_DEADLINE`. Every statement and the `COMMIT` are also waited for on this side for at most the call's
+   time left and one statement timeout; one cut short discards the connection and answers `ACKNOWLEDGEMENT_STORE_UNREACHABLE`. The
    `statement_timeout` also bounds the `COMMIT`; a commit whose wait for a synchronous standby is cut short has committed locally
    (PostgreSQL warns, the client sees success), and the incarnation covers the failover that would lose it. `worker:execute`, once
    (`PERMISSION_DENIED`, audited as today). One statement sets, for the transaction (`set_config(..., true)`), `lock_timeout` and
    `statement_timeout` to 1 s, and `synchronous_commit` to `local` when it is `off`.
 2. `matched`: one statement with no lock, by the step primary key (`steps_pkey`), reads the addressed rows whose `lease_token_hash`
    matches the request's token hash: their namespace and activity. Tasks of more than one namespace: `INVALID_ARGUMENT`. A task with
-   no such row answers `NOT_HELD`. The run ids with no row in the caller's tenant are checked for existence in another tenant with
-   one statement, and at most one `CrossTenantAccessDenied` record per call is written, spawned off the answer path through a
-   bounded gate (32 places and 5 s, as `crates/api-http/src/denial.rs` has, moved to the application layer); past the gate the
-   record is counted and dropped.
+   no such row answers `NOT_HELD`. The run ids with no matching row are returned with the answer, or with the failure of a
+   call that fails after this read, and after it, off the answer path, one statement checks them for existence in another
+   tenant (the runs of the caller's own tenant taken out first, by their primary key, under a statement timeout of 1 s, on
+   a connection taken only if one is idle) and at most one `CrossTenantAccessDenied` record per call is written, under a
+   gate of its own (4 places, one per tenant at a time, taken without waiting; D006-110: with no index on the run id alone,
+   the check can scan the runs, which neither the answer path nor the audits of refused calls may wait for); a check that
+   finds no place is counted and dropped. The namespaces are those of the rows that hold a presented token now; a row
+   matched by its last withdrawn token alone is answered `NOT_HELD` (`withdrawn`) without a lock.
 3. The checks of `ensure_bound`, under its locks and in its order, for the call's one namespace, through the same function the run
    transactions call, over a narrow trait that both they and `AcknowledgementTx` implement (a test makes both refuse the same
    narrowed binding): the binding's shared advisory lock and the namespace's bound patterns, then the namespace's shared secrets

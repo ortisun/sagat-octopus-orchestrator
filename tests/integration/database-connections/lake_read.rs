@@ -181,6 +181,7 @@ pub async fn run(w: &World) {
                 pools: vec![],
                 max_inflight: 32,
                 protocol_version: "1.6".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

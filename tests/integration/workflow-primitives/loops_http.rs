@@ -280,6 +280,7 @@ async fn public_pre_and_post_test_loops_finish_after_restart_and_terminal_rollba
                     pools: Vec::new(),
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))
@@ -579,6 +580,7 @@ async fn register_loop_worker(
                     pools: Vec::new(),
                     max_inflight: 1,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))

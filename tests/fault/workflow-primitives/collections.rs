@@ -310,6 +310,7 @@ async fn bounded_public_collection_finishes_in_input_order_after_restart_and_los
                     pools: Vec::new(),
                     max_inflight: 32,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))
@@ -513,6 +514,7 @@ async fn serve_until_finished(
                     pools: Vec::new(),
                     max_inflight: 8,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))

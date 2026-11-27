@@ -846,6 +846,7 @@ impl World {
             pools: vec![],
             max_inflight,
             protocol_version: "1".into(),
+            declines_acknowledgement: false,
         };
         let registered = self
             .workers

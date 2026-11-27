@@ -298,6 +298,7 @@ async fn proven_collection_can_be_published_and_started_over_http() {
                     pools: Vec::new(),
                     max_inflight: 8,
                     protocol_version: "1.5".into(),
+                    declines_acknowledgement: false,
                 }),
             },
         ))

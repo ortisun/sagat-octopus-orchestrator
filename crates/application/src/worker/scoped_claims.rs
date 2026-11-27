@@ -265,12 +265,14 @@ where
                 worker_id: session.id.to_string(),
                 ttl: self.settings.lease_ttl,
                 attempt_timeout: timeout,
+                marking: self.lease_marking(session),
             });
             tx.persist_addressed(&[event], &[], effects).await?;
             let expires_at = tx
                 .lease_expiry(&instance)
                 .await?
                 .ok_or(AppError::Internal)?;
+            let mark = tx.claim_mark(&instance);
             let snapshot = tx.snapshot();
             let (kind, idempotency_key, target) = self.task_identity(
                 Self::task_template(&snapshot.definition, &instance),
@@ -293,6 +295,8 @@ where
                 trace_id: snapshot.info.trace_id.clone(),
                 kind,
                 target,
+                mark: mark.map(|mark| mark.outcome),
+                attempt_deadline: mark.as_ref().and_then(ClaimMark::attempt_deadline),
             });
         }
         // the same rule as the root path (decision D006-092)
@@ -300,6 +304,8 @@ where
             return Ok(Vec::new());
         }
         tx.commit().await?;
+        // counted once durable, as the root path does (decision D006-092)
+        count_marks(&claimed);
         *bytes += run_bytes;
         Ok(claimed)
     }

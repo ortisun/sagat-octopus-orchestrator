@@ -546,6 +546,7 @@ async fn register(core: &Core, mut rpc: Rpc) -> Result<Session, SagatError> {
             pools: core.options.pools.clone(),
             max_inflight: core.options.max_inflight as i32,
             protocol_version: core.options.protocol_version.clone(),
+            declines_acknowledgement: false,
         }),
     };
     let mut refreshed = false;

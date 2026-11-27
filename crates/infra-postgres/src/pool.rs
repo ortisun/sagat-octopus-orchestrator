@@ -185,9 +185,58 @@ impl BeginSafely for sqlx::PgPool {
     }
 }
 
+/// Whether `error` says that no writable database was reached, so that the failure is the database's and not the
+/// statement's: the pool could not give a connection, the connection failed (`08` connection exceptions, input and
+/// output, TLS), the server is shutting down or restarting (`57P01` to `57P03`, a planned switchover among them), or it
+/// answers read-only (`25006`, a server that a failover left a standby). One rule for the instance registry and the
+/// delivery acknowledgement (feature 006, Task 006-049), which a read-only server's answer must not turn into a host's
+/// give-up.
+pub(crate) fn store_unreachable(error: &sqlx::Error) -> bool {
+    use sqlx::Error;
+    match error {
+        Error::Io(_)
+        | Error::Tls(_)
+        | Error::PoolTimedOut
+        | Error::PoolClosed
+        | Error::WorkerCrashed => true,
+        Error::Database(db) => db.code().is_some_and(|code| unreachable_code(&code)),
+        _ => false,
+    }
+}
+
+/// The SQLSTATE codes of a database not reached: `08` connection exceptions, `57P01` to `57P03` (the server shutting down
+/// or restarting), `25006` (read-only).
+fn unreachable_code(code: &str) -> bool {
+    code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03" | "25006")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PoolConfig, PoolName, step_log_wait_slots_for};
+    use super::{
+        PoolConfig, PoolName, step_log_wait_slots_for, store_unreachable, unreachable_code,
+    };
+
+    #[test]
+    fn a_database_that_cannot_be_reached_or_answers_read_only_is_unreachable() {
+        assert!(store_unreachable(&sqlx::Error::PoolTimedOut));
+        assert!(store_unreachable(&sqlx::Error::PoolClosed));
+        assert!(store_unreachable(&sqlx::Error::Io(std::io::Error::other(
+            "reset"
+        ))));
+        assert!(!store_unreachable(&sqlx::Error::RowNotFound));
+        assert!(!store_unreachable(&sqlx::Error::ColumnNotFound("x".into())));
+        for code in [
+            "08000", "08003", "08006", "08P01", "57P01", "57P02", "57P03", "25006",
+        ] {
+            assert!(unreachable_code(code), "{code}");
+        }
+        // a statement's own failures: a timeout, a deadlock, a serialization failure, a lock not available, a constraint
+        for code in [
+            "57014", "40P01", "40001", "55P03", "23505", "25001", "XX000",
+        ] {
+            assert!(!unreachable_code(code), "{code}");
+        }
+    }
 
     #[test]
     fn the_wait_slots_are_a_quarter_of_the_pool_and_never_none() {

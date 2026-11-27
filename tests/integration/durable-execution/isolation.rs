@@ -403,7 +403,8 @@ async fn roles_gate_every_run_operation() {
                     languages: vec![],
                     pools: vec![],
                     max_inflight: 1,
-                    protocol_version: "1".into()
+                    protocol_version: "1".into(),
+                    declines_acknowledgement: false,
                 }
             )
             .await,

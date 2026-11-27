@@ -181,6 +181,7 @@ fn caps(activities: &[&str], offer: &str) -> Capabilities {
         pools: Vec::new(),
         max_inflight: 8,
         protocol_version: offer.into(),
+        declines_acknowledgement: false,
     }
 }
 

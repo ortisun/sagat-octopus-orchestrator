@@ -260,7 +260,9 @@ Rules (D1034, G1607):
    `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed unconditionally by every process of a build that replays every cause of
    `step.lease_withdrawn`, `NOT_ACKNOWLEDGED` of protocol 1.8 included, and whose engine serves no capability call while its
    registry is silent; activated only after `lease-withdrawal-v1` is recorded for both kinds, and a replay floor once a
-   journal holds a `NOT_ACKNOWLEDGED` withdrawal: D006-059 request (9), D006-096, ADR-0099).
+   journal holds a `NOT_ACKNOWLEDGED` withdrawal: D006-059 request (9), D006-096, ADR-0099), `delivery-acknowledgement-v1`
+   (006, `EXECUTION_ENGINE`; listed by every engine of the build of protocol 1.8, by none before it; recorded only after
+   `lease-withdrawal-v2` and while no registered process lacks it, which a trigger enforces: ADR-0099 decision 10, D006-104).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding
 control-plane rows or capabilities to it would distort the shard-share computation of ADR-0020.

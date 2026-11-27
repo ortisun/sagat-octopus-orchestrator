@@ -1219,15 +1219,16 @@ async fn the_functions_are_security_definer_with_a_fixed_search_path_and_the_liv
           WHERE proname IN ('instance_register', 'instance_heartbeat', 'instance_deregister', \
                             'platform_requirement_lock', 'platform_requirement_activate', 'platform_requirement_remove', \
                             'lease_withdrawal_required', 'platform_capability_census', \
-                            'platform_requirements_replay_floor_guard', 'instance_heartbeat_reporting_change')",
+                            'platform_requirements_replay_floor_guard', 'instance_heartbeat_reporting_change', \
+                            'delivery_acknowledgement_required', 'platform_requirements_delivery_acknowledgement_guard')",
     )
     .fetch_all(&r.db.pool)
     .await
     .expect("functions");
     // the two of the lease withdrawal too (feature 006, D006-093: security round 4 Nit 3), and the replay-floor guard,
-    // rewritten in place to run as its owner (Task 006-070, decision D006-095), and the beat that reports a change in
-    // progress (Task 006-072, decision D006-098)
-    assert_eq!(rows.len(), 10);
+    // rewritten in place to run as its owner (Task 006-070, decision D006-095), the beat that reports a change in
+    // progress (Task 006-072, decision D006-098), and the two of delivery acknowledgement (Task 006-046, decision D006-104)
+    assert_eq!(rows.len(), 12);
     for row in &rows {
         let name: String = row.get("proname");
         assert!(row.get::<bool, _>("prosecdef"), "{name} runs as its owner");

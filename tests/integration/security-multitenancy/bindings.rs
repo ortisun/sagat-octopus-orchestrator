@@ -21,6 +21,7 @@ fn caps(activities: &[&str]) -> Capabilities {
         pools: vec![],
         max_inflight: 10,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     }
 }
 
@@ -623,6 +624,7 @@ async fn the_store_refuses_a_session_that_the_binding_no_longer_covers() {
         pools: vec![],
         max_inflight: 10,
         accepted_protocol_minor: 0,
+        declines_acknowledgement: false,
         ttl: std::time::Duration::from_secs(60),
         tenant_limit: 1000,
     };

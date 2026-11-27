@@ -245,13 +245,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             );
             sqlx::raw_sql("DROP TRIGGER refuse_result_audit ON audit_records; DROP FUNCTION refuse_result_audit();").execute(&p.api.db.pool).await.unwrap();
         }
-        assert!(
-            worker
-                .write_blob(&lease, header(), &leak, 65536)
-                .await
-                .is_err()
-        );
-        assert_eq!(p.status(&run).await, expected);
+        // the refusal is kept, so that a run left in another state says what the write was answered (G006-057)
+        let refused = worker.write_blob(&lease, header(), &leak, 65536).await;
+        assert!(refused.is_err(), "{expected}: {refused:?}");
+        assert_eq!(p.status(&run).await, expected, "{refused:?}");
     }
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
         .fetch_one(&p.api.db.pool)

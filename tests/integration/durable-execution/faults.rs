@@ -580,6 +580,7 @@ async fn register_with_retry(w: &World, index: u32) -> Session {
             pools: vec![],
             max_inflight: 50,
             protocol_version: "1".into(),
+            declines_acknowledgement: false,
         };
         if let Ok(registered) = w
             .workers

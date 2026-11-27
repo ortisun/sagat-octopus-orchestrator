@@ -377,6 +377,7 @@ async fn a_tenant_holds_a_bounded_number_of_worker_sessions_and_a_reconnect_is_n
         pools: vec![],
         max_inflight: 4,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     };
     let other_identity = w.member("worker-2", Role::Worker).await;
     w.bind_everything(&other_identity).await;
@@ -416,6 +417,7 @@ async fn worker_registration_reconnect_and_session_renewal_survive_a_full_conten
         pools: vec!["primary".into()],
         max_inflight: 4,
         protocol_version: "1".into(),
+        declines_acknowledgement: false,
     };
     let first = w
         .workers

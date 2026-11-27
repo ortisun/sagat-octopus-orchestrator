@@ -264,6 +264,8 @@ impl Runner {
                     pools: vec![],
                     max_inflight,
                     protocol_version: "1.6".into(),
+                    // an internal runner keeps its minor and is never marked (ADR-0099 decision 11)
+                    declines_acknowledgement: false,
                 }),
             })
             .await

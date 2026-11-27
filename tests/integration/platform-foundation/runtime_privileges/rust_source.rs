@@ -480,6 +480,11 @@ pub fn is_statement(text: &str) -> bool {
     if verb && rest.starts_with(char::is_whitespace) {
         return true;
     }
+    // Transaction control alone, the whole literal and nothing after it (security review round 2 of Task 006-049): a
+    // `BEGIN; UPDATE ...` stays unmodelled and fails the audit, so no allowance of a first word can excuse what follows it.
+    if matches!(text.trim(), "BEGIN" | "COMMIT" | "ROLLBACK") {
+        return true;
+    }
     // Session control, which needs no privilege; matched on the whole opening so prose such as
     // "set SAGAT_STUDIO_DIR ..." is not mistaken for a statement.
     let opening = text.trim_start().to_ascii_uppercase();
@@ -522,16 +527,19 @@ const UNMODELLED_VERBS: &[&str] = &[
     "DEALLOCATE",
     "BEGIN",
     "COMMIT",
+    "ROLLBACK",
     "ABORT",
     "START",
     "VALUES",
     "SECURITY",
 ];
 
-/// A statement kind the audit does not model: an all-capitals opening verb followed by white space.
+/// A statement kind the audit does not model: an all-capitals opening verb followed by white space, or by `;` and what is
+/// glued after it (`BEGIN; UPDATE ...`), which the audit must never let pass for the verb alone.
 fn is_unmodelled(text: &str) -> bool {
     let (word, rest) = first_word(text);
-    UNMODELLED_VERBS.contains(&word) && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+    UNMODELLED_VERBS.contains(&word)
+        && (rest.is_empty() || rest.starts_with(char::is_whitespace) || rest.starts_with(';'))
 }
 
 /// A literal that is not a statement but would be dangerous if it were glued to one.
@@ -670,6 +678,25 @@ pub fn extract_with_macros(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transaction_control_alone_is_a_statement_and_anything_after_it_is_not() {
+        for control in ["BEGIN", "COMMIT", "ROLLBACK", " COMMIT "] {
+            assert!(is_statement(control), "{control}");
+        }
+        for glued in [
+            "BEGIN; UPDATE steps SET status = 'READY'",
+            "COMMIT; DELETE FROM runs",
+        ] {
+            assert!(!is_statement(glued), "{glued}");
+            assert!(
+                is_unmodelled(glued),
+                "{glued} stays unmodelled and fails the audit"
+            );
+        }
+        assert!(!is_statement("ROLLBACK; DELETE FROM runs"));
+        assert!(is_unmodelled("ROLLBACK; DELETE FROM runs"));
+    }
 
     #[test]
     fn a_continued_literal_is_one_statement_without_the_indentation() {
@@ -943,10 +970,11 @@ fn child() { q(concat!("SELECT id FROM steps WHERE true ", policy!(), "ORDER BY 
     #[test]
     fn statements_the_audit_does_not_model_are_reported_not_ignored() {
         let found = extract(
-            "fn f() { q(\"LOCK TABLE runs IN SHARE MODE\"); q(\"Create the thing\"); q(\"begin\"); q(\"COMMIT\"); }",
+            "fn f() { q(\"LOCK TABLE runs IN SHARE MODE\"); q(\"Create the thing\"); q(\"begin\"); q(\"COMMIT AND CHAIN\"); }",
         );
         let kinds: Vec<_> = found.unmodelled.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(kinds, ["LOCK TABLE runs IN SHARE MODE", "COMMIT"]);
+        // transaction control alone is a statement that needs no privilege; with anything after it, it is reported
+        assert_eq!(kinds, ["LOCK TABLE runs IN SHARE MODE", "COMMIT AND CHAIN"]);
     }
 
     #[test]

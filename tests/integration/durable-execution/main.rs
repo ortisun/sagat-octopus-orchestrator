@@ -4,6 +4,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod acknowledgement;
 mod activity_locking;
 mod children;
 mod concurrency;
@@ -12,6 +13,7 @@ mod faults;
 mod flows;
 mod hardening;
 mod isolation;
+mod lease_marks;
 mod nats;
 mod outbox;
 mod routing;

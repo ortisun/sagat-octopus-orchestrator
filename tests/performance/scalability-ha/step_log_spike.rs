@@ -2033,6 +2033,7 @@ pub async fn run_row(
                         pools: vec![],
                         max_inflight: 100,
                         protocol_version: "1.5".into(),
+                        declines_acknowledgement: false,
                     },
                 )
                 .await

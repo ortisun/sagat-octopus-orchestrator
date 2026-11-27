@@ -301,6 +301,7 @@ async fn connection_kills_while_a_binding_is_replaced_never_leave_a_session_it_d
             pools: vec![],
             max_inflight: 4,
             protocol_version: "1".into(),
+            declines_acknowledgement: false,
         };
         let _ = w.workers.register(&who, "payments", "churn", &caps).await;
     }

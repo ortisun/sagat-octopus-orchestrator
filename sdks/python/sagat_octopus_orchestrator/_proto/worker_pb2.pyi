@@ -66,6 +66,14 @@ class StepLogStopReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     STEP_LOG_STOP_REASON_REMOVED: _ClassVar[StepLogStopReason]
     STEP_LOG_STOP_REASON_CAPTURE_OFF: _ClassVar[StepLogStopReason]
     STEP_LOG_STOP_REASON_SESSION: _ClassVar[StepLogStopReason]
+
+class AcknowledgementVerdict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED: _ClassVar[AcknowledgementVerdict]
+    ACKNOWLEDGEMENT_VERDICT_ACKNOWLEDGED: _ClassVar[AcknowledgementVerdict]
+    ACKNOWLEDGEMENT_VERDICT_NOT_HELD: _ClassVar[AcknowledgementVerdict]
+    ACKNOWLEDGEMENT_VERDICT_CANCELLED: _ClassVar[AcknowledgementVerdict]
+    ACKNOWLEDGEMENT_VERDICT_RETRY: _ClassVar[AcknowledgementVerdict]
 DATABASE_OPERATION_UNSPECIFIED: DatabaseOperationKind
 DATABASE_QUERY: DatabaseOperationKind
 DATABASE_EXECUTE: DatabaseOperationKind
@@ -102,20 +110,27 @@ STEP_LOG_STOP_REASON_AUTHORITY: StepLogStopReason
 STEP_LOG_STOP_REASON_REMOVED: StepLogStopReason
 STEP_LOG_STOP_REASON_CAPTURE_OFF: StepLogStopReason
 STEP_LOG_STOP_REASON_SESSION: StepLogStopReason
+ACKNOWLEDGEMENT_VERDICT_UNSPECIFIED: AcknowledgementVerdict
+ACKNOWLEDGEMENT_VERDICT_ACKNOWLEDGED: AcknowledgementVerdict
+ACKNOWLEDGEMENT_VERDICT_NOT_HELD: AcknowledgementVerdict
+ACKNOWLEDGEMENT_VERDICT_CANCELLED: AcknowledgementVerdict
+ACKNOWLEDGEMENT_VERDICT_RETRY: AcknowledgementVerdict
 
 class WorkerCapabilities(_message.Message):
-    __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version")
+    __slots__ = ("languages", "activities", "pools", "max_inflight", "protocol_version", "declines_acknowledgement")
     LANGUAGES_FIELD_NUMBER: _ClassVar[int]
     ACTIVITIES_FIELD_NUMBER: _ClassVar[int]
     POOLS_FIELD_NUMBER: _ClassVar[int]
     MAX_INFLIGHT_FIELD_NUMBER: _ClassVar[int]
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
+    DECLINES_ACKNOWLEDGEMENT_FIELD_NUMBER: _ClassVar[int]
     languages: _containers.RepeatedScalarFieldContainer[str]
     activities: _containers.RepeatedScalarFieldContainer[str]
     pools: _containers.RepeatedScalarFieldContainer[str]
     max_inflight: int
     protocol_version: str
-    def __init__(self, languages: _Optional[_Iterable[str]] = ..., activities: _Optional[_Iterable[str]] = ..., pools: _Optional[_Iterable[str]] = ..., max_inflight: _Optional[int] = ..., protocol_version: _Optional[str] = ...) -> None: ...
+    declines_acknowledgement: bool
+    def __init__(self, languages: _Optional[_Iterable[str]] = ..., activities: _Optional[_Iterable[str]] = ..., pools: _Optional[_Iterable[str]] = ..., max_inflight: _Optional[int] = ..., protocol_version: _Optional[str] = ..., declines_acknowledgement: _Optional[bool] = ...) -> None: ...
 
 class RegisterWorkerRequest(_message.Message):
     __slots__ = ("worker_name", "namespace", "capabilities")
@@ -166,7 +181,7 @@ class ExecutionInstanceIdentity(_message.Message):
     def __init__(self, instance_path: _Optional[_Iterable[_Union[ScopePathSegment, _Mapping]]] = ..., definition_node_id: _Optional[str] = ...) -> None: ...
 
 class TaskLease(_message.Message):
-    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key", "instance", "target_instance")
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "expires_at_epoch_ms", "activity_name", "input_json", "input_blob_ref", "traceparent", "tenant_alias", "idempotency_key", "task_kind", "target_node", "target_idempotency_key", "instance", "target_instance", "acknowledge_before_start", "attempt_deadline_epoch_ms")
     TASK_ID_FIELD_NUMBER: _ClassVar[int]
     RUN_ID_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
@@ -185,6 +200,8 @@ class TaskLease(_message.Message):
     TARGET_IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     INSTANCE_FIELD_NUMBER: _ClassVar[int]
     TARGET_INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    ACKNOWLEDGE_BEFORE_START_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_DEADLINE_EPOCH_MS_FIELD_NUMBER: _ClassVar[int]
     task_id: str
     run_id: str
     step_id: str
@@ -203,7 +220,9 @@ class TaskLease(_message.Message):
     target_idempotency_key: str
     instance: ExecutionInstanceIdentity
     target_instance: ExecutionInstanceIdentity
-    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., target_instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+    acknowledge_before_start: bool
+    attempt_deadline_epoch_ms: int
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., expires_at_epoch_ms: _Optional[int] = ..., activity_name: _Optional[str] = ..., input_json: _Optional[str] = ..., input_blob_ref: _Optional[str] = ..., traceparent: _Optional[str] = ..., tenant_alias: _Optional[str] = ..., idempotency_key: _Optional[str] = ..., task_kind: _Optional[str] = ..., target_node: _Optional[str] = ..., target_idempotency_key: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., target_instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ..., acknowledge_before_start: _Optional[bool] = ..., attempt_deadline_epoch_ms: _Optional[int] = ...) -> None: ...
 
 class PollTasksResponse(_message.Message):
     __slots__ = ("tasks", "retry_after_ms")
@@ -799,3 +818,47 @@ class StepLogPolicy(_message.Message):
     ENABLED_FIELD_NUMBER: _ClassVar[int]
     enabled: bool
     def __init__(self, enabled: _Optional[bool] = ...) -> None: ...
+
+class TaskAcknowledgement(_message.Message):
+    __slots__ = ("task_id", "run_id", "step_id", "attempt", "generation", "lease_token", "instance")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    RUN_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_ID_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    INSTANCE_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    run_id: str
+    step_id: str
+    attempt: int
+    generation: int
+    lease_token: str
+    instance: ExecutionInstanceIdentity
+    def __init__(self, task_id: _Optional[str] = ..., run_id: _Optional[str] = ..., step_id: _Optional[str] = ..., attempt: _Optional[int] = ..., generation: _Optional[int] = ..., lease_token: _Optional[str] = ..., instance: _Optional[_Union[ExecutionInstanceIdentity, _Mapping]] = ...) -> None: ...
+
+class AcknowledgeTasksRequest(_message.Message):
+    __slots__ = ("worker_id", "tasks")
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    TASKS_FIELD_NUMBER: _ClassVar[int]
+    worker_id: str
+    tasks: _containers.RepeatedCompositeFieldContainer[TaskAcknowledgement]
+    def __init__(self, worker_id: _Optional[str] = ..., tasks: _Optional[_Iterable[_Union[TaskAcknowledgement, _Mapping]]] = ...) -> None: ...
+
+class TaskAcknowledgementResult(_message.Message):
+    __slots__ = ("task_id", "verdict", "lease_time_left_ms", "attempt_time_left_ms")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    LEASE_TIME_LEFT_MS_FIELD_NUMBER: _ClassVar[int]
+    ATTEMPT_TIME_LEFT_MS_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    verdict: AcknowledgementVerdict
+    lease_time_left_ms: int
+    attempt_time_left_ms: int
+    def __init__(self, task_id: _Optional[str] = ..., verdict: _Optional[_Union[AcknowledgementVerdict, str]] = ..., lease_time_left_ms: _Optional[int] = ..., attempt_time_left_ms: _Optional[int] = ...) -> None: ...
+
+class AcknowledgeTasksResponse(_message.Message):
+    __slots__ = ("results",)
+    RESULTS_FIELD_NUMBER: _ClassVar[int]
+    results: _containers.RepeatedCompositeFieldContainer[TaskAcknowledgementResult]
+    def __init__(self, results: _Optional[_Iterable[_Union[TaskAcknowledgementResult, _Mapping]]] = ...) -> None: ...

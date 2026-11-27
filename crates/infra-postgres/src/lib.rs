@@ -6,6 +6,7 @@
 
 use sqlx::migrate::Migrator;
 
+pub mod acknowledgement;
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
@@ -84,6 +85,8 @@ pub use definitions::{
 /// The scan of the pending resets whose source did not end within the window, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
+#[doc(hidden)]
+pub use execution::lease_marks;
 pub use execution::{PgRunStore, PgRunTx};
 pub use handover_auto::{
     AuditCompleted, AutoActivated, AutoAsk, HANDOVER_ROLE, HandoverDbError,

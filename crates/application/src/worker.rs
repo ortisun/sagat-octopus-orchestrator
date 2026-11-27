@@ -8,6 +8,8 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+pub mod acknowledgement;
+mod binding_checks;
 mod claim_counters;
 mod database;
 mod lake_complete;
@@ -55,9 +57,10 @@ use crate::definitions::{DefinitionStore, Idempotency};
 use crate::entropy::{Entropy, Token};
 use crate::error::{AppError, StoreError};
 use crate::execution::{
-    Actor, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseRenewal,
-    MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, PoolCheck,
-    ReportedLease, RunTx, instance_compensation_key, instance_reconciliation_key, instance_step_id,
+    Actor, ClaimMark, Effects, Engine, EngineError, ExpressionEvaluator, LeaseGrant, LeaseMarking,
+    LeaseRenewal, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES, MarkOutcome, MarkSkip,
+    PathExecutionStore, PathExecutionTx, PoolCheck, ReportedLease, RunTx,
+    instance_compensation_key, instance_reconciliation_key, instance_step_id,
 };
 use crate::quotas::QuotaLookup;
 use crate::runs::{Lock, RunStore, execution_error};
@@ -86,24 +89,51 @@ pub const DATABASE_PROTOCOL_MINOR: u32 = 6;
 /// accepted at this minor or later.
 pub const STEP_LOG_PROTOCOL_MINOR: u32 = 7;
 
-/// The newest minor this session may negotiate. Scoped identity (1.5) needs a store that proves the
-/// scoped claim and report path; the managed database minor (1.6) is a superset of 1.5 for ordinary
-/// workers, so it needs both proofs. The dedicated database runner only ever handles root work, so
-/// it reaches 1.6 on a store that proves the database path alone. Step logs (1.7) are a superset of 1.6 and need a
-/// third proof, the store of step logs; they are offered to an ordinary worker only: the database runner and the
-/// script runner keep 1.6, since the ingest refuses their batches (design 041 section 2, P1) and a minor whose calls
-/// a role is always refused is not offered to it (decision D041-149).
-fn protocol_ceiling(role: Role, scoped: bool, database: bool, step_logs: bool) -> u32 {
+/// Delivery acknowledgement (feature 006, ADR-0099): the minor that marks a lease provisional until its host acknowledges
+/// it, and that reserves `TASK_NOT_STARTED` for the host (decision D006-061). Negotiated only once the compiled ceiling,
+/// [`PROTOCOL_MINOR`], reaches it (Task 006-057) and the store proves the paths of 1.8.
+pub const DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR: u32 = HAND_BACK_PROTOCOL_MINOR;
+
+/// What a storage adapter proves it serves, each the precondition of a minor (minors are cumulative proofs, decision
+/// D006-041).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoreProofs {
+    /// The scoped claim and report path (1.5).
+    scoped: bool,
+    /// The managed database path (1.6).
+    database: bool,
+    /// The store of step logs (1.7, design 041).
+    step_logs: bool,
+    /// The paths of delivery acknowledgement (1.8): the marks, the acknowledgement, the capability record and the
+    /// withdrawals of a marked lease.
+    delivery_acknowledgement: bool,
+}
+
+/// The newest minor this session may negotiate, never above `compiled` (this build's [`PROTOCOL_MINOR`]). Scoped
+/// identity (1.5) needs a store that proves the scoped claim and report path; the managed database minor (1.6) is a
+/// superset of 1.5 for ordinary workers, so it needs both proofs. The dedicated database runner only ever handles root
+/// work, so it reaches 1.6 on a store that proves the database path alone, and it stays there (ADR-0099 decision 11).
+/// Step logs (1.7) are a superset of 1.6 and need a third proof, the store of step logs; they are offered to an ordinary
+/// worker only: the database runner and the script runner keep 1.6, since the ingest refuses their batches (design 041
+/// section 2, P1) and a minor whose calls a role is always refused is not offered to it (decision D041-149). Delivery
+/// acknowledgement (1.8) is answered to an ordinary worker when 1.7 is and the store proves it (decisions D006-105 and
+/// D006-117): the minors are cumulative, so neither runner reaches it.
+fn protocol_ceiling(role: Role, proofs: StoreProofs, compiled: u32) -> u32 {
     let machine_runner = matches!(role, Role::DatabaseRunner | Role::Runner);
-    if database && scoped && step_logs && !machine_runner {
-        STEP_LOG_PROTOCOL_MINOR
-    } else if database && (scoped || role == Role::DatabaseRunner) {
+    let proven = if proofs.database && proofs.scoped && proofs.step_logs && !machine_runner {
+        if proofs.delivery_acknowledgement {
+            DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
+        } else {
+            STEP_LOG_PROTOCOL_MINOR
+        }
+    } else if proofs.database && (proofs.scoped || role == Role::DatabaseRunner) {
         DATABASE_PROTOCOL_MINOR
-    } else if scoped {
+    } else if proofs.scoped {
         SCOPED_PROTOCOL_MINOR
     } else {
         ROOT_PROTOCOL_MINOR
-    }
+    };
+    proven.min(compiled)
 }
 /// Streaming blob references first became safe to hand to workers in protocol 1.3.
 pub const BLOB_PROTOCOL_MINOR: u32 = 3;
@@ -260,6 +290,9 @@ pub struct Capabilities {
     pub pools: Vec<String>,
     pub max_inflight: u32,
     pub protocol_version: String,
+    /// The host asks for no flagged lease (protocol 1.8, `WorkerCapabilities.declines_acknowledgement`): stored on the
+    /// session from each registration, so one without it clears it (decision D006-105).
+    pub declines_acknowledgement: bool,
 }
 
 /// A worker session as stored.
@@ -277,6 +310,9 @@ pub struct SessionRecord {
     pub expires_at: OffsetDateTime,
     /// Its identity is being drained in this namespace: it is given no new work.
     pub draining: bool,
+    /// What its last registration said: the host asks for no flagged lease (protocol 1.8). Read by the claim, which
+    /// marks no lease of a declining session (`declined`).
+    pub declines_acknowledgement: bool,
 }
 
 /// A session about to be created. Only the hash of the token is stored.
@@ -293,6 +329,8 @@ pub struct NewSession {
     pub pools: Vec<String>,
     pub max_inflight: u32,
     pub accepted_protocol_minor: u32,
+    /// Whether the host declines acknowledgement: the upsert writes it on insert and on replacement alike.
+    pub declines_acknowledgement: bool,
     pub ttl: Duration,
     /// Live sessions the tenant may hold (a quota), judged atomically with the insert.
     pub tenant_limit: u64,
@@ -314,6 +352,13 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// Whether this adapter stores step logs (design 041, protocol 1.7): the store of `AppendStepLogs` and of a
     /// report's carry. False by default, so that an adapter that has not proven the storage keeps workers at 1.6.
     fn supports_step_log_protocol(&self) -> bool {
+        false
+    }
+
+    /// Whether this adapter serves every store path of delivery acknowledgement (protocol 1.8): the marks the claim
+    /// writes, the acknowledgement, the capability record and the withdrawals of a marked lease. A constant of the
+    /// adapter; without it no session negotiates 1.8 whatever the compiled ceiling (decision D006-105).
+    fn supports_delivery_acknowledgement(&self) -> bool {
         false
     }
 
@@ -445,6 +490,13 @@ pub struct ClaimedTask {
     /// For a compensation or a reconciliation: the forward step it is about, and the idempotency
     /// key that step's own attempts carried, which is what identifies the effect at the provider.
     pub target: Option<TaskTarget>,
+    /// What the claim marked (protocol 1.8, Task 006-047): `Provisional` sets `acknowledge_before_start` on the lease.
+    /// Counted once the claim's transaction commits, never before. `None`: the store wrote no mark (an adapter without
+    /// them).
+    pub mark: Option<MarkOutcome>,
+    /// The attempt deadline of a provisional lease, when it comes before its expiry (`attempt_deadline_epoch_ms`); the
+    /// stored expiry is not shortened.
+    pub attempt_deadline: Option<OffsetDateTime>,
 }
 
 /// What a task is for.
@@ -475,6 +527,12 @@ pub struct TaskTarget {
 }
 
 impl ClaimedTask {
+    /// The lease is provisional until its host acknowledges it (`acknowledge_before_start`, protocol 1.8).
+    #[must_use]
+    pub fn acknowledge_before_start(&self) -> bool {
+        self.mark == Some(MarkOutcome::Provisional)
+    }
+
     /// The legacy identifier a worker echoes back: `run/node/generation`.
     /// Protocol 1.5 carries the complete logical identity in the separate `instance` field.
     #[must_use]
@@ -545,6 +603,25 @@ pub(crate) async fn roll_back_for_a_gone_consumer(
         metrics::counter!("worker_claim_skipped_total", "reason" => "consumer_gone").increment(1);
     }
     gone
+}
+
+/// Counts what the claims of `tasks` marked (protocol 1.8): `worker_lease_marks_total` for a provisional lease, and
+/// `worker_lease_marks_skipped_total{reason}` for a lease of a session at 1.8 or later that was not. Called only after the
+/// claim's transaction committed, so a transaction rolled back for a consumer gone before its commit counts nothing (decision
+/// D006-092).
+pub(crate) fn count_marks(tasks: &[ClaimedTask]) {
+    for task in tasks {
+        match task.mark {
+            Some(MarkOutcome::Provisional) => {
+                metrics::counter!("worker_lease_marks_total").increment(1)
+            }
+            Some(MarkOutcome::Skipped(reason)) => {
+                metrics::counter!("worker_lease_marks_skipped_total", "reason" => reason.as_str())
+                    .increment(1);
+            }
+            Some(MarkOutcome::Unreserved) | None => {}
+        }
+    }
 }
 
 /// A claim whose consumer never goes away: [`WorkerService::poll`].
@@ -681,7 +758,8 @@ pub struct WorkerService<S, C, E, R> {
     capability_gate: Option<Arc<crate::instances::ServingGate>>,
     /// `SAGAT_LEASE_WITHDRAWAL=off`: this process writes no new withdrawal (decision D006-032).
     lease_withdrawal_disabled: bool,
-    /// The highest session minor a hand-back is judged by: this build's own ceiling (ADR-0099 decision 9).
+    /// The highest session minor a lease is judged by, at its claim (the marks of protocol 1.8, Task 006-047) and at its
+    /// hand-back: this build's own ceiling (ADR-0099 decision 9). A session stored above it is read at it.
     hand_back_ceiling: u32,
 }
 
@@ -857,9 +935,13 @@ where
         principal.authorize(Permission::WorkerExecute)?;
         let server_minor = protocol_ceiling(
             principal.role(),
-            self.store.supports_scoped_worker_protocol(),
-            self.store.supports_database_worker_protocol(),
-            self.store.supports_step_log_protocol(),
+            StoreProofs {
+                scoped: self.store.supports_scoped_worker_protocol(),
+                database: self.store.supports_database_worker_protocol(),
+                step_logs: self.store.supports_step_log_protocol(),
+                delivery_acknowledgement: self.store.supports_delivery_acknowledgement(),
+            },
+            PROTOCOL_MINOR,
         );
         let Some((accepted_protocol_version, accepted_protocol_minor)) =
             negotiate_protocol_details(&capabilities.protocol_version, server_minor)
@@ -993,6 +1075,7 @@ where
                 pools: dedup(&capabilities.pools),
                 max_inflight: capabilities.max_inflight,
                 accepted_protocol_minor,
+                declines_acknowledgement: capabilities.declines_acknowledgement,
                 ttl,
                 tenant_limit,
             })
@@ -1610,6 +1693,8 @@ where
             return Ok(Vec::new());
         }
         tx.commit().await?;
+        // the marks are counted once they are durable: a transaction rolled back above counts nothing (D006-092)
+        count_marks(&leased);
         // A failed transaction contributes neither leases nor bytes to this response.
         *bytes += run_bytes;
         Ok(leased)
@@ -1801,6 +1886,7 @@ where
             worker_id: session.id.to_string(),
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
+            marking: self.lease_marking(session),
         });
         // A lake write that takes the result a SQL step retained reads it for the run: audited once with the lease, as reading it through
         // the API is, naming the node, the write, its connection and who started the run, and no value (D035-145). The lease is the one place
@@ -1883,6 +1969,7 @@ where
             self.task_identity(template, data, &info, instance)?;
         let run_id = info.run_id;
         let version = info.version_id;
+        let mark = tx.claim_mark(instance);
         Ok(ClaimedTask {
             run_id,
             step_id: instance_step_id(version, run_id, instance),
@@ -1897,7 +1984,38 @@ where
             trace_id: info.trace_id,
             kind,
             target,
+            mark: mark.map(|mark| mark.outcome),
+            attempt_deadline: mark.as_ref().and_then(ClaimMark::attempt_deadline),
         })
+    }
+
+    /// What the claim of a lease for `session` asks its statement to mark (protocol 1.8, Task 006-047, decision D006-106).
+    /// A session is judged at this build's ceiling, so no lease is reserved before 1.8 negotiates; the engine's reasons come
+    /// from the requirements as its gate last read them, its switch and the session's word.
+    pub(crate) fn lease_marking(&self, session: &SessionRecord) -> LeaseMarking {
+        if session.accepted_protocol_minor.min(self.hand_back_ceiling)
+            < DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
+        {
+            return LeaseMarking::Unreserved;
+        }
+        let gate = self.lease_withdrawal.as_deref();
+        let requires = |capability, kinds: &[crate::instances::InstanceKind]| {
+            gate.is_some_and(|gate| gate.requires(capability, kinds))
+        };
+        LeaseMarking::Reserved {
+            skipped: MarkSkip::of_engine(
+                requires(
+                    crate::instances::Capability::DeliveryAcknowledgementV1,
+                    &[crate::instances::InstanceKind::ExecutionEngine],
+                ),
+                requires(
+                    crate::instances::Capability::LeaseWithdrawalV2,
+                    &crate::instances::InstanceKind::ALL,
+                ),
+                !self.lease_withdrawal_disabled,
+                session.declines_acknowledgement,
+            ),
+        }
     }
 
     fn task_template(
@@ -2972,17 +3090,28 @@ where
         {
             return Err(AppError::NotBound);
         }
-        self.ensure_activity_bound(principal, tx, task).await?;
-        if !managed
-            && !tx
-                .current_worker_authorized(principal.subject().as_str())
-                .await?
-        {
-            return Err(AppError::Forbidden {
-                permission: Permission::WorkerExecute,
-            });
+        if managed {
+            // a database runner is no member that executes work: its authority is the executor's ownership above
+            return self.ensure_activity_bound(principal, tx, task).await;
         }
-        Ok(())
+        let activity = {
+            let (def, _) = tx.parts();
+            match def
+                .node_for_instance(task.instance)
+                .map(sagat_domain::workflow::Node::kind)
+            {
+                Some(NodeKind::Activity { activity, .. }) => Some(activity.to_string()),
+                _ => None,
+            }
+        };
+        binding_checks::refusal(
+            binding_checks::judge_binding(
+                &mut binding_checks::RunBinding(tx),
+                principal.subject().as_str(),
+                activity.as_slice(),
+            )
+            .await,
+        )
     }
 
     async fn ensure_activity_bound<Tx: RunTx>(
@@ -3295,30 +3424,47 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR, SCOPED_PROTOCOL_MINOR, TaskRef, blob_report_identity,
-        json_escaped, negotiate_protocol, negotiate_protocol_details, report_scope,
-        require_supported_task, root_task_id,
+        DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR, PROTOCOL_MINOR, ROOT_PROTOCOL_MINOR,
+        SCOPED_PROTOCOL_MINOR, StoreProofs, TaskRef, blob_report_identity, json_escaped,
+        negotiate_protocol, negotiate_protocol_details, report_scope, require_supported_task,
+        root_task_id,
     };
+
+    /// The proofs of a store, in the order of the minors they open.
+    const fn proofs(
+        scoped: bool,
+        database: bool,
+        step_logs: bool,
+        delivery_acknowledgement: bool,
+    ) -> StoreProofs {
+        StoreProofs {
+            scoped,
+            database,
+            step_logs,
+            delivery_acknowledgement,
+        }
+    }
 
     #[test]
     fn managed_support_does_not_enable_scoped_protocol_for_ordinary_workers() {
         use sagat_domain::identity::Role;
+        let ceiling = |role, scoped, database, step_logs| {
+            super::protocol_ceiling(
+                role,
+                proofs(scoped, database, step_logs, false),
+                PROTOCOL_MINOR,
+            )
+        };
         for step_logs in [false, true] {
             for role in [Role::Worker, Role::Runner, Role::Admin] {
-                assert_eq!(super::protocol_ceiling(role, false, true, step_logs), 4);
-                assert_eq!(super::protocol_ceiling(role, true, false, step_logs), 5);
+                assert_eq!(ceiling(role, false, true, step_logs), 4);
+                assert_eq!(ceiling(role, true, false, step_logs), 5);
             }
-            assert_eq!(
-                super::protocol_ceiling(Role::DatabaseRunner, false, true, step_logs),
-                6
-            );
-            assert_eq!(
-                super::protocol_ceiling(Role::DatabaseRunner, false, false, step_logs),
-                4
-            );
+            assert_eq!(ceiling(Role::DatabaseRunner, false, true, step_logs), 6);
+            assert_eq!(ceiling(Role::DatabaseRunner, false, false, step_logs), 4);
         }
         for role in [Role::Worker, Role::Runner, Role::Admin] {
-            assert_eq!(super::protocol_ceiling(role, true, true, false), 6);
+            assert_eq!(ceiling(role, true, true, false), 6);
         }
     }
 
@@ -3327,53 +3473,105 @@ mod tests {
     #[test]
     fn step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only() {
         use sagat_domain::identity::Role;
+        let ceiling = |role, scoped, database, step_logs| {
+            super::protocol_ceiling(
+                role,
+                proofs(scoped, database, step_logs, false),
+                PROTOCOL_MINOR,
+            )
+        };
         assert_eq!(PROTOCOL_MINOR, 7);
         assert_eq!(super::STEP_LOG_PROTOCOL_MINOR, 7);
         for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
-            assert_eq!(
-                super::protocol_ceiling(role, true, true, true),
-                7,
-                "{role:?}"
-            );
-            assert_eq!(
-                super::protocol_ceiling(role, false, true, true),
-                4,
-                "{role:?}"
-            );
-            assert_eq!(
-                super::protocol_ceiling(role, true, false, true),
-                5,
-                "{role:?}"
-            );
+            assert_eq!(ceiling(role, true, true, true), 7, "{role:?}");
+            assert_eq!(ceiling(role, false, true, true), 4, "{role:?}");
+            assert_eq!(ceiling(role, true, false, true), 5, "{role:?}");
         }
         for role in [Role::DatabaseRunner, Role::Runner] {
-            assert_eq!(
-                super::protocol_ceiling(role, true, true, true),
-                6,
-                "{role:?}"
-            );
+            assert_eq!(ceiling(role, true, true, true), 6, "{role:?}");
         }
         assert_eq!(
-            negotiate_protocol_details(
-                "1.999",
-                super::protocol_ceiling(Role::Worker, true, true, true)
-            ),
+            negotiate_protocol_details("1.999", ceiling(Role::Worker, true, true, true)),
             Some(("1.7".to_owned(), 7))
         );
         assert_eq!(
-            negotiate_protocol_details(
-                "1.6",
-                super::protocol_ceiling(Role::Worker, true, true, true)
-            ),
+            negotiate_protocol_details("1.6", ceiling(Role::Worker, true, true, true)),
             Some(("1.6".to_owned(), 6)),
             "a worker that offers 1.6 is served at 1.6"
         );
         assert_eq!(
-            negotiate_protocol_details(
-                "1.999",
-                super::protocol_ceiling(Role::DatabaseRunner, true, true, true)
-            ),
+            negotiate_protocol_details("1.999", ceiling(Role::DatabaseRunner, true, true, true)),
             Some(("1.6".to_owned(), 6))
+        );
+    }
+
+    /// Feature 006, Task 006-048 (decisions D006-105 and D006-117): the negotiation that answers 1.8, with the compiled
+    /// ceiling raised in this test only. This build's own ceiling stays below it, so no store's proof makes a session 1.8.
+    #[test]
+    fn delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof()
+    {
+        use sagat_domain::identity::Role;
+        let raised = DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR;
+        for role in [Role::Worker, Role::Admin, Role::Developer, Role::Operator] {
+            // every proof and the raised ceiling: 1.8
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true, true), raised),
+                8
+            );
+            // the proof of 1.8 without the minors below it opens nothing more
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(false, true, true, true), raised),
+                4
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, false, true, true), raised),
+                5
+            );
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, false, true), raised),
+                6
+            );
+            // without the store's proof the raised ceiling stops at 1.7
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true, false), raised),
+                7
+            );
+            // this build's ceiling answers its own minor whatever the store proves
+            assert_eq!(
+                super::protocol_ceiling(role, proofs(true, true, true, true), PROTOCOL_MINOR),
+                PROTOCOL_MINOR
+            );
+        }
+        // the dedicated database runner keeps 1.6 (ADR-0099 decision 11), and so does the script runner, which is not
+        // offered 1.7 (decision D041-149) and so not 1.8, the minors being cumulative (decision D006-117)
+        for runner in [Role::DatabaseRunner, Role::Runner] {
+            assert_eq!(
+                super::protocol_ceiling(runner, proofs(true, true, true, true), raised),
+                6,
+                "{runner:?}"
+            );
+        }
+        assert_eq!(
+            super::protocol_ceiling(
+                Role::DatabaseRunner,
+                proofs(false, true, true, true),
+                raised
+            ),
+            6
+        );
+        // a worker that offers 1.8 is agreed at 1.8 under the raised ceiling and at this build's own below it
+        assert_eq!(
+            negotiate_protocol_details("1.8", raised),
+            Some(("1.8".to_owned(), 8))
+        );
+        assert_eq!(
+            negotiate_protocol_details("1.999", raised),
+            Some(("1.8".to_owned(), 8))
+        );
+        // this build answers its own minor, below 1.8 (the compile-time assert of `withdrawal.rs` keeps it there)
+        assert_eq!(
+            negotiate_protocol("1.8"),
+            Some(format!("1.{PROTOCOL_MINOR}"))
         );
     }
 

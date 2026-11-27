@@ -20,6 +20,7 @@ use sagat_application::error::{AccessDenial, AppError};
 use sagat_application::execution::{ExpressionEvaluator, MAX_PAYLOAD_BYTES, PathExecutionStore};
 use sagat_application::identity::RequestContext;
 use sagat_application::runs::RunStore;
+use sagat_application::worker::acknowledgement::{self, AcknowledgementStore, CallDeadline};
 use sagat_application::worker::{
     BlobCompletionTarget, BlobOutput, Capabilities, ClaimedTask, StepAck, WorkerService,
     WorkerStore,
@@ -584,6 +585,39 @@ where
         Ok(authenticated)
     }
 
+    /// [`Self::authenticate`] for `AcknowledgeTasks` (feature 006, Task 006-049): once the token verified, the lookups run
+    /// under the call's deadline, and a store they do not reach, or a deadline they run past, answers `UNAVAILABLE` with
+    /// `ACKNOWLEDGEMENT_STORE_UNREACHABLE` (the safe direction: it decides no early give-up), counted `store`.
+    pub(crate) async fn authenticate_acknowledgement<T>(
+        &self,
+        request: &Request<T>,
+        deadline: CallDeadline,
+    ) -> Result<Authenticated, Status> {
+        let token = self.bearer(request)?;
+        let authenticated = sagat_api_http::authenticate_bearer_within(
+            &self.core,
+            token,
+            tokio::time::Instant::from_std(deadline.instant()),
+        )
+        .await
+        .map_err(|failure| match failure {
+            sagat_api_http::AuthenticationFailure::Refused(error) => api(&error),
+            sagat_api_http::AuthenticationFailure::LookupsUnavailable(_) => {
+                crate::acknowledgement::handler_failure(
+                    acknowledgement::AcknowledgementFailure::StoreUnreachable,
+                )
+            }
+        })?;
+        let _ = DENIAL.try_with(|note| {
+            *note
+                .principal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                Some(authenticated.session.principal.clone());
+        });
+        Ok(authenticated)
+    }
+
     fn bearer<'a, T>(&self, request: &'a Request<T>) -> Result<&'a str, Status> {
         let mut values = request.metadata().get_all("authorization").iter();
         let (Some(value), None) = (values.next(), values.next()) else {
@@ -618,7 +652,12 @@ where
 impl<St, S, C, E, R> pb::worker_service_server::WorkerService for WorkerGrpc<St, S, C, E, R>
 where
     St: Core,
-    S: RunStore + WorkerStore + DefinitionStore + PathExecutionStore + 'static,
+    S: RunStore
+        + WorkerStore
+        + DefinitionStore
+        + PathExecutionStore
+        + AcknowledgementStore
+        + 'static,
     C: Clock + 'static,
     E: ExpressionEvaluator + 'static,
     R: Entropy + 'static,
@@ -644,6 +683,8 @@ where
                 max_inflight: u32::try_from(wanted.max_inflight)
                     .map_err(|_| invalid("max_inflight must be positive"))?,
                 protocol_version: wanted.protocol_version.clone(),
+                // protocol 1.8: stored on the session from each registration (Task 006-048)
+                declines_acknowledgement: wanted.declines_acknowledgement,
             };
             let registered = self
                 .workers
@@ -1124,6 +1165,110 @@ where
         request: Request<pb::AppendStepLogsRequest>,
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
         self.serve_append_step_logs(request).await
+    }
+    // Protocol 1.8 (delivery acknowledgement, Task 006-049). Served whatever the minor negotiated: before Task 006-057 no lease
+    // is marked, so every task is answered `NOT_HELD` (decision D006-110).
+    async fn acknowledge_tasks(
+        &self,
+        request: Request<pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
+        let deadline = request
+            .extensions()
+            .get::<crate::limits::Arrival>()
+            .map_or_else(
+                || CallDeadline::of_arrival(Instant::now()),
+                |arrival| CallDeadline::of_arrival(arrival.0),
+            );
+        let trace = trace_of(&request);
+        observe(&self.core, "AcknowledgeTasks", trace, async {
+            // a call that waited for a place of its connection until less than one statement timeout is left is not begun
+            // (Task 006-049, decision D006-123): its lookups would end at the deadline and be counted as a store not reached
+            if deadline.left(Instant::now()).is_none_or(|left| {
+                left < sagat_application::worker::acknowledgement::ACKNOWLEDGEMENT_STATEMENT_TIMEOUT
+            }) {
+                return Err(crate::acknowledgement::handler_failure(
+                    acknowledgement::AcknowledgementFailure::Deadline,
+                ));
+            }
+            let auth = self
+                .authenticate_acknowledgement(&request, deadline)
+                .await?;
+            let message = request.get_ref();
+            if !message.worker_id.is_empty() {
+                worker_id(&message.worker_id)?;
+            }
+            let task_ids: Vec<&str> = message.tasks.iter().map(|t| t.task_id.as_str()).collect();
+            acknowledgement::check_request(&task_ids).map_err(invalid)?;
+            let scoped = self.workers.supports_scoped_worker_protocol();
+            let mut attempts = Vec::with_capacity(message.tasks.len());
+            for task in &message.tasks {
+                let mut attempt = Attempt::parse(
+                    &task.task_id,
+                    &task.run_id,
+                    &task.step_id,
+                    task.attempt,
+                    task.generation,
+                    &task.lease_token,
+                )?;
+                attach_instance(&mut attempt, task.instance.as_ref(), scoped)?;
+                attempts.push(attempt);
+            }
+            let tasks: Vec<_> = attempts.iter().map(Attempt::task_ref).collect();
+            let principal = &auth.session.principal;
+            let ctx = RequestContext {
+                trace_id: Some(trace.trace_id().to_string()),
+                span_id: None,
+            };
+            // a binding refusal is audited off the answer path, once per call, whatever the call's status: the call answers
+            // its rows `NOT_HELD`, or fails after it found them
+            let audit_denial = |denial: Option<AccessDenial>| {
+                if let Some(denial) = denial {
+                    drop(sagat_api_http::denial::spawn_audit_access_denied(
+                        &self.core,
+                        principal,
+                        &rpc_name("AcknowledgeTasks"),
+                        denial,
+                        &ctx,
+                    ));
+                }
+            };
+            // the runs addressed with no matching row, checked against the other tenants off the answer path, whatever the
+            // call answers
+            let check_other_tenants = |runs: Vec<sagat_domain::execution::RunId>| {
+                if !runs.is_empty() {
+                    crate::acknowledgement::check_other_tenants(
+                        Arc::clone(&self.workers),
+                        principal.clone(),
+                        runs,
+                        ctx.trace_id.clone(),
+                    );
+                }
+            };
+            let answer = match self
+                .workers
+                .acknowledge_tasks(principal, &tasks, deadline)
+                .await
+            {
+                Ok(answer) => answer,
+                Err(failed) => {
+                    audit_denial(failed.denial);
+                    check_other_tenants(failed.unmatched_runs);
+                    return Err(match failed.failure {
+                        // through `app`, so that `observe` audits a missing permission or a revoked membership as every
+                        // other call does
+                        acknowledgement::AcknowledgementFailure::Refused(error) => app(error),
+                        other => crate::acknowledgement::failure_status(other),
+                    });
+                }
+            };
+            audit_denial(answer.denial);
+            check_other_tenants(answer.unmatched_runs.clone());
+            Ok(crate::acknowledgement::response(
+                &task_ids,
+                &answer.verdicts,
+            ))
+        })
+        .await
     }
     async fn resolve_database(
         &self,
@@ -1771,6 +1916,8 @@ mod identity_tests {
             trace_id: None,
             kind: sagat_application::worker::TaskKind::Forward,
             target: None,
+            mark: None,
+            attempt_deadline: None,
         };
 
         let encoded = lease(&task);
@@ -1816,6 +1963,9 @@ fn lease(task: &ClaimedTask) -> pb::TaskLease {
             .unwrap_or_default(),
         instance,
         target_instance,
+        // protocol 1.8 (Task 006-047): a lease the claim marked provisional, and its attempt deadline when that comes first
+        acknowledge_before_start: task.acknowledge_before_start(),
+        attempt_deadline_epoch_ms: task.attempt_deadline.map_or(0, epoch_ms),
     }
 }
 

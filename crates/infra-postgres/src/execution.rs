@@ -74,6 +74,139 @@ macro_rules! scoped_event_metadata_valid {
                   OR (s.status='FAILED' AND s.output_digest IS NULL AND NOT s.timed_out AND (s.failure_code IS NOT DISTINCT FROM 'EXPRESSION_ERROR' OR s.failure_code IS NOT DISTINCT FROM 'WAIT_TIMED_OUT')) \
                   OR (s.status='CANCELLED' AND s.output_digest IS NULL AND s.routed AND NOT s.timed_out AND s.failure_code IS NULL))))") };
 }
+// Protocol 1.8 (feature 006, `stream-completion.md`, "The marks"; Task 006-047, decision D006-108): the condition under which the
+// reservation of a lease counts, over the step row aliased `s`, in its two named forms. The incarnation is compared by equality,
+// evaluated once per statement as a scalar subquery; a null never counts. `LeaseMarks` of the application is its pure twin.
+macro_rules! lease_claimed_on_this_server {
+    () => {
+        "COALESCE(s.lease_claim_incarnation = (SELECT pg_postmaster_start_time()), false)"
+    };
+}
+// The form without the recording: the acknowledgement's and the gauges'.
+macro_rules! lease_mark_counts {
+    () => {
+        concat!(
+            "COALESCE(s.lease_hand_back_generation = s.generation \
+               AND s.status IN ('LEASED', 'RUNNING') AND ",
+            $crate::execution::lease_claimed_on_this_server!(),
+            ", false)"
+        )
+    };
+}
+// The form with the recording, which the withdrawals read: `$since` is the parameter bound to the `required_since` of
+// `delivery-acknowledgement-v1`; a lease claimed at that instant or before does not count.
+macro_rules! lease_mark_counts_since_recording {
+    ($since:literal) => {
+        concat!(
+            "COALESCE(",
+            $crate::execution::lease_mark_counts!(),
+            " AND s.lease_claimed_at > ",
+            $since,
+            ", false)"
+        )
+    };
+}
+pub(crate) use lease_claimed_on_this_server;
+pub(crate) use lease_mark_counts;
+#[allow(unused_imports)]
+// its first statement is a withdrawal of Task 006-050; the parity test reads it now
+pub(crate) use lease_mark_counts_since_recording;
+
+/// The marks of a lease and the two forms of their condition, for the parity test of `integration_durable_execution` and the
+/// withdrawals' re-read (protocol 1.8, Task 006-047). Over the step row aliased `s`.
+#[doc(hidden)]
+pub mod lease_marks {
+    use sagat_application::error::StoreError;
+    use sagat_application::execution::{LeaseDeadlines, LeaseMarks};
+    use sqlx::postgres::PgRow;
+
+    use crate::identity::{col, corrupt};
+
+    /// Whether the reservation counts, without the recording.
+    pub const COUNTS: &str = lease_mark_counts!();
+    /// Whether it counts for a lease claimed after the recording bound to `$1`.
+    pub const COUNTS_SINCE_RECORDING: &str = lease_mark_counts_since_recording!("$1");
+    /// What [`decode`] reads: the row's values, and whether it was claimed on the server that answers now.
+    pub const COLUMNS: &str = concat!(
+        "s.lease_expires_at, s.attempt_deadline_at, s.status IN ('LEASED', 'RUNNING') AS held, \
+         s.generation, s.lease_hand_back_generation, s.lease_claimed_at, ",
+        lease_claimed_on_this_server!(),
+        " AS claimed_on_this_server"
+    );
+
+    /// The marks of a row read with [`COLUMNS`] (a row that holds a lease's expiry).
+    ///
+    /// # Errors
+    /// A missing column, or a generation below zero.
+    pub fn decode(row: &PgRow) -> Result<LeaseMarks, StoreError> {
+        let generation = |value: i64| u64::try_from(value).map_err(|_| corrupt("generation"));
+        Ok(LeaseMarks {
+            deadlines: LeaseDeadlines {
+                expires_at: col(row, "lease_expires_at")?,
+                attempt_deadline_at: col(row, "attempt_deadline_at")?,
+            },
+            held: col(row, "held")?,
+            generation: generation(col(row, "generation")?)?,
+            hand_back_generation: col::<Option<i64>>(row, "lease_hand_back_generation")?
+                .map(generation)
+                .transpose()?,
+            claimed_at: col(row, "lease_claimed_at")?,
+            claimed_on_this_server: col(row, "claimed_on_this_server")?,
+        })
+    }
+}
+
+/// What the statement that wrote a lease returned of its marks (`provisional`, `skipped`, and the two deadlines), as the
+/// claim asked them with `marking` (Task 006-047). The statement's own reasons (`flagged_before`, `short_deadline`) apply
+/// only when the engine had none.
+pub(crate) fn claim_mark_of(
+    marking: sagat_application::execution::LeaseMarking,
+    row: &PgRow,
+) -> Result<sagat_application::execution::ClaimMark, StoreError> {
+    use sagat_application::execution::{ClaimMark, LeaseMarking, MarkOutcome, MarkSkip};
+    let provisional: bool = col(row, "provisional")?;
+    let outcome = match marking {
+        LeaseMarking::Reserved { skipped: None } if provisional => MarkOutcome::Provisional,
+        LeaseMarking::Reserved { skipped: None } => {
+            let reason: Option<String> = col(row, "skipped")?;
+            MarkOutcome::Skipped(
+                reason
+                    .as_deref()
+                    .and_then(MarkSkip::parse)
+                    .ok_or_else(|| corrupt("the reason a lease was not marked"))?,
+            )
+        }
+        _ if provisional => {
+            return Err(corrupt(
+                "a lease marked provisional without the claim's offer",
+            ));
+        }
+        LeaseMarking::Reserved {
+            skipped: Some(reason),
+        } => MarkOutcome::Skipped(reason),
+        LeaseMarking::Unreserved => MarkOutcome::Unreserved,
+    };
+    Ok(ClaimMark {
+        outcome,
+        deadlines: LeaseDeadlines {
+            expires_at: col(row, "lease_expires_at")?,
+            attempt_deadline_at: col(row, "attempt_deadline_at")?,
+        },
+    })
+}
+
+/// The claim's half of `$34`/`$35` (or `$44`/`$45`): whether the statement writes the reservation, and whether it may mark
+/// the lease provisional.
+pub(crate) fn claim_binds(
+    grant: Option<&sagat_application::execution::LeaseGrant>,
+) -> (bool, bool) {
+    use sagat_application::execution::LeaseMarking;
+    match grant.map(|grant| grant.marking) {
+        Some(LeaseMarking::Reserved { skipped }) => (true, skipped.is_none()),
+        Some(LeaseMarking::Unreserved) | None => (false, false),
+    }
+}
+
 pub(crate) use scoped_control_metadata_empty;
 pub(crate) use scoped_event_metadata_valid;
 pub(crate) use scoped_scheduler_metadata_empty;
@@ -466,6 +599,7 @@ impl PgRunStore {
             lake_enabled: self.lake_enabled,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
+            claim_marks: BTreeMap::new(),
             chain_lock,
             initialize_chain: false,
             cancelled_waits: Vec::new(),
@@ -953,6 +1087,8 @@ pub struct PgPathExecutionTx {
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     signals: Vec<Signal>,
     script_retention: BTreeMap<ExecutionInstanceId, ScriptRetentionPins>,
+    /// What the lease statement of this transaction returned of its marks (protocol 1.8, Task 006-047).
+    claim_marks: BTreeMap<ExecutionInstanceId, sagat_application::execution::ClaimMark>,
 }
 
 impl PgPathExecutionTx {
@@ -1017,6 +1153,7 @@ impl PgPathExecutionTx {
             event_wait_read_states,
             signals: Vec::new(),
             script_retention: BTreeMap::new(),
+            claim_marks: BTreeMap::new(),
         }
     }
 }
@@ -1042,13 +1179,21 @@ async fn current_worker_authorized(
     // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
     // wait for each other until commit.
     crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
-    let role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
-            .bind(tenant.as_uuid())
-            .bind(subject)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_error)?;
+    let role: Option<String> = sqlx::query_scalar(LOCK_MEMBERSHIP)
+        .bind(tenant.as_uuid())
+        .bind(subject)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    membership_executes_work(role)
+}
+
+/// The membership of one subject (`$2`) of a tenant (`$1`), read under the row lock a revocation waits for.
+pub(crate) const LOCK_MEMBERSHIP: &str =
+    "SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])";
+
+/// Whether a membership's role, as [`LOCK_MEMBERSHIP`] read it, is one that executes ordinary work.
+pub(crate) fn membership_executes_work(role: Option<String>) -> Result<bool, StoreError> {
     let Some(role) = role else {
         return Ok(false);
     };
@@ -1540,6 +1685,7 @@ impl RunStore for PgRunStore {
                     lake_enabled: self.lake_enabled,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
+                    claim_marks: BTreeMap::new(),
                     chain_lock: None,
                     initialize_chain: true,
                     cancelled_waits: Vec::new(),
@@ -3856,6 +4002,8 @@ pub struct PgRunTx {
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
     /// Counted when (and only when) the transaction commits.
     signals: Vec<Signal>,
+    /// What each lease statement of this transaction returned of its marks (protocol 1.8, Task 006-047).
+    claim_marks: BTreeMap<ExecutionInstanceId, sagat_application::execution::ClaimMark>,
     chain_lock: Option<LockedChainHead>,
     initialize_chain: bool,
     /// How long each approval request this transaction cancelled had waited, recorded as
@@ -4587,6 +4735,13 @@ impl RunTx for PgRunTx {
             })
         })
         .transpose()
+    }
+
+    fn claim_mark(
+        &self,
+        instance: &ExecutionInstanceId,
+    ) -> Option<sagat_application::execution::ClaimMark> {
+        self.claim_marks.get(instance).copied()
     }
 
     async fn lease_deadlines_instance(
@@ -7132,7 +7287,26 @@ impl PgRunTx {
                     event_type=CASE WHEN $30='waitEvent' THEN $35 ELSE s.event_type END, \
                     correlation_key=CASE WHEN $30='waitEvent' THEN $36 ELSE s.correlation_key END, \
                     event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
-                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
+                    event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END, \
+                    lease_hand_back_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN CASE WHEN $44 THEN $8 END \
+                      ELSE s.lease_hand_back_generation END, \
+                    lease_claimed_at=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN CASE WHEN $44 THEN clock_timestamp() END \
+                      ELSE s.lease_claimed_at END, \
+                    lease_claim_incarnation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 \
+                      THEN CASE WHEN $44 THEN (SELECT pg_postmaster_start_time()) END \
+                      ELSE s.lease_claim_incarnation END, \
+                    lease_offered_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 \
+                      THEN CASE WHEN $44 AND $45 AND s.provisional_withdrawn_attempt IS DISTINCT FROM $7 \
+                                 AND LEAST($20, COALESCE($21, $20)) >= $46 THEN $8 END \
+                      ELSE s.lease_offered_generation END, \
+                    lease_acknowledged_at=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN NULL ELSE s.lease_acknowledged_at END, \
+                    lease_capability_generation=CASE WHEN $19::bytea IS NOT NULL AND $6='LEASED' \
+                      AND s.generation IS DISTINCT FROM $8 THEN NULL ELSE s.lease_capability_generation END \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 AND step_id = $4 \
                AND namespace_id = $5 AND instance_path_nodes = $17 AND instance_path_indices = $18 \
                AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
@@ -7145,7 +7319,11 @@ impl PgRunTx {
               AND s.status=$33 AND s.routed=$34)) \
                AND ($30<>'waitEvent' OR (s.due_at IS NOT DISTINCT FROM $38 AND s.status=$39 AND s.routed=$40 \
                  AND s.event_type IS NOT DISTINCT FROM $41 AND s.correlation_key IS NOT DISTINCT FROM $42 \
-                 AND s.event_since IS NOT DISTINCT FROM $43))",
+                 AND s.event_since IS NOT DISTINCT FROM $43)) \
+             RETURNING s.lease_offered_generation IS NOT DISTINCT FROM s.generation AS provisional, \
+               s.lease_expires_at, s.attempt_deadline_at, \
+               CASE WHEN s.provisional_withdrawn_attempt IS NOT DISTINCT FROM $7 THEN 'flagged_before' \
+                    WHEN LEAST($20, COALESCE($21, $20)) < $46 THEN 'short_deadline' END AS skipped",
         ))
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -7194,12 +7372,19 @@ impl PgRunTx {
         .bind(old_event_type.as_deref())
         .bind(old_event.as_ref().and_then(|read|read.key.as_ref()).map(CorrelationKey::as_str))
         .bind(old_event_since)
-        .execute(&mut *self.tx)
+        .bind(claim_binds(fresh_grant).0)
+        .bind(claim_binds(fresh_grant).1)
+        .bind(micros(sagat_application::execution::MARK_MINIMUM_DEADLINE))
+        .fetch_optional(&mut *self.tx)
         .await
-        .map_err(store_error)?
-        .rows_affected();
-        if updated != 1 {
+        .map_err(store_error)?;
+        let Some(updated) = updated else {
             return Err(corrupt("scoped step identity"));
+        };
+        // what the claim marked, read back from the statement that wrote the lease (Task 006-047)
+        if let Some(grant) = fresh_grant {
+            self.claim_marks
+                .insert(instance.clone(), claim_mark_of(grant.marking, &updated)?);
         }
         if node_kind == "timer" {
             self.timer_read_states
@@ -7434,7 +7619,7 @@ impl PgRunTx {
             return Ok(());
         }
         self.ensure_node_kind(&instance, node_kind).await?;
-        sqlx::query(
+        let written = sqlx::query(
             "UPDATE steps SET \
                 status = $6, attempt = $7, generation = $8, cancel_requested = $9, routed = $10, \
                 condition = $11, timed_out = $12, failure_code = $13, next_attempt_at = $14, \
@@ -7475,9 +7660,38 @@ impl PgRunTx {
                                                  $20 - $31 * interval '1 microsecond') END, \
                 event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
                                         THEN event_scanned_at END, \
+                lease_hand_back_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                                       AND generation IS DISTINCT FROM $8 \
+                                                  THEN CASE WHEN $34 THEN $8 END \
+                                                  ELSE lease_hand_back_generation END, \
+                lease_claimed_at = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                             AND generation IS DISTINCT FROM $8 \
+                                        THEN CASE WHEN $34 THEN clock_timestamp() END \
+                                        ELSE lease_claimed_at END, \
+                lease_claim_incarnation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                                    AND generation IS DISTINCT FROM $8 \
+                                               THEN CASE WHEN $34 THEN (SELECT pg_postmaster_start_time()) END \
+                                               ELSE lease_claim_incarnation END, \
+                lease_offered_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                                     AND generation IS DISTINCT FROM $8 \
+                                                THEN CASE WHEN $34 AND $35 \
+                                                               AND provisional_withdrawn_attempt IS DISTINCT FROM $7 \
+                                                               AND LEAST($23, COALESCE($24, $23)) >= $36 \
+                                                          THEN $8 END \
+                                                ELSE lease_offered_generation END, \
+                lease_acknowledged_at = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                                  AND generation IS DISTINCT FROM $8 \
+                                             THEN NULL ELSE lease_acknowledged_at END, \
+                lease_capability_generation = CASE WHEN $22::bytea IS NOT NULL AND $6 = 'LEASED' \
+                                                        AND generation IS DISTINCT FROM $8 \
+                                                   THEN NULL ELSE lease_capability_generation END, \
                 updated_at = $20, switch_case_id = $33 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
-               AND cardinality(instance_path_nodes) = 0",
+               AND cardinality(instance_path_nodes) = 0 \
+             RETURNING lease_offered_generation IS NOT DISTINCT FROM generation AS provisional, \
+                       lease_expires_at, attempt_deadline_at, \
+                       CASE WHEN provisional_withdrawn_attempt IS NOT DISTINCT FROM $7 THEN 'flagged_before' \
+                            WHEN LEAST($23, COALESCE($24, $23)) < $36 THEN 'short_deadline' END AS skipped",
         )
         .bind(self.info.tenant_id.as_uuid())
         .bind(self.info.run_id.as_uuid())
@@ -7516,9 +7730,17 @@ impl PgRunTx {
         .bind(lookback)
         .bind(reported.map(|r| r.token_hash.clone()))
         .bind(switch_case_id)
-        .execute(&mut *self.tx)
+        .bind(claim_binds(fresh_grant).0)
+        .bind(claim_binds(fresh_grant).1)
+        .bind(micros(sagat_application::execution::MARK_MINIMUM_DEADLINE))
+        .fetch_optional(&mut *self.tx)
         .await
         .map_err(store_error)?;
+        // what the claim marked, read back from the statement that wrote the lease (Task 006-047)
+        if let (Some(grant), Some(row)) = (fresh_grant, written) {
+            self.claim_marks
+                .insert(instance, claim_mark_of(grant.marking, &row)?);
+        }
         Ok(())
     }
 }

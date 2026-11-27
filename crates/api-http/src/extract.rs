@@ -9,6 +9,7 @@ use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
+use sagat_application::error::AppError;
 use sagat_application::identity::{RequestContext, Session};
 use sagat_telemetry::TraceContext;
 use serde::de::DeserializeOwned;
@@ -85,22 +86,96 @@ pub async fn authenticate_bearer_with<St: Core>(
     token: &str,
     budgets: Budgets<'_>,
 ) -> Result<Authenticated, ApiError> {
+    authenticate_bearer_staged(state, token, budgets, None)
+        .await
+        .map_err(|failure| match failure {
+            AuthenticationFailure::Refused(error) => error,
+            // no bound was given, so only a store error ends the lookups here: the ordinary mapping
+            AuthenticationFailure::LookupsUnavailable(error) => ApiError::from(error),
+        })
+}
+
+/// Why an authentication bounded by [`authenticate_bearer_within`] failed: before its token verified, or charged to its
+/// budgets, the ordinary refusal; once it verified, a lookup that found no store or ran out of the time it was given.
+#[derive(Debug)]
+pub enum AuthenticationFailure {
+    /// The token, a budget, the membership or the tenant's concurrency refused the call.
+    Refused(ApiError),
+    /// The token verified and the lookups did not reach the store ([`AppError::Unavailable`] or [`AppError::Internal`]), or
+    /// ran past their bound ([`AppError::Unavailable`]).
+    LookupsUnavailable(AppError),
+}
+
+/// [`authenticate_bearer`] whose lookups, once the token verified, end at `lookups_until` (the deadline of an
+/// acknowledgement, feature 006, Task 006-049: their pool acquisition is bounded by the call's time left). A lookup that
+/// fails with a store error, or that has not ended by `lookups_until`, is [`AuthenticationFailure::LookupsUnavailable`],
+/// which the caller answers as an unreachable store; the token's verification and the budgets are not bounded here and
+/// refuse as they always do.
+///
+/// # Errors
+/// [`AuthenticationFailure`].
+pub async fn authenticate_bearer_within<St: Core>(
+    state: &St,
+    token: &str,
+    lookups_until: tokio::time::Instant,
+) -> Result<Authenticated, AuthenticationFailure> {
+    authenticate_bearer_staged(
+        state,
+        token,
+        Budgets {
+            subject: state.subject_limiter(),
+            tenant: state.tenant_limiter(),
+            scope: ("subject", "tenant"),
+        },
+        Some(lookups_until),
+    )
+    .await
+}
+
+async fn authenticate_bearer_staged<St: Core>(
+    state: &St,
+    token: &str,
+    budgets: Budgets<'_>,
+    lookups_until: Option<tokio::time::Instant>,
+) -> Result<Authenticated, AuthenticationFailure> {
     let (subject_scope, tenant_scope) = budgets.scope;
-    let claims = state.verifier().verify(token).await?;
+    let claims = state
+        .verifier()
+        .verify(token)
+        .await
+        .map_err(|error| AuthenticationFailure::Refused(error.into()))?;
     // Budget per verified subject, before the database is touched: `authenticate` costs two
     // lookups, and a holder of a valid token who is not a member (or names an unknown tenant)
     // would otherwise get them for free, without ever reaching the tenant budget below. Only a
     // token that verified is charged, so an anonymous flood cannot spend anyone's budget.
     if let Err(retry_after) = budgets.subject.check(claims.subject.clone()) {
         metrics::counter!("http_rate_limited_total", "scope" => subject_scope).increment(1);
-        return Err(ApiError::rate_limited(retry_after));
+        return Err(AuthenticationFailure::Refused(ApiError::rate_limited(
+            retry_after,
+        )));
     }
-    let session = state.authenticate(&claims.tenant, &claims.subject).await?;
+    let lookups = state.authenticate(&claims.tenant, &claims.subject);
+    let looked_up = match lookups_until {
+        None => lookups.await,
+        Some(until) => tokio::time::timeout_at(until, lookups)
+            .await
+            .unwrap_or(Err(AppError::Unavailable)),
+    };
+    // a store that is unavailable, or failed in a way that says nothing of the caller, is the store's: the safe direction
+    // for an acknowledgement, which never gives up early on it
+    let session = looked_up.map_err(|error| match error {
+        AppError::Unavailable | AppError::Internal => {
+            AuthenticationFailure::LookupsUnavailable(error)
+        }
+        refused => AuthenticationFailure::Refused(refused.into()),
+    })?;
     // Budget per tenant, charged only to callers that proved who they are: an anonymous flood
     // cannot spend (or be blamed on) a tenant's budget.
     if let Err(retry_after) = budgets.tenant.check(session.principal.tenant_id()) {
         metrics::counter!("http_rate_limited_total", "scope" => tenant_scope).increment(1);
-        return Err(ApiError::rate_limited(retry_after));
+        return Err(AuthenticationFailure::Refused(ApiError::rate_limited(
+            retry_after,
+        )));
     }
     // How many requests of this tenant may be in flight at once: a tenant that parks requests
     // (a stalled upload) can fill only its own share of the global slots.
@@ -109,7 +184,7 @@ pub async fn authenticate_bearer_with<St: Core>(
         .try_acquire(session.principal.tenant_id())
         .map_err(|_| {
             metrics::counter!("http_tenant_concurrency_rejected_total").increment(1);
-            ApiError::rate_limited(Duration::from_secs(1))
+            AuthenticationFailure::Refused(ApiError::rate_limited(Duration::from_secs(1)))
         })?;
     Ok(Authenticated {
         session,

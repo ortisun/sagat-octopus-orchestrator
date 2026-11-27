@@ -75,6 +75,7 @@ BUDGET_SUITES = ("integration_claim_transition_efficiency",)
 LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
 STEP_LOG_SUITES = ("integration_step_logs",)
 STEP_LOG_SERVER_SUITES = STEP_LOG_SUITES + BUDGET_SUITES + ("contract_platform_foundation",)
+ACKNOWLEDGEMENT_SUITES = ("integration_durable_execution", "contract_grpc_durable_execution")
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
     (re.compile(r"sdks/[a-z]+/conformance/"), SDK_SUITES),
@@ -99,6 +100,11 @@ HARNESSES = (
     # records, so a change of it runs the step-log suite as well as the budget it already runs.
     (re.compile(r"crates/application/src/worker(\.rs$|/)|crates/infra-postgres/src/execution(\.rs$|/)"),
      STEP_LOG_SUITES),
+    # The delivery acknowledgement of protocol 1.8 (feature 006, Task 006-049): its modules, each of its own so that its path
+    # names it, and the binding checks it shares with the run transactions select the suites that hold its tests.
+    (re.compile(r"crates/(application/src/worker|infra-postgres/src|api-grpc/src)/acknowledgement\.rs$"
+                r"|crates/application/src/worker/binding_checks\.rs$"),
+     ACKNOWLEDGEMENT_SUITES),
     # The worker protocol and each SDK's capture code: what a worker sends is checked by the server's suite and by the
     # six-language conformance.
     (re.compile(r"specs/001-platform-foundation/contracts/worker\.proto$"

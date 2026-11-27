@@ -172,6 +172,8 @@ impl Dev<'_> {
                     pools: vec![],
                     max_inflight: 8,
                     protocol_version: crate::doctor::WORKER_PROTOCOL.to_owned(),
+                    // an internal runner keeps its minor and is never marked (ADR-0099 decision 11)
+                    declines_acknowledgement: false,
                 }),
             },
         )?;

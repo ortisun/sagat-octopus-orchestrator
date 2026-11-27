@@ -1606,3 +1606,448 @@ one receive call.
   Architecture decision 0099 is not accepted; if the gate fails, the owner chooses between shipping 1.8 as "the code reserved, the flag
   never set", which fixes that meaning of 1.8 for good and moves delivery acknowledgement to a later minor, and releasing it (Decision
   006-057). Asked through the coordinator. **Answered 2026-11-21: "Reserve 1.8 now" (Owner decision 2026-11-21-6).**
+
+### What was decided while building protocol 1.8 (2026-11-26, D006-101 to D006-129, G006-039 and G006-049 to G006-060; G006-040 to G006-048 are the design's)
+
+The server tasks of protocol 1.8, built dormant on `feature/delivery-acknowledgement` in the order of the task list. Each
+decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
+
+- **D006-101 — The contract of 1.8 is published before anything serves it** (Task 006-043). `worker.proto` gains
+  `TaskLease.acknowledge_before_start = 23`, `TaskLease.attempt_deadline_epoch_ms = 24`,
+  `WorkerCapabilities.declines_acknowledgement = 10`, the call `AcknowledgeTasks` with `TaskAcknowledgement`,
+  `AcknowledgeTasksRequest`, `AcknowledgementVerdict` (with `CANCELLED` and `RETRY`), `TaskAcknowledgementResult`
+  (`lease_time_left_ms`, `attempt_time_left_ms`) and `AcknowledgeTasksResponse`, and `TASK_NOT_ACKNOWLEDGED` in the error
+  comment, as `stream-completion.md` ("Wire") gives them. The baseline (`worker.baseline.json`) was regenerated and holds only
+  additions. Every implementation of the generated trait (the server's `WorkerGrpc`, the two test stubs, the two proxies, the
+  database runner's fake and the Rust SDK's test service) answers `UNIMPLEMENTED` until Task 006-049; the server sets the two
+  lease fields to their empty values until Task 006-047, and the database runner, the sandbox runner and the command line
+  register with `declines_acknowledgement = false` and keep their minors (ADR-0099 decision 11). Every message with a field
+  whose name ends in `_token` (eleven: the registration answer, the poll request, the lease, the five fenced reports and
+  capability requests, the blob read request, the step-log batch and the acknowledgement) skips the generated `Debug` in the
+  server, the Rust SDK and its conformance crate, and prints fences and counts only; `crates/api-grpc/tests/token_debug.rs`
+  prints each with a canary token, alone and nested, and fails, from the contract's descriptor, for a message that gains such a
+  field without being covered (the descriptor-driven test of Task 006-052 extends the rule to every lease-token method). The
+  six SDK copies were written by each SDK's own script and are byte-identical to the contract; the Go stubs were regenerated
+  with the pinned plugins (`protoc-gen-go` v1.36.11, `protoc-gen-go-grpc` v1.6.1, `protoc` 36.2, the versions the headers
+  record) and the Python stubs with the pinned `grpcio-tools`; no SDK gained host behaviour. Weighed: one commit per SDK (the
+  copies would differ from the contract between commits, which their byte-equality tests refuse).
+- **G006-039 — Three SDKs' full checks of the contract change ran in CI only.** The byte-equality tests ran locally for Go,
+  Python and .NET and the Rust SDK's whole suite ran; the TypeScript (`npm test`) and Java (`./mvnw -q verify`) suites, and
+  the token canaries of the four SDKs whose host forms come with their own tasks, were left to CI and to Tasks 006-059 to
+  006-064 (the copies were compared byte for byte by hand). Closed by the pull request's CI.
+- **D006-102 — The marks are nine nullable columns of `steps` and one defaulted column of `worker_sessions`** (Task 006-044;
+  migration `20270216000000_delivery_acknowledgement_marks`, stamped after every migration of `develop` and of the open
+  branches, feature 022's included). Each `ADD COLUMN` is nullable or carries a constant default, so the catalog changes and no
+  row is rewritten; no row is backfilled and no `CHECK` constrains a mark (a constraint on a new column scans `steps` under its
+  lock; the assignments are checked statically by Task 006-047 instead, and `withdrawn_lease_token_hash` is written only from
+  a hash the server computed, classified `protected_system` as `reported_lease_token_hash` is). The table-level grants of
+  `sagat_app` cover the columns. The down holds `steps` in SHARE mode and refuses while a `LEASED` step's lease is the one
+  marked provisional (`lease_offered_generation = generation`), the one state a binary without the marks would misread; it
+  then drops the columns. The runtime role reads `pg_postmaster_start_time()`, the claim's incarnation, as the owner reads
+  it. Tested: `the_marks_of_1_8_are_added_and_roll_back_only_while_no_provisional_mark_counts` and
+  `the_runtime_role_reads_the_start_time_of_the_server` (`integration_platform_foundation`), the storage manifest test and
+  the runtime privilege audit. Weighed: a `CHECK` that the marks pair up (a scan of `steps` at migration time, and the pairs
+  are a property of the statements that write them, which the static check of Task 006-047 holds).
+- **G006-049 — That a crash the postmaster recovers keeps `pg_postmaster_start_time()` is recorded, not tested here.** D006-062
+  rests on it (a crash without a restart loses the unwritten journal and keeps the start time, so the acknowledgement and the
+  capability record commit with `synchronous_commit` at least `local`). Provoking that crash means killing a backend of the
+  test server, which every test of the process shares. Closed by the failover drill of Task 006-054 (`infra/dr/drill.sh`),
+  which reads the start time before and after each disaster.
+- **D006-103 — The cause `NOT_ACKNOWLEDGED` needed only its fixture and its reset case** (Task 006-045). The follow-up of
+  pull request #260 had put it in the closed set, the codec and its round trip, the transition and the counter's label
+  (D006-094), and the Studio names the event, not its causes. What the task adds: `a_journal_holding_a_not_acknowledged_withdrawal_replays`
+  in `crates/domain/tests/legacy_replay.rs` (the journal ADR-0099 describes, event by event: the attempt given back, the next
+  lease of the same attempt at the next generation), and `a_reset_copies_a_withdrawal_like_a_lease` over every cause.
+- **D006-104 — The registry knows `delivery-acknowledgement-v1` and keeps the order of the requirements; no process lists
+  it** (Task 006-046; migrations `20270216000100_delivery_acknowledgement_registry` and its validation). The capability joins
+  `Capability::ALL` and the three closed checks (added `NOT VALID`, validated apart; the lists are this branch's, with the
+  follow-up's `lease-withdrawal-v2`, and the down restores the follow-up's). `delivery_acknowledgement_required()` reads the two
+  requirement rows `FOR SHARE` in the order their removals take them (`delivery-acknowledgement-v1`, then
+  `lease-withdrawal-v2`), so a removal waits for a withdrawal in flight and the two cannot deadlock, and returns
+  `lease-withdrawal-v2` as recorded only for both kinds, `delivery-acknowledgement-v1` for engines and its `required_since`. The
+  trigger `platform_requirements_delivery_acknowledgement_guard`, enabled `ALWAYS`, refuses recording
+  `delivery-acknowledgement-v1` before `lease-withdrawal-v2` for both kinds or while any registered process, live or not, lacks
+  `lease-withdrawal-v2`, and removing `lease-withdrawal-v2` while `delivery-acknowledgement-v1` is recorded; it takes the epoch
+  row `FOR UPDATE` itself (hand SQL that did not is serialised there) and refuses outside READ COMMITTED. Both functions run as
+  their owner with the fixed search path; the read is granted to the runtime role. No engine lists the capability and
+  `capability-activate` has no entry for it (Task 006-057). What request (7) and request (9) of D006-059 ask, this build keeps as
+  the follow-up built them (D006-096, D006-098, D006-100); the runbooks name the kinds of each requirement, the removal order,
+  that a wrong order costs only marks, never leaving the owner transaction open, the reasons of the fleet of 1.8 that count a
+  hand-back `lapsed`, and the cost of the window before the activation (round 16). Tested:
+  `the_requirements_read_answers_each_recording`, `the_trigger_keeps_the_order_of_the_two_requirements` and
+  `delivery_acknowledgement_is_known_and_not_activatable` (`integration_schedules_bulk_operations`),
+  `the_registry_of_1_8_rolls_back_only_while_nothing_names_it` (`integration_platform_foundation`), the privilege test of the
+  definer functions and the capability parity tests. Weighed: refusing a recording of `delivery-acknowledgement-v1` for other
+  kinds than engines in the trigger (ADR-0099 says engines only; the entry of Task 006-057 records it so, and a recording by
+  hand for more kinds only refuses more processes, which is safe).
+- **G006-050 — Of the evidence of Task 006-046, what the follow-up of pull request #260 proved is not repeated here.** The
+  silent engine's refusals, the beat against an owner transaction, the activation against a beat that holds the epoch, the
+  floor of `lease-withdrawal-v2`, and the statement timeout of the registry's connection are the tests of D006-098 and D006-100.
+  Not built: the 60 s owner hold across a running engine process and the registry connection failing while the pool works
+  (both need an engine process with two pools; they belong to the fault suite of Task 006-051), and the boundary test with the
+  beat's answer held. Closed by Task 006-051.
+- **D006-105 — The session keeps the host's word on declining, and the negotiation that answers 1.8 is written behind the
+  compiled ceiling** (Task 006-048; delegate, OD-2026-11-24-4). `WorkerCapabilities.declines_acknowledgement` (field 10)
+  reaches `Capabilities`, `NewSession` and `SessionRecord`; the session upsert writes it on the insert and on the replacement
+  alike, so a registration under the same name that does not decline clears it, and `use_session` returns it for the claim of
+  Task 006-047. It is stored as the host sent it at every minor; only the claim of a session judged at 1.8 or later reads it.
+  `protocol_ceiling` now takes what the store proves (the scoped path, the database path and, new,
+  `WorkerStore::supports_delivery_acknowledgement()`, false by default) and the compiled ceiling: it answers
+  `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (8) to an ordinary worker when it would answer the newest minor below it and the
+  store proves the paths of 1.8, never to the dedicated database runner (ADR-0099 decision 11), and never above the compiled
+  `PROTOCOL_MINOR`. On this branch that constant is 6, not the 7 the task text names: design 041's Task 041-7, which serves
+  1.7, has not merged here, so "the newest minor below 1.8" is 1.6 until it does, and the chain becomes 6, 7, 8 with it. The
+  PostgreSQL adapter's proof stays false: it writes the marks (Task 006-047) but serves neither the acknowledgement, the
+  capability record nor the withdrawals of a marked lease yet. Options weighed: (a) the adapter proving 1.8 now, since the
+  compiled clamp keeps every session below it anyway — rejected: the proof would claim paths that do not exist, and the raise
+  of Task 006-057 alone would then offer an incomplete minor; (b) no store proof, the compiled constant alone — rejected:
+  minors are cumulative proofs of the store (Decision 006-041), and a store without the paths of 1.8 (a fake of the tests, an
+  adapter of another database) must never negotiate it; (c), chosen, the proof as a constant of the adapter, turned on by the
+  task that completes its paths. Tested: `delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof`
+  and `managed_support_does_not_enable_scoped_protocol_for_ordinary_workers` (the unit tests of `crates/application/src/worker.rs`,
+  the compiled ceiling raised to 8 in the test only), and
+  `a_registration_that_declines_is_stored_and_a_later_one_that_does_not_clears_it` (`contract_grpc_sdk_multilanguage`).
+- **G006-051 — No task turns the adapter's proof of 1.8 on.** `supports_delivery_acknowledgement()` of the PostgreSQL adapter
+  is false (D006-105); Task 006-057 raises the compiled minor and names no store proof, so after it the server would still
+  answer 1.6 (1.7 once design 041 merges). Closed when Task 006-057, or the last task that builds a store path of 1.8 (Task
+  006-052), turns the constant on with a test that a raised ceiling then answers 8 against the real store.
+- **D006-106 — The claim asks for the marks in the lease it already writes, and counts them after its commit** (Task
+  006-047; delegate, OD-2026-11-24-4). `LeaseGrant` carries `LeaseMarking`: `Unreserved` for a session below 1.8, or
+  `Reserved` with the first of the engine's own reasons not to mark (`not_activated`: `delivery-acknowledgement-v1` not
+  recorded for engines in the gate the engine keeps; `requirement_missing`: `lease-withdrawal-v2` not recorded for both kinds;
+  `switch_off`; `declined`), decided in one place, `WorkerService::lease_marking`, for the root and the path claim alike. A
+  session is judged at the one ceiling the hand-back reads (`hand_back_ceiling`, which the `test-support` feature raises), so
+  no lease of this build is reserved before 1.8 negotiates. Each of the three lease statements writes, on a new lease only
+  (the grant's token bound, the status written `LEASED`, and the old row's `generation IS DISTINCT FROM` the one written):
+  the reservation (`lease_hand_back_generation` = the generation, `lease_claimed_at` = `clock_timestamp()`,
+  `lease_claim_incarnation` = `(SELECT pg_postmaster_start_time())`) when the session is reserved and null otherwise, so a
+  1.7 lease after a 1.8 one carries none; `lease_offered_generation` when the engine has no reason and the row's own conditions
+  hold (`provisional_withdrawn_attempt IS DISTINCT FROM` the attempt written, and the earlier of the time-to-live and
+  `timeoutMs` at least `MARK_MINIMUM_DEADLINE`, 18 s); and clears `lease_acknowledged_at` and `lease_capability_generation`.
+  It leaves the withdrawn pair and the attempt's flag alone. The same statement returns whether the lease is provisional, its
+  two deadlines and the first of its own reasons (`flagged_before`, then `short_deadline`), which the transaction keeps
+  (`RunTx::claim_mark`, `PathExecutionTx::claim_mark`); the task carries `acknowledge_before_start` and, for a provisional lease
+  whose attempt deadline comes before its expiry, `attempt_deadline_epoch_ms`, the stored expiry unchanged.
+  `worker_lease_marks_total` and `worker_lease_marks_skipped_total{reason}` are incremented after `commit()` returns, in the
+  root and the path claim alike, so a transaction rolled back because its consumer went before the commit (D006-092) counts
+  nothing; a session below 1.8 is counted by neither. No statement is added: the `LEASE` line of the budget is unchanged.
+  Options weighed: (a) a ceiling of the claim's own beside the hand-back's — rejected: two ceilings would let a build mark a
+  lease whose hand-back it judges below 1.8, the inconsistency ADR-0099 decision 9 exists to prevent; (b) a second read of the
+  row after the write, for the outcome — rejected: a statement more on every claim, the cost line Task 006-055 pins; (c) the
+  short deadline judged in the application, which knows both durations — rejected: the contract orders `flagged_before`, a row
+  value, before it, and the statement is the one place both are known without reading the row first; (d), chosen, the
+  statement's own `RETURNING`. Tested: `the_claim_writes_the_marks_of_each_case_and_counts_them_after_its_commit`,
+  `a_scoped_instance_leased_in_a_full_run_transaction_is_marked_by_the_same_rules`,
+  `a_lease_written_afterwards_with_the_old_column_list_is_not_marked`,
+  `a_claim_that_would_mark_whose_consumer_goes_before_its_commit_marks_and_counts_nothing`,
+  `a_flagged_lease_carries_its_attempt_deadline_only_when_it_comes_first` (`integration_durable_execution`), the unit tests of
+  `crates/application/src/execution/lease_marks_tests.rs`, and the unchanged
+  `a_lease_and_a_completion_cost_what_the_budget_says` (`integration_claim_transition_efficiency`).
+- **D006-107 — The allowed forms of a mark are a rule of `scripts/check-architecture.py`** (Task 006-047; delegate,
+  OD-2026-11-24-4). Every `UPDATE steps ... SET` and `INSERT INTO steps` of the string literals of `crates/infra-postgres/src`
+  and of its migrations is read; an assignment to a mark is allowed only as the claim's form (in the three lease statements,
+  conditioned on a new lease in a conjunction with no `OR` and no negation, the value the contract gives, the generation the one
+  the condition names), the acknowledgement's `clock_timestamp()`, the capability record's `generation`, the withdrawal's pair
+  (`withdrawn_lease_token_hash` from the row's `lease_token_hash` and `withdrawn_on_hand_back` bound, never one without the
+  other), or the column kept; an `INSERT` names no mark; `provisional_withdrawn_attempt` is named only in the three lease
+  statements, in its one fenced form (`CASE WHEN $flag AND status = 'LEASED' AND generation = $fence THEN attempt ELSE
+  provisional_withdrawn_attempt END`, unqualified or with the statement's alias), once per statement; and each of the three
+  writes every mark of the claim, so a statement that drops one fails too. Options weighed: a trigger or a `CHECK` that refuses
+  a bad write — rejected: it costs every write of `steps`, an older binary must still be able to write the row, and the forms
+  are a property of the statements, not of the values; a SQL parser — rejected: a dependency for a few fixed patterns. Tested:
+  the class `MarksOfProtocol18HaveAllowedForms` of `scripts/tests/test_check_architecture.py` (a bound-flag form, a read-back
+  form, a value read earlier, one of the withdrawn pair without the other, the flag outside the three statements and in a
+  migration, a bound attempt, each branch that yields `NULL`, each form without the old-row fence, a second assignment, an
+  `INSERT`, the claim's form outside the three statements, a statement that drops a mark or is gone) and this repository
+  passing it.
+- **D006-108 — The condition of a mark is one macro of the adapter in two named forms and one pure function** (Task 006-047;
+  delegate, OD-2026-11-24-4). `lease_mark_counts!()` (held, the reservation's generation the step's, claimed on this server)
+  and `lease_mark_counts_since_recording!($since)` (and claimed strictly after the recording), over the row aliased `s`, both
+  built on `lease_claimed_on_this_server!()`, the one place the incarnation is compared; `LeaseMarks` of
+  `crates/application/src/execution.rs` holds the row's `LeaseDeadlines` with the marks, takes "claimed on this server" as the
+  boolean the adapter computes, and answers `counts()` and `counts_since(required_since)`. The adapter's `COLUMNS` and
+  `decode` (`sagat_infra_postgres::lease_marks`, hidden from the documentation) are the read the withdrawals of Task 006-050
+  re-read the row with. Options weighed: the macro taking the alias as an argument — rejected for now: every statement that
+  will use it names the step `s`, and a second alias can be added with its first user. Tested:
+  `the_macro_of_the_marks_and_the_pure_function_agree_on_every_row` (108 rows: three statuses, three reservations, three
+  incarnations, four claim times).
+- **D006-109 — Where the evidence of the claim's marks runs** (Task 006-047; delegate, OD-2026-11-24-4). The matrix runs in
+  `integration_durable_execution` on the platform of the contract suites, with a worker service the test builds on the same
+  store (the gate, the switch, the time-to-live and the raised ceiling of each case), each case on its own activity so no other
+  run is a candidate, under a recorder local to the test's thread so the counters are the test's own. It varies one dimension
+  of the contract at a time from the case that marks, and adds the cases where two reasons hold, to prove their order; the
+  full product of the dimensions is the unit test of the order (16 combinations of the engine's reasons) and the statement's
+  conditions. A scoped instance is leased through `upsert_scoped_instance` at the store: no claim of this build reaches that
+  statement (the claim of a full-run transaction takes root steps only), so the matrix drives it as the scoped branch of
+  `lease_one` would. A session of 1.4 is a row of the root only (a scoped instance needs 1.5). The acknowledgement of the
+  barrier test is the statement Task 006-049 will run, written by SQL. Options weighed: the full product of the dimensions on
+  the database (about 5,000 claims, minutes of a shared machine for no property the unit test of the order does not already
+  give).
+- **G006-052 — What the rule of the marks does not see.** It reads the `SET` list of a statement within one string literal:
+  an assignment to a mark in a later piece of a `concat!` is not judged (each lease statement keeps its marks in its first
+  piece). It does not yet know which statement uses which form of the macro, since none uses either outside the parity test;
+  Tasks 006-050 (the withdrawals, the form with the recording) and 006-054 (the gauges, the form without) add that knowledge
+  with their first users.
+- **G006-053 — The barrier test of the marks writes the acknowledgement by SQL**, and the claim of a full-run transaction no
+  longer reaches `upsert_scoped_instance`, so that statement's marks are proven at the store only (D006-109). Closed by Task
+  006-051, whose barrier tests run the acknowledgement of Task 006-049 against a run transaction loaded before it.
+- **D006-110 — The acknowledgement is served by this build at every minor, and its cross-tenant check runs off the answer
+  path** (Task 006-049; delegate, OD-2026-11-24-4). `AcknowledgeTasks` answers from the first build that has it, whatever
+  the minor a session negotiated: before Task 006-057 no lease is marked, so every task is answered `NOT_HELD`
+  (`not_provisional`, or `no_match` for a token no row holds), which is what a host of 1.8 needs to know and costs nothing
+  to a host below it, which never calls it. The design reads "the run ids with no row in the caller's tenant are checked for
+  existence in another tenant with one statement" before the record is spawned; `runs` has no index on its id alone (its
+  primary key leads with the tenant), so that statement can scan the table, and on the answer path it could spend the call's
+  deadline, or its statement timeout, on a host whose lease was merely replaced. So the service returns the run ids of the
+  tasks with no matching row (also with the failure of a call that fails after its first read), and the transport runs the
+  check and the record together, after the answer, as a task of its own under a gate of its own (`check_other_tenants` of
+  `crates/api-grpc/src/acknowledgement.rs`: 4 places taken without waiting, at most one per tenant at a time; the check on a
+  connection taken only when one is idle, with its own statement timeout of 1 s, the runs of the caller's own tenant taken
+  out first in a materialized table expression, by the primary key), counted in
+  `worker_task_acknowledgement_cross_tenant_checks_total{outcome}` (`recorded`, `none`, `failed`, `busy` with no idle
+  connection, `dropped_tenant` and `dropped_full`). The gate is not the one of the denials' audits the design names (32
+  places, 5 s) and not in the application layer: a check that can scan must not take the places of the records of refused
+  calls, nor a connection the answer path waits for, nor all the places for one tenant, and the application may not name
+  `tokio` (Architecture decision 0092). Options weighed: an index on `runs (id)` (a write cost on every run for an audit of a
+  probe); the check on the answer path, as the design reads (the cost above); the denials' gate (review round 1 of this task:
+  it counted a check that found nothing as a record written and let a burst of checks starve the denials). Tested:
+  `a_forged_token_takes_no_lock_and_a_withdrawn_token_is_answered_withdrawn` (the unmatched run returned for the check) and
+  `a_run_of_another_tenant_is_recorded_once_and_a_run_of_its_own_is_not` (`integration_durable_execution`).
+- **D006-111 — What the verdicts decide where the design does not say** (Task 006-049; delegate, OD-2026-11-24-4). The pure
+  function `decide` (`crates/application/src/worker/acknowledgement.rs`) answers: another token, attempt, generation or step
+  identity than the row's, `NOT_HELD` `no_match` (the token is the step's last withdrawn one: `withdrawn`); a lease whose
+  offer is not of its generation, `NOT_HELD` `not_provisional` (an unmarked lease, a 1.8 lease reserved but not offered, a
+  lease of an older offer); a provisional lease that is `RUNNING` (its host heartbeated before acknowledging, which is the
+  violation counted by Task 006-053), `not_provisional` too, since the lost-lease pass ends it as any running lease; a
+  provisional lease with a stop, `CANCELLED` `stop_asked` before its margin is judged, and short of the margin, `NOT_HELD`
+  `too_late` (the pass withdraws it, so the host hands nothing back); an acknowledged lease or a lease whose offer no longer
+  counts, `ACKNOWLEDGED` (`duplicate`, `recovered`) under the margin and the stop rule, else `CANCELLED`. "Recovered" needs the
+  offer of the lease's generation, so a lease never offered is never recovered. The margin is "at least" one receive bound:
+  6 s exactly is enough. Answered without any lock: a row matched only by its withdrawn token, and a row of a managed or
+  non-activity node (`not_provisional`). A request that names one lease twice is malformed, since the update writes each row
+  once. Each row is decided at its own clock sample, read after the statement holds its lock (the locking query is a common
+  table expression, which PostgreSQL never inlines, and the clock is read outside it). Tested: the unit tests of the module
+  (every verdict and reason, the margin to the microsecond, the stop of each kind) and `integration_durable_execution`.
+- **D006-112 — The binding checks are one function over a narrow trait** (Task 006-049; delegate, OD-2026-11-24-4).
+  `judge_binding` (`crates/application/src/worker/binding_checks.rs`) reads the patterns under the binding's shared lock only
+  when there is an activity to cover, decides coverage per activity, and checks the membership under its locks unless no
+  activity was covered; `BindingChecks` is implemented by the root and path run transactions (`RunBinding`, `PathBinding`) and
+  by the acknowledgement's transaction in its one namespace. `ensure_bound` (root, ordinary steps) and `ensure_path_bound` call
+  it; the managed database path keeps its own check (a database runner is no member that executes work). The behaviour of the
+  run transactions is unchanged: uncovered is `NotBound` before any membership lock, a revoked member `Forbidden`. For the
+  acknowledgement an uncovered row is `NOT_HELD` `unbound` with one `AccessDenial` for the call, audited by the transport off
+  the answer path, and a revoked member refuses the whole call (`PERMISSION_DENIED`), as it refuses every report. Tested:
+  the unit tests of `binding_checks.rs` (the order of the reads, no membership lock when nothing is covered) and
+  `a_narrowed_binding_is_unbound_for_the_acknowledgement_and_the_run_transactions_alike`.
+- **D006-113 — A database not reached is one rule of the adapter, and `25006` is in it** (Task 006-049; delegate,
+  OD-2026-11-24-4). `store_unreachable` (`crates/infra-postgres/src/pool.rs`) is the instance registry's rule (the pool's
+  errors, input and output, TLS, `08` connection exceptions, `57P01` to `57P03`) with `25006` (a server that answers
+  read-only after a failover) added, used by the registry and by the acknowledgement; for the registry, a read-only server is
+  now a database that cannot be reached, which keeps an engine serving through a failover as a lost connection does. The
+  acknowledgement's transaction that does not begin before the deadline, its pool acquisition included, is unreachable too,
+  and every statement of the acknowledgement, the binding's and the membership's among them, is classified by the rule and
+  checked against the deadline before it runs (review round 1 of this task: the shared helpers of the run transactions
+  classified a read-only membership lock as an internal error). Tested:
+  `a_database_that_cannot_be_reached_or_answers_read_only_is_unreachable` (every code of the rule and the statement codes
+  outside it); the read-only server against the real store is Gap 006-054's.
+- **D006-115 — Review round 1 of Task 006-049, settled** (delegate, OD-2026-11-24-4; the correctness reviewer's report, no
+  Blocker, two Majors). Fixed: the membership and binding statements classified as the acknowledgement classifies (D006-113);
+  a refused permission or membership mapped through the service's `app`, so it is audited as every other call
+  (`an_identity_without_worker_execute_is_refused_and_audited`); the binding refusal audited also when the call fails after
+  finding it (`FailedAcknowledgement` carries it); the delay histogram recorded after the commit only; the cross-tenant check
+  given its own gate and counter (D006-110); the deadline test made to fail if a statement ran past the deadline (the
+  namespace's secrets lock held throughout: a statement run after the deadline would end at its lock timeout, not the
+  deadline) and bounded so that it cannot hang; the bounds on the time left widened by the 2 s the CI's virtual machine can
+  step the database clock back; the unit test of the unreachable rule given every code; added the tests of two namespaces,
+  of `attempt_time_left_ms`, of the shed envelope, of the cross-tenant record, of the path transaction under the narrowed
+  binding and of the denial audited once. The metric `worker_task_acknowledgement_failures_total{reason}` the reviewer
+  questioned is Task 006-054's, named in its text.
+- **D006-114 — The admission of the class `Acknowledge`** (Task 006-049; delegate, OD-2026-11-24-4). `AcknowledgeTasks` is
+  the class `Acknowledge`, admitted below `max(D, min(L - 1, D + max(1, (L - D) / 2)))` calls in flight, and a shed one is
+  answered `RESOURCE_EXHAUSTED` with `ACKNOWLEDGEMENT_SHED`; the call keeps the unary time limit. `AppendStepLogs` is not
+  classified here: Task 041-7 gives it the class `Logs` of design 041, and whichever of the two branches merges second keeps
+  both. Tested: `an_acknowledgement_never_takes_the_lease_reserve_for_every_limit_to_64` (every limit from 1 to 64 and every
+  discovery threshold below it).
+- **G006-054 — What of Task 006-049 this slice does not build.** The deadline starts where the platform's admission layer
+  stamps the call's arrival (`Arrival`), which is inside tonic's per-connection concurrency limit: the platform's own
+  outermost layer that replaces `concurrency_limit_per_connection` (the semaphore in `CappedConnectInfo`, the reserve of four
+  places for the class `Acknowledge` while the compiled minor is at least 8, the per-connection counter for the conformance
+  assertion and the gauge of open connections) is not built, nor the authentication's lookups under the call's deadline
+  (a full pool after the token verified answered `ACKNOWLEDGEMENT_STORE_UNREACHABLE`), the tests of a pool held full, of
+  `pg_terminate_backend` between `lock_matched` and `acknowledge`, of a read-only server, of a deadlock, of a connection with
+  more than 128 calls, of the release-0.2 configuration, the test seams' negative cases in `scripts/check-architecture.py`,
+  and the compensation and reconciliation acknowledged under a stop on the real store. Closed by the next slice of Task
+  006-049.
+- **G006-055 — Which task turns the adapter's proof of 1.8 on (G006-051).** Task 006-052, the last task that builds a store
+  path of 1.8 (the capability record): it turns `supports_delivery_acknowledgement()` of the PostgreSQL adapter on, with a test
+  that the ceiling raised in the test then answers 8 against the real store and a contract test that a session of 1.8 is
+  served the acknowledgement, the capability refusal and the withdrawals; Task 006-057 then raises only the compiled minor.
+  Recorded in the text of Task 006-052.
+- **D006-116 — Review round 1 of Task 006-049 by the security reviewer, settled** (no Blocker, no Major; every finding
+  fixed, as security findings are). The cross-tenant check holds at most one place per tenant, never waits for a pool
+  connection, and counts each way it is dropped (D006-110); a call that fails after its first read still has its unmatched
+  runs checked (`FailedAcknowledgement` carries them); the namespaces of a request are those of the rows that hold a
+  presented token now, so a row matched by its withdrawn token alone neither refuses the call nor says where a live lease
+  is (the design's text says so now); the own-tenant runs are taken out of the check in a materialized table expression
+  before any scan; and the comment and counter of a slow rollback say what happens (the transaction is dropped and its
+  rollback queued; the connection is not discarded, which stays in Gap 006-054). The one oracle left, a request that
+  carries a live token of another namespace answered `INVALID_ARGUMENT`, needs the 256-bit token, which is the lease's
+  bearer capability (constitution principle V), and is the design's rule ("tasks of more than one namespace").
+- **D006-117 — With 1.7 served, 1.8 needs the step-log proof and is not offered to either runner** (the merge of design
+  041's Task 041-7, pull request #298; delegate, OD-2026-11-24-4). Minors are cumulative proofs (D006-041), and D006-105
+  answers 1.8 "when it would answer the newest minor below it". Now that the newest minor below 1.8 is 1.7, `StoreProofs`
+  carries a fourth proof, `step_logs` (`WorkerStore::supports_step_log_protocol()`), and `protocol_ceiling` answers
+  `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` to an ordinary worker only when it would answer 1.7 and the store proves the paths
+  of 1.8. The script runner (`Role::Runner`) is not offered 1.7 (decision D041-149), so it is not offered 1.8 either; the
+  dedicated database runner keeps 1.6 (ADR-0099 decision 11). The test of D006-105 asserted that a script runner reaches 8
+  under the raised ceiling; it now asserts 6 for both runners and 7 for an ordinary worker without the store's proof of 1.8.
+  The admission keeps both classes: `Acknowledge` (D006-114) shares `in_flight` below its own limit, `Logs` is counted apart
+  against its own cap. Tested: `delivery_acknowledgement_is_answered_only_above_the_compiled_ceiling_and_on_the_store_proof`,
+  `step_logs_raise_the_ceiling_to_seven_for_an_ordinary_worker_only`.
+- **D006-118 — The first run of the database tests of 1.8, its seven failures explained and fixed** (pull request #297, run
+  45942873719; delegate, OD-2026-11-24-4; each a defect, none rerun). (1) The `Debug` that hides a report's lease token
+  (Task 006-043) dropped its step-log carry, whose counts FR-041-007 (d) prints: `CompleteStepRequest` and `FailStepRequest`
+  print `step_logs` again, in the server and in the Rust SDK alike, which had the same `Debug`
+  (`the_debug_of_a_report_that_holds_a_carry_prints_counts_and_no_text`, both). (2) The TypeScript
+  SDK's fake server decodes with `defaults: true`, so the field `declines_acknowledgement` of 1.8 reads `false` in the
+  registration it records; the expectation names it. (3) A statement of the acknowledgement began with a macro whose argument
+  sat in its middle, which the audit of the runtime role's privileges does not expand: what followed (a `FOR NO KEY UPDATE`)
+  was a fragment outside any statement, and the three statements of the acknowledgement were not audited at all. The macro is
+  now two fixed texts (`decoded_addresses!()`, `address_arrays!()`) between which a statement writes its columns, and the audit
+  reads the whole of each. (4) The claim's marks (Task 006-047) changed the two lease-creating `UPDATE`s of `steps`; their
+  status, generation and guards are unchanged, and the reviewed inventory of step status writers is updated with them.
+  (5) The audit found `SELECT {}` in `content_usage.rs`, the advisory fences of a step-log batch (feature 041, pull request
+  #285, whose run did not select the platform-foundation target): placeholders only, every key bound, no table; an entry of
+  `ALLOWED` says so. (6) The cross-tenant record is written off the response path (`IdentityStore::record_denial`), so the
+  test read the trail before the record landed; it now waits for it, bounded. (7) Three tests rolled the schema back to a
+  version below 20270216000000 and went on with the services: `sqlx` reverts each migration in its own transaction, so a
+  rollback refused by an older migration still committed the downs of every newer one, and a round trip took the marks'
+  columns with it. The two tests whose rollback is refused (`zero_policy_writer_and_downgrade_obey_both_relation_lock_orders`,
+  `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`) upgrade again before the services resume, as
+  `step_log_isolation/schema.rs` already does; the round trip of the lookback index compares the rolled-back snapshot without
+  the marks, asserts they left, and compares the whole snapshot once upgraded again.
+- **D006-119 — The platform's per-connection concurrency layer** (Task 006-049, closing that item of G006-054; delegate,
+  OD-2026-11-24-4). tonic's `concurrency_limit_per_connection` sat outside the admission layer, so a call waited for a place
+  of its connection before its arrival was stamped. It is removed; `concurrency_per_connection` (64) is applied by the
+  admission layer itself, after the stamp: each accepted connection gets its `ConnectionPlaces` (two semaphores held in its
+  `CappedConnectInfo`, dropped with it, never a map keyed by the peer). A call waits for a place as it waited for tonic's,
+  then takes its process ticket (`in_flight`,
+  shed as before), and holds the place until its response, as tonic's permit was held. The class `Acknowledge` takes any
+  free place, the others only the places outside the reserve; the reserve is `min(4, limit - 1)` places while the compiled
+  minor is at least `DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR` (`acknowledge_reserve`), none below it, so the dormant build
+  and a release-0.2 configuration give every class 64 places. A connection's ordinal (its place in the order of accepting,
+  never an address) is told, with the method, to a hook installed by `WorkerApi::with_connection_probe` (Task 006-058's
+  assertion); the compiled minor is raised for a test by `WorkerApi::with_compiled_minor_for_tests`; both, and the
+  adapter's `rollback_stalled_for_tests`, are in the probe list of `test_probe_errors`, each with its negative case. The gauge
+  `grpc_connections_open` (one series) rises at an accept and falls when a connection closes. A call on a transport that is
+  not the platform's listener (an in-process test transport) has no places, as tonic's limit did not apply to it either.
+  Tested: `a_connection_keeps_its_reserve_for_acknowledgements_and_only_from_1_8` (every limit from 1 to 64, with and without
+  the reserve), `a_waiting_call_takes_the_first_place_that_frees_for_its_class`,
+  `from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_connection`,
+  `below_1_8_every_class_has_every_place_of_a_connection`, `a_full_connection_never_delays_an_acknowledgement_on_another`.
+- **D006-120 — The authentication of an acknowledgement under its deadline** (Task 006-049; delegate, OD-2026-11-24-4).
+  `authenticate_bearer_within` (`sagat-api-http`) runs the one authentication sequence with its lookups, once the token
+  verified, bounded by the call's deadline, and says which stage failed: a refusal (the token, a budget, the membership, the
+  tenant's concurrency) keeps its ordinary status; lookups that end with `AppError::Unavailable` or `AppError::Internal`, or
+  run past the deadline, answer `UNAVAILABLE` with `ACKNOWLEDGEMENT_STORE_UNREACHABLE`, counted `store` (the safe direction:
+  it decides no early give-up). The token's verification itself is not bounded here: before it, nothing is said about the
+  store. `authenticate_bearer_with` is the same sequence with no bound and the ordinary mapping, so the other calls do not
+  change. A call whose deadline passed while it waited for a place of its connection answers `ACKNOWLEDGEMENT_DEADLINE`
+  before anything is looked up. Tested: `the_lookups_of_a_verified_token_find_the_pool_full_and_answer_store_unreachable_in_time`.
+- **D006-121 — The adapter holds its pooled connection, so a rollback out of time discards it** (Task 006-049, closing that
+  item of G006-054; delegate, OD-2026-11-24-4). `PgAcknowledgementTx` keeps the `PoolConnection` instead of an
+  `sqlx::Transaction` (which gives no connection back mid-rollback): the connection is acquired in a task of its own (cancel
+  safe, as `begin_safely`), the transaction is begun with `BEGIN` under the time left (a `BEGIN` cut short discards the
+  connection), committed with `COMMIT` (an answer of the server leaves the connection idle and it goes back; any other
+  failure discards it, since whether it committed is not known on this side), and ended with a `ROLLBACK` bounded by 100 ms,
+  after which, or after a failed `ROLLBACK`, the connection is detached and closed, which makes the server roll back
+  (`worker_task_acknowledgement_connections_discarded_total`). A transaction dropped mid-call is rolled back the same way off
+  the call. `BEGIN` and `COMMIT` have reasoned entries in the runtime role's audit (transaction control needs no privilege).
+  Tested: `a_rollback_that_does_not_return_in_time_discards_its_connection`,
+  `a_pool_held_full_is_a_store_not_reached_within_the_bound_and_discards_nothing`,
+  `a_connection_ended_between_the_lock_and_the_update_is_a_store_not_reached`, `a_read_only_server_is_a_store_not_reached`.
+- **G006-056 — What of Task 006-049 is left after its second slice (G006-054 narrowed).** Built by D006-119 to D006-121:
+  the platform's per-connection layer with the reserve, the connection ordinal's hook and the gauge of open connections; the
+  authentication's lookups under the call's deadline; the connection discarded after a rollback out of time; and the tests of
+  a pool held full (the service and the authentication), of `pg_terminate_backend` between `lock_matched` and `acknowledge`,
+  of a read-only server, of a deadlock, of 64 transfers and of more than 128 calls on one connection, of the release-0.2
+  configuration, and the negative cases of the new probes. Left: a call that reaches the handler with too little time left
+  after the concurrency layer, through the real handler (the check is built and answers `ACKNOWLEDGEMENT_DEADLINE`; holding a
+  call of the real service at a place past another's deadline needs a seam of its own); the compensation of a cancelled run
+  and the reconciliation under a stop acknowledged on the real store (the pure function's cases are tested; the fixtures that
+  lease a compensation and a reconciliation at 1.8 are Task 006-050's); `synchronous_commit` raised with `ALTER ROLE sagat_app
+  SET synchronous_commit = off` rather than by the session (the test sets it per session, which is what the role setting does
+  to every session). Each is to be closed with Task 006-050, whose fixtures they share.
+- **G006-057 — An intermittent failure of the blob scenario of the managed-secret lifecycle, not explained yet.** On the
+  local run of this branch's second slice (2026-11-27), `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`
+  (`integration_database_connections`) passed the point CI had stopped at (D006-118 (7)) and failed later, in
+  `output_blobs.rs`: after the injected audit failure was removed, the second `WriteBlob` of the leaking result was refused
+  but the run stayed `RUNNING` where `FAILED` was expected. The same binary passed on the next run. The test threw the
+  refusal away, so its cause cannot be read; it now keeps it and prints it with both assertions, so the next occurrence says
+  what the write was answered. Nothing of the acknowledgement is on that path (a database runner's session stays below 1.8 and
+  its lease is never marked), and no file of the scenario changed on this branch; the per-connection layer of D006-119 is the
+  only change on its transport, and it serves one connection's sequential calls as tonic's limit did. Open until an
+  occurrence names its cause.
+- **D006-122 — The second run of pull request #297, its three failures explained and fixed** (run 45985040459; delegate,
+  OD-2026-11-24-4). (1) The Rust SDK's `Debug` of the reports had the defect of D006-118 (1): fixed the same way. (2) The
+  reviewed inventory of step status writers had not been updated with the claim's marks (D006-118 (4)); it is now, after
+  its diff was read: three lease-creating `UPDATE`s of `steps` (two in `execution.rs`, one in `execution/path.rs`), each
+  gaining the assignments of the marks and their `RETURNING`, their status, generation and guards unchanged. (3)
+  `operations_http::outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry` looked for the balance `777` in an
+  error body with its trace identifier taken out, but the body also carries `requestId`, thirty-two more random hexadecimal
+  digits, which spelled it: a flaky test of this kind about once in a hundred and thirty runs, not of this branch. The
+  helper takes out both identifiers, and its unit test gained the case (seen failing before the fix). Hand mutations of the
+  second slice, each seen failing its test: the reserve set to none
+  (`from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_connection`, strengthened to count the
+  acknowledgements apart, which as first written passed the mutation), the bound of the authentication's lookups removed
+  (`the_lookups_of_a_verified_token_find_the_pool_full_and_answer_store_unreachable_in_time`, 10.0 s), and the discard made a
+  return to the pool (`a_rollback_that_does_not_return_in_time_discards_its_connection`). (4) Run as the runtime role, `too_little_time_left_before_either_deadline_is_too_late` answered
+  the first lease `no_match`: it set that lease's expiry 1 s ahead before claiming the second lease, which a slower run took
+  longer than, so the lease had ended by the call. Both deadlines are now set right before the call, 3 s ahead (short of the
+  margin of 6 s even with the clock stepped back 2 s); it passed plain and twice as the runtime role.
+- **D006-123 — Review round 2 of Task 006-049 by the correctness reviewer, settled** (one Blocker, two Majors, three Minors;
+  delegate, OD-2026-11-24-4). Fixed: (Blocker) a call dropped while its `BEGIN` waited for the answer handed the connection
+  back to the pool inside a transaction (sqlx's return only pings, and a raw `BEGIN` is not counted as one); the guard now
+  holds the connection before `BEGIN` is sent, so its `Drop` ends the transaction (a `ROLLBACK` within 100 ms, or the
+  connection discarded), and a `BEGIN` that fails or is cut short discards it. (Major) the guard's `Drop` was untested:
+  `a_call_dropped_while_it_waits_leaves_no_transaction_behind` drops a call that waits for the membership's row with the
+  binding's and the secrets' locks held, and asserts that no lock and no transaction of its session is left. (Major)
+  `below_1_8_every_class_has_every_place_of_a_connection` sent only acknowledgements, which take every place with or without
+  the reserve; it now parks 64 heartbeats first. (Minor) every statement and the `COMMIT` are waited for on this side for the
+  call's time left and one statement timeout; one cut short poisons the transaction, whose connection is then discarded, and
+  answers `ACKNOWLEDGEMENT_STORE_UNREACHABLE` (`worker_task_acknowledgement_statements_cut_total`), so a network that drops
+  every packet or a stalled flush of the log still ends the call one statement timeout past its deadline. (Minor) the
+  acquisition's task gives up at the deadline too, so no abandoned acquisition waits in the pool's queue. (Minor) a call
+  with less than one statement timeout left when it reaches the handler answers `ACKNOWLEDGEMENT_DEADLINE`, so time spent
+  waiting for a place is not counted as a store not reached; and the design now says that a lookup's failure that is not a
+  refusal (`AppError::Internal`) is classified as the store's, as D006-120 decided. Recorded, not changed: the wait for a
+  place now runs inside tonic's transport timeout (`max(request_timeout, transfer_timeout)`) and a client's `grpc-timeout`,
+  where tonic's own limit sat outside them, so a call queued behind its connection's other calls now has that much less of
+  its time; this bounds a wait that was unbounded and is the direction the deadline of the acknowledgement needs, and
+  D006-119 no longer says the wait is unbounded. Not a defect: the assertion "no connection discarded" of the full-pool test
+  holds by construction (the call never gets a connection); it stays as the design's statement of the case.
+
+- **D006-124 — Review round 2 of Task 006-049 by the security reviewer, settled** (no Blocker; one Major that predates this
+  feature, four Minors; security findings are fixed). Fixed: `test_probe_errors` matched only `.probe(`; it now matches a
+  probe called through its type's path or passed as a function (`(?:\.|::)\s*probe\b`), with negative cases of each form,
+  seen failing on the old pattern. The audit of the runtime role's privileges excused a literal by its first word, so a
+  `BEGIN; UPDATE ...` would have been excused with the allowances of `BEGIN` and `COMMIT`; transaction control alone (the
+  whole literal `BEGIN`, `COMMIT` or `ROLLBACK`) is now a statement that needs no privilege, the two allowances are gone, and
+  a literal that glues anything after it stays unmodelled (`ROLLBACK` joins the unmodelled verbs, and a verb followed by
+  `;` is unmodelled as one followed by white space was, which the first version missed: its test failed until it was) and
+  fails the audit (`transaction_control_alone_is_a_statement_and_anything_after_it_is_not`; the extractor's test of unmodelled
+  kinds now names `COMMIT AND CHAIN`, since a bare `COMMIT` is a statement). A dropped call's rollback, which nobody waits
+  for, may take one statement timeout and 100 ms before its connection is discarded, so a host that resets its calls does
+  not make the server close the pool's connections. A call that arrives without the places of its connection is counted
+  (`grpc_calls_without_connection_places_total`) and said once in the log, so a change of tonic's connection info that
+  turned the per-connection limit off would not pass unseen. Open, as G006-058: the Major.
+- **G006-058 — A caller with no token can hold the process's admission by withholding the request body (security,
+  predates feature 006's 1.8 work).** The connection's place and the process's ticket (`in_flight`, `max_in_flight` 1,024)
+  are taken in `Admit::call` before tonic's handler waits for the body, and authentication runs only once the body is
+  decoded: sixteen connections of one address, each with 64 streams that send their headers and never the body (and answer
+  the pings), fill the process's tickets for the unary timeout (30 s), again and again, and every heartbeat, report and
+  acknowledgement of every tenant is shed. The per-connection layer of D006-119 neither adds nor removes it (tonic's limit
+  sat in front of the same ticket). The fix is the next slice of Task 006-049, before anything of 1.8 is offered: the
+  process's ticket taken only once the first message of the request has arrived, under a deadline of its own for that
+  first message (a call that sends none in time is refused `RESOURCE_EXHAUSTED` and counted), with a contract test that
+  opens streams of headers only and expects a real heartbeat to be served; and a TLS variant of the per-connection tests.

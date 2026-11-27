@@ -182,6 +182,12 @@ impl WorkerService for Proxy {
         }
         response
     }
+    async fn acknowledge_tasks(
+        &self,
+        _: Request<pb::AcknowledgeTasksRequest>,
+    ) -> Result<Response<pb::AcknowledgeTasksResponse>, Status> {
+        Err(Status::unimplemented("AcknowledgeTasks"))
+    }
     async fn resolve_database(
         &self,
         r: Request<pb::ResolveSecretsRequest>,

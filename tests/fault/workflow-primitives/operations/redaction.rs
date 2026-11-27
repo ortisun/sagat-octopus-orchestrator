@@ -136,6 +136,7 @@ async fn a_resolved_secret_and_secret_shaped_text_never_leave_the_operation_boun
                 pools: Vec::new(),
                 max_inflight: 4,
                 protocol_version: "1".into(),
+                declines_acknowledgement: false,
             },
         )
         .await

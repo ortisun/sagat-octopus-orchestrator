@@ -17,7 +17,7 @@ use std::time::Duration;
 use common::{Harness, T0, activity, build, effect, id, saga};
 use sagat_domain::execution::{
     FailureCode, Fence, PlannedEntry, ReconcileResult, RunEvent, RunId, RunState, RunStatus,
-    StepStatus, StopReason,
+    StepStatus, StopReason, WithdrawalCause,
 };
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
 use sagat_domain::workflow::{NodeId, WorkflowDefinition};
@@ -552,4 +552,55 @@ fn cancelling_during_a_v02_unknown_retry_wait_keeps_the_effect_for_review() {
     }
     assert_eq!(run.state.status(), RunStatus::Cancelled);
     run.assert_replays();
+}
+
+/// Task 006-045 (decision D006-103): a journal written by a build of protocol 1.8, holding a provisional lease withdrawn at its
+/// deadline (`NOT_ACKNOWLEDGED`), replays in this build: the attempt is given back, the next lease reuses it with the next
+/// generation, and the run ends as it did. The journal is the one ADR-0099 describes, event by event.
+#[test]
+fn a_journal_holding_a_not_acknowledged_withdrawal_replays() {
+    let journal = vec![
+        RunEvent::RunStarted {
+            entrypoint: n("pay"),
+        },
+        RunEvent::StepReleased { node: n("pay") },
+        RunEvent::StepLeased {
+            node: n("pay"),
+            attempt: 1,
+            generation: 1,
+        },
+        RunEvent::StepLeaseWithdrawn {
+            node: n("pay"),
+            attempt: 1,
+            generation: 1,
+            cause: WithdrawalCause::NotAcknowledged,
+        },
+        RunEvent::StepLeased {
+            node: n("pay"),
+            attempt: 1,
+            generation: 2,
+        },
+        RunEvent::StepCompleted {
+            node: n("pay"),
+            attempt: 1,
+            generation: 2,
+        },
+        RunEvent::StepRouted {
+            node: n("pay"),
+            activated: vec![],
+        },
+        RunEvent::RunFinished {
+            status: RunStatus::Succeeded,
+        },
+    ];
+    let state = replay(&journal);
+    assert_eq!(state.status(), RunStatus::Succeeded);
+    let step = state.step(&id("pay")).expect("pay");
+    assert_eq!(step.attempt(), 1, "the withdrawn attempt was given back");
+    assert_eq!(step.generation(), 2);
+    // the prefix up to the withdrawal leaves the step READY with its attempt unspent
+    let withdrawn = replay(&journal[..4]);
+    let step = withdrawn.step(&id("pay")).expect("pay");
+    assert_eq!(step.status(), StepStatus::Ready);
+    assert_eq!(step.attempt(), 0);
 }

@@ -1,5 +1,24 @@
 {
   "messages": {
+    "sagat_octopus_orchestrator.v1.AcknowledgeTasksRequest": {
+      "1": {
+        "name": "worker_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "tasks",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TaskAcknowledgement"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.AcknowledgeTasksResponse": {
+      "1": {
+        "name": "results",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.TaskAcknowledgementResult"
+      }
+    },
     "sagat_octopus_orchestrator.v1.AppendStepLogsRequest": {
       "1": {
         "name": "worker_id",
@@ -1133,6 +1152,65 @@
         "type": "Bool"
       }
     },
+    "sagat_octopus_orchestrator.v1.TaskAcknowledgement": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "run_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "3": {
+        "name": "step_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "4": {
+        "name": "attempt",
+        "repeated": false,
+        "type": "Int32"
+      },
+      "5": {
+        "name": "generation",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "6": {
+        "name": "lease_token",
+        "repeated": false,
+        "type": "String"
+      },
+      "7": {
+        "name": "instance",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.TaskAcknowledgementResult": {
+      "1": {
+        "name": "task_id",
+        "repeated": false,
+        "type": "String"
+      },
+      "2": {
+        "name": "verdict",
+        "repeated": false,
+        "type": "Enum:.sagat_octopus_orchestrator.v1.AcknowledgementVerdict"
+      },
+      "3": {
+        "name": "lease_time_left_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
+      "4": {
+        "name": "attempt_time_left_ms",
+        "repeated": false,
+        "type": "Int64"
+      }
+    },
     "sagat_octopus_orchestrator.v1.TaskLease": {
       "1": {
         "name": "task_id",
@@ -1189,6 +1267,16 @@
         "repeated": false,
         "type": "String"
       },
+      "23": {
+        "name": "acknowledge_before_start",
+        "repeated": false,
+        "type": "Bool"
+      },
+      "24": {
+        "name": "attempt_deadline_epoch_ms",
+        "repeated": false,
+        "type": "Int64"
+      },
       "3": {
         "name": "step_id",
         "repeated": false,
@@ -1230,6 +1318,11 @@
         "name": "languages",
         "repeated": true,
         "type": "String"
+      },
+      "10": {
+        "name": "declines_acknowledgement",
+        "repeated": false,
+        "type": "Bool"
       },
       "2": {
         "name": "activities",
@@ -1341,6 +1434,12 @@
   },
   "services": {
     "sagat_octopus_orchestrator.v1.WorkerService": {
+      "AcknowledgeTasks": {
+        "clientStreaming": false,
+        "input": ".sagat_octopus_orchestrator.v1.AcknowledgeTasksRequest",
+        "output": ".sagat_octopus_orchestrator.v1.AcknowledgeTasksResponse",
+        "serverStreaming": false
+      },
       "AppendStepLogs": {
         "clientStreaming": false,
         "input": ".sagat_octopus_orchestrator.v1.AppendStepLogsRequest",
