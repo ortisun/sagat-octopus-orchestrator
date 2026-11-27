@@ -57,8 +57,11 @@ The round-1 reviews of the third revision of design 042 (2026-11-27,
    and canonical bytes of the value (as `start_key` builds its digest), never returned by an API, a log, a metric, a
    span, an audit record or an error; no key text is stored. No keyed hash, key table or definer function computes
    them. What links events by key (a window's key id and members, a delivery's window id, the reason `distinct`) is
-   returned only under `reveal=pii` and audited. A database or backup reader can still recover a low-entropy value by
-   trying values for as long as its row lives: a stated residual (design 042, Gap 042-017).
+   returned only under `reveal=pii` and audited; for a chain with a key, `distinct`, `skip` or `take`, so are its
+   delivery outcomes, counts and windows, a delivery reading `WITHHELD` without the reveal grant. A database or backup
+   reader can still recover a low-entropy value by trying values for as long as its row lives, and a publisher who sees
+   the runs such a chain starts learns whether a value was seen: two stated residuals (design 042, Gaps 042-017 and
+   042-018).
 
 **Recorded deviation of ADR-0050 decision 7.** The start writes its window row, a slot-3 row for the apply and the seal,
 after the run it creates (slot 6) and after 022's rows (slots 7 and 8). No cycle: a `SEALED` window is written only by
