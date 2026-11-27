@@ -24,7 +24,7 @@ const ACTIVITY: &str = "act.a";
 const DENIED: &str = "access.denied.permission";
 
 /// A worker of acme registered at `version`, bound to every activity; the policy it was told.
-async fn registered<'a>(
+pub(crate) async fn registered<'a>(
     p: &'a Platform,
     sub: &str,
     version: &str,
@@ -50,14 +50,18 @@ async fn registered<'a>(
 }
 
 /// A run of a one-activity workflow and its step leased to `worker`.
-async fn leased(p: &Platform, worker: &mut Worker<'_>) -> TaskLease {
+pub(crate) async fn leased(p: &Platform, worker: &mut Worker<'_>) -> TaskLease {
     let name = format!("logs-rpc-{}", uuid::Uuid::now_v7().simple());
     let workflow = p.publish(&name, &single_ir(&name, None)).await;
     p.start(&workflow, &json!({})).await;
     worker.one_task().await
 }
 
-fn batch(worker: &Worker<'_>, lease: &TaskLease, sequences: &[u64]) -> AppendStepLogsRequest {
+pub(crate) fn batch(
+    worker: &Worker<'_>,
+    lease: &TaskLease,
+    sequences: &[u64],
+) -> AppendStepLogsRequest {
     AppendStepLogsRequest {
         worker_id: worker.worker_id.clone(),
         session_token: worker.session.clone(),
@@ -88,7 +92,7 @@ fn batch(worker: &Worker<'_>, lease: &TaskLease, sequences: &[u64]) -> AppendSte
     }
 }
 
-async fn append_batch(
+pub(crate) async fn append_batch(
     worker: &mut Worker<'_>,
     lease: &TaskLease,
     sequences: &[u64],
@@ -97,7 +101,7 @@ async fn append_batch(
     append(worker, message).await
 }
 
-async fn append(
+pub(crate) async fn append(
     worker: &mut Worker<'_>,
     message: AppendStepLogsRequest,
 ) -> Result<AppendStepLogsResponse, tonic::Status> {
@@ -109,7 +113,7 @@ async fn append(
         .map(tonic::Response::into_inner)
 }
 
-async fn stored_lines(p: &Platform, run: &str) -> i64 {
+pub(crate) async fn stored_lines(p: &Platform, run: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM step_log_lines WHERE run_id = $1::uuid AND kind = 'line'",
     )
@@ -253,7 +257,7 @@ async fn an_authority_answer_is_audited_by_the_handler_and_stores_nothing() {
     assert_eq!(stored_lines(&p, &lease.run_id).await, 0);
 }
 
-async fn remove_binding(p: &Platform, sub: &str) {
+pub(crate) async fn remove_binding(p: &Platform, sub: &str) {
     sqlx::query(
         "DELETE FROM worker_bindings WHERE tenant_id = $1 AND subject = $2 \
          AND namespace_id = (SELECT id FROM namespaces WHERE tenant_id = $1 AND slug = $3)",
@@ -267,7 +271,9 @@ async fn remove_binding(p: &Platform, sub: &str) {
 }
 
 /// A transaction that holds `audit_records` in `SHARE` mode, so that every audit insert waits for it, and its backend.
-async fn hold_the_audit_trail(p: &Platform) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+pub(crate) async fn hold_the_audit_trail(
+    p: &Platform,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
     let mut locker = p.api.db.pool.begin().await.expect("begin");
     sqlx::query("LOCK TABLE audit_records IN SHARE MODE")
         .execute(&mut *locker)
@@ -281,7 +287,7 @@ async fn hold_the_audit_trail(p: &Platform) -> (sqlx::Transaction<'static, sqlx:
 }
 
 /// Waits until `count` backends wait on the holder `pid` (seen in `pg_stat_activity`, never by time).
-async fn blocked_on(p: &Platform, pid: i32, count: i64) {
+pub(crate) async fn blocked_on(p: &Platform, pid: i32, count: i64) {
     crate::support::eventually("audit writes waiting on the held trail", || async {
         let waiting: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
@@ -405,7 +411,7 @@ async fn a_runner_token_is_refused_and_audited_even_when_its_tenants_tickets_are
 }
 
 /// A run of globex, the platform's second tenant, whose admin is `bob`.
-async fn foreign_run(p: &Platform) -> String {
+pub(crate) async fn foreign_run(p: &Platform) -> String {
     let workspace = p.api.create_workspace("bob", "globex", "foreign").await;
     p.api
         .create_namespace("bob", "globex", &workspace, NAMESPACE, "dev")

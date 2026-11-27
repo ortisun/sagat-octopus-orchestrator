@@ -279,16 +279,16 @@ fn held_answers_and_exceptions_are_compared_by_what_every_language_shares() {
     let mut normalizer = harness::normalize::Normalizer::new("", Vec::new());
     let held = harness::normalize::compared(
         &json!({"heldAnswers": [
-            {"reportSent": "afterRelease", "afterHoldMs": 1999},
-            {"reportSent": "beforeRelease", "afterHoldMs": 2000},
+            {"reportSent": "afterRelease", "afterHoldMs": 1499},
+            {"reportSent": "beforeRelease", "afterHoldMs": 1500},
         ]}),
         &mut normalizer,
     );
     assert_eq!(
         held["heldAnswers"],
         json!([
-            {"reportSent": "afterRelease", "afterHoldMs": "under2000"},
-            {"reportSent": "beforeRelease", "afterHoldMs": "atLeast2000"},
+            {"reportSent": "afterRelease", "afterHoldMs": "under1500"},
+            {"reportSent": "beforeRelease", "afterHoldMs": "atLeast1500"},
         ])
     );
     let mut out = json!({"observations": [{"op": "stepLogs", "result": {"lines": [
@@ -312,9 +312,25 @@ fn must_not_store_finds_an_escaped_canary_and_every_secret_is_listed() {
     use serde_json::json;
     let canary = "quote\"and\nnewline-7Qw".to_owned();
     let markers = harness::step_logs::with_escaped_forms(std::slice::from_ref(&canary));
+    let hex: String = canary.bytes().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(
         markers,
-        vec![canary.clone(), "quote\\\"and\\nnewline-7Qw".to_owned()]
+        vec![
+            canary.clone(),
+            r#"quote\"and\nnewline-7Qw"#.to_owned(),
+            r#"quote\\\"and\\nnewline-7Qw"#.to_owned(),
+            hex.clone(),
+        ]
+    );
+    // A binary column holding the text is written by `row_to_json` as its hexadecimal.
+    let binary = format!(r#"{{"content":"\\x{hex}"}}"#);
+    assert_eq!(
+        harness::step_logs::stored_appearances(
+            &[("the platform's database".to_owned(), binary)],
+            &markers
+        )
+        .len(),
+        1
     );
     let stored = json!({"fields": format!("{{\"k\":{}}}", json!(canary))}).to_string();
     let found = harness::step_logs::stored_appearances(

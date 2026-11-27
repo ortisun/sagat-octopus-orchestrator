@@ -1513,6 +1513,8 @@ async fn play(
                     false
                 }
             };
+        // The capture ends when this language's play ends, on every path, a panic of the staging included.
+        let _capture_end = capturing.then_some(step_logs::CaptureEnd);
         let (run, config, unique, publication_evidence) = stage(&scenario, &first, lang).await;
         // The process id is in the names: two plays of the suite at once (two people, a CI job and a
         // developer) do not overwrite each other's configuration and output.
@@ -1566,7 +1568,6 @@ async fn play(
                 {
                     failures.push(format!("{name}/{lang}: {failure}"));
                 }
-                step_logs::finish_capture();
             }
             run.stop().await;
             continue;
@@ -1672,9 +1673,6 @@ async fn play(
                 )),
             },
             Err(e) => failures.push(format!("{name}/{lang}: run failed: {e}")),
-        }
-        if capturing {
-            step_logs::finish_capture();
         }
         run.stop().await;
     }

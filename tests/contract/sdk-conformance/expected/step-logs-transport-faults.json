@@ -15,11 +15,11 @@
   ],
   "heldAnswers": [
     {
-      "afterHoldMs": "under2000",
+      "afterHoldMs": "under1500",
       "reportSent": "afterRelease"
     },
     {
-      "afterHoldMs": "atLeast2000",
+      "afterHoldMs": "atLeast1500",
       "reportSent": "beforeRelease"
     }
   ],

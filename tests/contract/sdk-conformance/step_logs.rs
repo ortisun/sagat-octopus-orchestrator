@@ -138,19 +138,27 @@ pub fn stored_appearances(sources: &[(String, String)], markers: &[String]) -> V
     found
 }
 
-/// The texts with, after them, the form each takes inside a JSON string when the encoder escapes it (a `"`, a
-/// backslash, a control character), since every source is JSON or holds JSON.
+/// The texts with, after them, the forms each takes where the sources keep it: inside a JSON string, once and twice
+/// escaped (a `"`, a backslash, a control character; a text column holding JSON is escaped again when its row is
+/// written as JSON), and as the hexadecimal of its UTF-8 bytes (a binary column written as JSON).
 pub fn with_escaped_forms(markers: &[String]) -> Vec<String> {
-    let mut all = markers.to_vec();
-    for marker in markers {
-        let encoded = serde_json::to_string(marker).unwrap_or_default();
-        let escaped = encoded
+    fn escaped(text: &str) -> String {
+        let encoded = serde_json::to_string(text).unwrap_or_default();
+        encoded
             .strip_prefix('"')
             .and_then(|inner| inner.strip_suffix('"'))
             .unwrap_or_default()
-            .to_owned();
-        if !escaped.is_empty() && &escaped != marker && !all.contains(&escaped) {
-            all.push(escaped);
+            .to_owned()
+    }
+    let mut all = markers.to_vec();
+    for marker in markers {
+        let once = escaped(marker);
+        let twice = escaped(&once);
+        let hex: String = marker.bytes().map(|byte| format!("{byte:02x}")).collect();
+        for form in [once, twice, hex] {
+            if !form.is_empty() && !all.contains(&form) {
+                all.push(form);
+            }
         }
     }
     all
@@ -299,6 +307,15 @@ pub fn captured_output() -> Result<String, String> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Ends the capture a play started when it goes out of scope, whatever way the play ends.
+pub struct CaptureEnd;
+
+impl Drop for CaptureEnd {
+    fn drop(&mut self) {
+        finish_capture();
+    }
 }
 
 /// Stops the capture this play started and lets its output go.

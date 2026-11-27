@@ -1,6 +1,6 @@
 {
   "name": "step-logs-transport-faults",
-  "description": "Design 041, Requirements 041-004, 041-005 and 041-015, contracts.md section 4, Architecture decision 0095 decision 8: every answer of AppendStepLogs, and lost answers to carrying reports, in twelve runs played one after another, each one step. A short step (three lines) makes no batch and travels in its report's carry: a lost answer to its CompleteStep and to its FailStep sends the same report again and the carry is stored once. A long step (260 lines) sends one batch of 256, cut by the call that buffers the 256th record, and carries the last 4: a lost answer resends the same batch and nothing is stored twice; INVALID_ARGUMENT drops the batch; RETRY_LATER and RESOURCE_EXHAUSTED resend it after their delay; UNAVAILABLE three times drops it after its two retries; UNIMPLEMENTED stops the attempt's batches and its report still carries the rest; FINAL_ONLY leaves a carry with no record; STOP_CAPTURE for the session, with the token the host still holds, stops capture and sends no carry. A batch whose answer the fault proxy holds is waited for: released, the report follows the release; never released, the report is sent 2 seconds after the activity ended. The reads filter on the carried lines (q = last); the streams' counts show that nothing was stored twice and that every missing record is counted.",
+  "description": "Design 041, Requirements 041-004, 041-005 and 041-015, contracts.md section 4, Architecture decision 0095 decision 8: every answer of AppendStepLogs, and lost answers to carrying reports, in twelve runs played one after another, each one step. A short step (three lines) makes no batch and travels in its report's carry: a lost answer to its CompleteStep and to its FailStep sends the same report again and the carry is stored once. A long step (260 lines) sends one batch of 256, cut by the call that buffers the 256th record, and carries the last 4: a lost answer resends the same batch and nothing is stored twice; INVALID_ARGUMENT drops the batch; RETRY_LATER and RESOURCE_EXHAUSTED resend it after their delay; UNAVAILABLE three times drops it after its two retries (that case waits 1.5 s after its last line, so its third call never races the end of the 2 seconds before its report); UNIMPLEMENTED stops the attempt's batches and its report still carries the rest; FINAL_ONLY leaves a carry with no record; STOP_CAPTURE for the session, with the token the host still holds, stops capture and sends no carry. A batch whose answer the fault proxy holds is waited for: released, the report follows the release; never released, the report is sent 2 seconds after the activity ended (compared on the side of 1.5 s it fell on). The reads filter on the carried lines (q = last); the streams' counts show that nothing was stored twice and that every missing record is counted.",
   "server": {
     "stepLogs": true
   },
@@ -75,7 +75,7 @@
       "action": "holdAnswer",
       "after": 12,
       "times": 1,
-      "maxHoldMs": 3000
+      "maxHoldMs": 5000
     },
     {
       "channel": "grpc",
@@ -83,7 +83,7 @@
       "action": "holdAnswer",
       "after": 13,
       "times": 1,
-      "maxHoldMs": 3000
+      "maxHoldMs": 5000
     },
     {
       "channel": "grpc",
@@ -358,7 +358,8 @@
             ],
             "returns": {
               "case": "down"
-            }
+            },
+            "sleepMs": 1500
           }
         },
         "faults.unimplemented": {

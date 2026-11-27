@@ -69,14 +69,15 @@ impl Normalizer {
                                 }),
                             );
                         }
-                        // Design 041: how long after a held answer a report went, compared as the side of the
-                        // 2-second wait before a report it fell on (README, "Step logs", `holdAnswer`).
+                        // Design 041: how long after a held answer a report went, compared as the side of 1.5 s it
+                        // fell on: a report that waited for the release comes at once, one sent at the end of the
+                        // 2-second wait before a report comes later (README, "Step logs", `holdAnswer`; D041-165).
                         "afterHoldMs" if item.is_number() => {
-                            let at_least = item.as_f64().is_some_and(|ms| ms >= 2000.0);
+                            let at_least = item.as_f64().is_some_and(|ms| ms >= 1500.0);
                             out.insert(
                                 key.clone(),
                                 Value::String(
-                                    if at_least { "atLeast2000" } else { "under2000" }.into(),
+                                    if at_least { "atLeast1500" } else { "under1500" }.into(),
                                 ),
                             );
                         }
