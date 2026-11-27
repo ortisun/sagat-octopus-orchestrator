@@ -842,12 +842,14 @@ proxy) as every other fault, with the same `match`, `times` and `after`:
   `LEASE`, `AUTHORITY`, `REMOVED`, `CAPTURE_OFF`, `SESSION`; absent is unspecified), `retryAfterMs` (absent is 0) and a
   `stored_through_sequence` of 0;
 - `holdAnswer`: `{"channel": "grpc", "match": "AppendStepLogs", "action": "holdAnswer", "times": 1, "after": <n − 1>,
-  "maxHoldMs": 3000}` lets the *n*-th matching call reach the server, holds its answer, and releases it when the
+  "maxHoldMs": 5000}` lets the *n*-th matching call reach the server, holds its answer, and releases it when the
   scenario plays `releaseAnswer` or when `maxHoldMs` has passed. The runner records, in `out.json`, `heldAnswers`, one
   entry per hold in file order: `{"reportSent": "beforeRelease" | "afterRelease", "afterHoldMs": <ms>}`, where the report
   is the first `CompleteStep` or `FailStep` the runner's interceptor sees after the hold began and `afterHoldMs` the
-  milliseconds from the hold to it. The normalizer replaces `afterHoldMs` by `under2000` or `atLeast2000`, so that a
-  golden asserts, identically in six languages, `afterRelease`, or `beforeRelease` with `atLeast2000`.
+  milliseconds from the hold to it. The normalizer replaces `afterHoldMs` by `under1500` or `atLeast1500`, so that a
+  golden asserts, identically in six languages, `afterRelease` (a report that waited for the release comes at once), or
+  `beforeRelease` with `atLeast1500` (one sent at the end of the 2-second wait, which a sender thread may have started
+  a little after the batch was sent; decision D041-165).
 
 **What is compared, and what must not be stored.** A line's `exception` is compared through the scenario's
 `exceptionTexts`: the harness replaces it by the list of those texts it holds, in the list's order. `mustNotStore` lists
@@ -856,7 +858,10 @@ database), the bodies of `listRunLogs` and `listRunLogStreams` that the harness 
 scenario, the runner's output (its worker log excluded, as for `mustNotAppear`), the platform's state, the tenant's audit
 trail, and the server's own output, captured in the harness's process at the `trace` level while the scenario plays. A
 test that needs no platform, `must_not_store_finds_a_planted_canary_in_every_source`, shows the search failing on a
-planted canary in each source.
+planted canary in each source. Each text is also searched in the form a JSON encoder gives it, escaped once and twice
+(a text column holding JSON), and as the hexadecimal of its UTF-8 bytes (a binary column); the run's tokens are searched
+in the server's output. A pending language runs these checks too; a pending Go or Rust runner, which ends its run
+without writing an output, is searched in the database, the routes and the server's output only.
 
 ```text
 SAGAT_SDK_SCENARIO=step-logs-capture cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture

@@ -19,7 +19,7 @@ import {
 } from './activity.js';
 import { WorkerRpc, checkGrpcConfig, type TaskLease, type WriteBlobRequest } from './grpc.js';
 import {
-  AttemptCapture, CaptureSession, addProcessSecrets, isStepLogLevel, outcomeOfError, processCaptureStopped,
+  AttemptCapture, CaptureSession, HOST_STOPPED, addProcessSecrets, isStepLogLevel, outcomeOfError, processCaptureStopped,
   type StepLogCarry, type StepLogDropReason, type StepLogOptions,
 } from './step-logs.js';
 import type * as grpc from '@grpc/grpc-js';
@@ -856,7 +856,7 @@ export class WorkerHost {
     const capture = new AttemptCapture({
       session: () => ({ workerId: this.workerId, token: this.#session }),
       append: async (request, deadlineMs) => {
-        if (this.#rpc !== rpc) return { kind: 'error', status: 'CANCELLED', retryAfterMs: null };
+        if (this.#rpc !== rpc) return { kind: 'error', status: HOST_STOPPED, retryAfterMs: null };
         try {
           const answer = await rpc.appendStepLogs(request as never, deadlineMs);
           return { kind: 'answer', verdict: answer.verdict, stopReason: answer.stop_reason, retryAfterMs: answer.retry_after_ms };

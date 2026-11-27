@@ -254,7 +254,6 @@ export class SecretSet {
     const decoder = new TextDecoder('utf-8', { fatal: true });
     let stopped = false;
     for (const bytes of values) {
-      if (bytes.length < LIMITS.secretMinBytes) continue;
       let text: string;
       try {
         text = decoder.decode(bytes);
@@ -262,14 +261,16 @@ export class SecretSet {
         // Not UTF-8: the text an activity can log is the one the accessor hands out (§6.7).
         text = Buffer.from(bytes).toString('utf8');
       }
-      if (this.#values.includes(text)) continue;
-      if (this.#full || this.#values.length + 1 > LIMITS.secretValues || this.#bytes + bytes.length > LIMITS.secretBytes) {
+      // The minimum and the bound count the text that joins, the lenient text of a value that is not UTF-8 (§6.7).
+      const size = Buffer.byteLength(text, 'utf8');
+      if (size < LIMITS.secretMinBytes || this.#values.includes(text)) continue;
+      if (this.#full || this.#values.length + 1 > LIMITS.secretValues || this.#bytes + size > LIMITS.secretBytes) {
         if (!this.#full) stopped = true;
         this.#full = true;
         continue;
       }
       this.#values.push(text);
-      this.#bytes += bytes.length;
+      this.#bytes += size;
       this.#matcher = undefined;
       this.#ordered = undefined;
     }
@@ -293,15 +294,6 @@ export class SecretSet {
     let out = text;
     for (const value of this.#ordered) if (out.includes(value)) out = out.split(value).join(REDACTED);
     return out;
-  }
-
-  wipe(): void {
-    this.#values = [];
-    this.#bytes = 0;
-    this.#full = false;
-    this.#warned = false;
-    this.#matcher = undefined;
-    this.#ordered = undefined;
   }
 
   toString(): string {
@@ -551,6 +543,10 @@ interface Batch {
   held: Held[];
   done: Promise<void>;
   firstSentAt: number;
+  /** Given up by the report's wait or by the attempt's end: its answer, if it comes, changes nothing. */
+  abandoned: boolean;
+  /** The shutdown flush: sent once, never again. */
+  once: boolean;
 }
 
 type AttemptState = 'capturing' | 'finalOnly' | 'stopped';
@@ -590,7 +586,10 @@ export class AttemptCapture {
   }
 
   #count(reason: StepLogDropReason, records = 1): void {
-    if (records > 0) this.#drops.set(reason, (this.#drops.get(reason) ?? 0) + records);
+    if (records <= 0) return;
+    // Once the attempt closed its counts were handed over: a later one goes on its own.
+    if (this.#closed) this.host.dropped(reason, records);
+    else this.#drops.set(reason, (this.#drops.get(reason) ?? 0) + records);
   }
 
   #stopped(): boolean {
@@ -612,6 +611,7 @@ export class AttemptCapture {
       this.#buffer.push({ record, size });
       this.#bufferBytes += size;
       heldBytes += size;
+      if (this.#batchesStopped) return this.#keepOneCarry();
       if (this.#tick === undefined) {
         this.#tick = setInterval(() => this.#onTick(), LIMITS.flushMs);
         this.#tick.unref?.();
@@ -635,8 +635,9 @@ export class AttemptCapture {
 
   /** Takes the oldest of the first `limit` buffered records that one batch holds (§6.9, "Sending"). */
   #cut(limit: number): Held[] {
-    const { workerId, token } = this.host.session();
-    let bytes = requestOverhead(this.identity, workerId, token);
+    const { workerId } = this.host.session();
+    // Counted with a session token at its longest, 128 bytes, so that a resend under a new token stays in the bound.
+    let bytes = requestOverhead(this.identity, workerId, 'x'.repeat(128));
     let count = 0;
     while (count < Math.min(limit, LIMITS.batchRecords)) {
       const next = delimited(this.#buffer[count]!.size);
@@ -653,9 +654,9 @@ export class AttemptCapture {
     for (const one of held) heldBytes -= one.size;
   }
 
-  #send(held: Held[]): void {
+  #send(held: Held[], once = false): void {
     if (held.length === 0) return;
-    const batch: Batch = { held, done: Promise.resolve(), firstSentAt: Date.now() };
+    const batch: Batch = { held, done: Promise.resolve(), firstSentAt: Date.now(), abandoned: false, once };
     batch.done = this.#deliver(batch).catch(() => undefined).finally(() => {
       this.#release(batch.held);
       if (this.#inFlight === batch) this.#inFlight = undefined;
@@ -689,11 +690,18 @@ export class AttemptCapture {
     let retries = 0;
     let sessionResent = false;
     for (;;) {
-      if (this.#closed) return;
+      // A batch is not sent again once it was given up, its attempt or its session stopped, or the process's capture
+      // stopped (§6.9, "Sending").
+      if (batch.abandoned) return;
+      if (this.#stopped()) return this.#count('send_failed', batch.held.length);
+      if (processSecrets.full) return this.#count('secret_set_full', batch.held.length);
       const left = LIMITS.batchAgeMs - (Date.now() - batch.firstSentAt);
       if (left <= 0) return this.#count('send_failed', batch.held.length);
       const outcome = await this.host.append(request, Math.min(this.host.timeoutMs, left));
-      if (this.#closed) return;
+      if (batch.abandoned) return;
+      if (batch.once && !(outcome.kind === 'answer' && outcome.verdict === 'STEP_LOG_VERDICT_CONTINUE')) {
+        return this.#count('send_failed', batch.held.length);
+      }
       if (outcome.kind === 'answer') {
         switch (outcome.verdict) {
           case 'STEP_LOG_VERDICT_CONTINUE':
@@ -712,7 +720,7 @@ export class AttemptCapture {
               request = this.#request(batch, session);
               continue;
             }
-            this.#stopSession('the platform stopped step-log capture for this session');
+            this.#stopSession();
             return;
           }
           case 'STEP_LOG_VERDICT_RETRY_LATER':
@@ -731,13 +739,14 @@ export class AttemptCapture {
             return this.#count('send_failed', batch.held.length);
           case 'UNAUTHENTICATED':
           case 'PERMISSION_DENIED':
-            this.#stopSession('the platform refused step-log capture for this session');
+            this.#stopSession();
             return;
           case 'UNIMPLEMENTED':
             this.#batchesStopped = true;
+            this.#keepOneCarry();
             return this.#count('send_failed', batch.held.length);
-          case 'CANCELLED':
-            // The host stopped: nothing is sent again.
+          case HOST_STOPPED:
+            // The host itself gave the call up as it stopped: nothing is sent again.
             return this.#count('send_failed', batch.held.length);
           default:
             break;
@@ -768,10 +777,20 @@ export class AttemptCapture {
     this.#dropBuffer('send_failed');
   }
 
-  #stopSession(line: string): void {
+  #stopSession(): void {
     this.session.stopped = true;
-    this.host.warnOnce(line);
+    this.host.warnOnce('the platform stopped step-log capture for this session');
     this.#stop();
+  }
+
+  /** After `UNIMPLEMENTED` the attempt keeps the newest records that fit one carry, dropping the oldest (§6.9). */
+  #keepOneCarry(): void {
+    const beyond = this.#buffer.length - this.#carryFits();
+    if (beyond <= 0) return;
+    const dropped = this.#buffer.splice(0, beyond);
+    for (const one of dropped) this.#bufferBytes -= one.size;
+    this.#release(dropped);
+    this.#count('report_deadline', beyond);
   }
 
   /** The newest buffered records that fit one carry: how many, counted from the end. */
@@ -829,7 +848,12 @@ export class AttemptCapture {
           }),
         ]);
         clearTimeout(timer);
-        if (late) break;
+        if (late) {
+          // Given up: its answer, if it comes, changes nothing, and its records are counted as the wait's loss.
+          this.#inFlight.abandoned = true;
+          this.#count('report_deadline', this.#inFlight.held.length);
+          break;
+        }
         if (this.#stopped()) return undefined;
         // The answer may have changed the state while the report waited.
         if ((this.#state as AttemptState) === 'finalOnly' || processSecrets.full) return markOnly();
@@ -846,16 +870,29 @@ export class AttemptCapture {
       this.#release(this.#buffer.slice(0, beyond));
       this.#buffer = this.#buffer.slice(beyond);
     }
-    return { records: this.#buffer.map((one) => one.record), highest_sequence: this.#lastSequence };
+    // The carried records leave the buffer: the report holds them now.
+    const carried = this.#buffer;
+    this.#release(carried);
+    this.#buffer = [];
+    this.#bufferBytes = 0;
+    return { records: carried.map((one) => one.record), highest_sequence: this.#lastSequence };
   }
 
-  /** The attempt is over: nothing more is sent, its records are let go, and its drops are counted once. */
+  /**
+   * The attempt is over: nothing more is sent, what it still holds is let go and counted (`send_failed`: it ends
+   * without a report that carries it), and its drops are handed over once.
+   */
   #close(): void {
     if (this.#closed) return;
-    this.#closed = true;
+    if (this.#inFlight && !this.#inFlight.abandoned) {
+      this.#inFlight.abandoned = true;
+      this.#count('send_failed', this.#inFlight.held.length);
+    }
+    this.#count('send_failed', this.#buffer.length);
     this.#release(this.#buffer);
     this.#buffer = [];
     this.#bufferBytes = 0;
+    this.#closed = true;
     for (const [reason, records] of this.#drops) this.host.dropped(reason, records);
     this.#drops.clear();
   }
@@ -866,21 +903,24 @@ export class AttemptCapture {
     this.#close();
   }
 
-  /** The host stops with this attempt still running: its buffered records go once, as one batch, with no resend. */
+  /**
+   * The host stops with this attempt's handler still running: its oldest buffered records go once, as its batch in
+   * flight with no resend; what does not fit stays for its report. An attempt whose handler has ended, waiting before
+   * its report, is left to its report (§6.9, "Shutdown and the process").
+   */
   async flushOnShutdown(deadlineMs: number): Promise<void> {
     try {
-      this.end();
+      if (this.#ended || this.#closed || this.#inFlight || this.#buffer.length === 0) return;
       if (processSecrets.full) return this.#dropBuffer('secret_set_full');
-      if (this.#stopped() || this.#state !== 'capturing' || this.#batchesStopped || this.#inFlight || this.#buffer.length === 0) return;
-      const held = this.#cut(this.#buffer.length);
-      const { workerId, token } = this.host.session();
-      const request = this.#request({ held, done: Promise.resolve(), firstSentAt: Date.now() }, { workerId, token });
-      await this.host.append(request, Math.max(1, deadlineMs));
-      this.#release(held);
+      if (this.#stopped() || this.#state !== 'capturing' || this.#batchesStopped) return;
+      this.#send(this.#cut(this.#buffer.length), true);
+      const flushing = this.#inFlight as Batch | undefined;
+      if (!flushing) return;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([flushing.done, new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(1, deadlineMs)); })]);
+      clearTimeout(timer);
     } catch {
       /* the lease lapses with what it held */
-    } finally {
-      this.#close();
     }
   }
 
@@ -889,6 +929,9 @@ export class AttemptCapture {
     return this.#buffer.length;
   }
 }
+
+/** The status the host answers for a call it gave up because it is stopping: dropped, never retried. */
+export const HOST_STOPPED = 'HOST_STOPPED';
 
 /** A failure of `AppendStepLogs` as the attempt reads it. */
 export function outcomeOfError(error: unknown): AppendOutcome {
