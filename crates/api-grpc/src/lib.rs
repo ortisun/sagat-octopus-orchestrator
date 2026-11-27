@@ -14,6 +14,7 @@ mod request;
 mod server;
 mod service;
 mod status;
+mod step_logs;
 mod undelivered;
 
 /// Generated messages, server and client of `sagat_octopus_orchestrator.v1`.
@@ -43,6 +44,7 @@ pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
 pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
+pub use step_logs::{DEFAULT_STEP_LOG_TENANT_CALLS, StepLogAppender, StepLogBudgets};
 pub use undelivered::{
     Abandonment, DEFAULT_WITHDRAWAL_CONCURRENCY, DeliveryProbe, Withdrawals, withdrawal_concurrency,
 };

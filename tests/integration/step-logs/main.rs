@@ -15,4 +15,5 @@ mod locks;
 mod metrics;
 mod quota;
 mod retention;
+mod rpc;
 mod scrubbing;
