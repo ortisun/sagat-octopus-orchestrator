@@ -495,3 +495,21 @@ def test_the_text_accessor_of_a_secret_decodes_leniently_as_the_set_does() -> No
 
     raw = b"\xff" + b"s3cr3t-token-42"
     assert Secrets({"k": raw}).text("k") == step_logs.lenient_text(raw) == "�s3cr3t-token-42"
+
+
+def test_a_number_python_registers_as_a_number_is_formatted_as_one() -> None:
+    import numbers
+
+    class Five:
+        """A number with no ``__dict__`` to walk, as numpy's scalars."""
+
+        __slots__ = ()
+
+        def __int__(self) -> int:
+            return 5
+
+        def __index__(self) -> int:
+            return 5
+
+    numbers.Integral.register(Five)
+    assert build_record(1, 1, 20, "count %d", (Five(),), None, "", escaping_set()).message == "count 5"

@@ -778,3 +778,140 @@ async def test_stop_sends_the_lines_of_an_attempt_still_running_once_and_its_rep
     request = capturing.of("CompleteStep")[0].request
     assert messages(request.step_logs.records) == ["after the stop"]
     assert request.step_logs.highest_sequence == 11
+
+
+@pytest.mark.parametrize(
+    ("answer", "drops"),
+    [(None, []), (Scripted(grpc.StatusCode.UNAVAILABLE), [("send_failed", 10)])],
+    ids=["continue", "unavailable"],
+)
+async def test_a_shutdown_batch_is_counted_by_its_answer_once_and_never_sent_again(
+    capturing: FakeWorkerService, make_host: MakeHost, answer: Scripted | None, drops: list[tuple[str, int]]
+) -> None:
+    events: list[WorkerEvent] = []
+    host = make_host(transport="poll", max_inflight=1, on_event=events.append)
+    logged = threading.Event()
+    held = Held(then=answer)
+    capturing.append_script = [held]
+
+    async def work(_input: Any, ctx: ActivityContext) -> Any:
+        for n in range(1, 11):
+            ctx.log.info(f"line {n}")
+        logged.set()
+        await ctx.cancellation.wait()
+        raise asyncio.CancelledError  # it honours the shutdown: no report, the attempt is discarded
+
+    host.register_activity("work", work)
+    await host.start()
+    capturing.leases = [one_lease()]
+    await until(logged.is_set, "the lines")
+    stopping = asyncio.ensure_future(host.stop(0.0))
+    try:
+        await until(lambda: len(capturing.of("AppendStepLogs")) == 1, "the shutdown batch")
+        # The attempt is discarded while its shutdown batch is still on its way; then the batch is answered.
+        await until(lambda: any(event.type == "task.dropped" for event in events), "the discarded attempt")
+    finally:
+        held.release.set()
+    await stopping
+    assert sequences(capturing.of("AppendStepLogs")[0].request.records) == span(1, 10)
+    assert not await reached(lambda: len(capturing.of("AppendStepLogs")) > 1, 0.5), "never sent again"
+    assert drops_of(events) == drops
+
+
+async def test_unauthenticated_counts_the_batch_it_gave_up(capturing: FakeWorkerService, make_host: MakeHost) -> None:
+    events: list[WorkerEvent] = []
+    capturing.append_script = [Scripted(grpc.StatusCode.PERMISSION_DENIED)]
+    request = await run_one(capturing, make_host, 260, on_event=events.append)
+    assert not request.HasField("step_logs")
+    # The batch given up is counted; the four lines after it are counted too when they were buffered before the
+    # answer, and take no sequence when they came after it.
+    assert drops_of(events) in ([("send_failed", 256)], [("send_failed", 260)]), drops_of(events)
+
+
+async def test_threads_racing_at_the_bound_of_the_attempt_buffer_pass_it_by_one_record_at_most(
+    capturing: FakeWorkerService, make_host: MakeHost
+) -> None:
+    events: list[WorkerEvent] = []
+    held = Held()
+    capturing.append_script = [held]
+    host = make_host(transport="poll", max_inflight=1, on_event=events.append)
+    gate = threading.Barrier(8, timeout=5)
+
+    class Gate:
+        """Holds each thread in the formatting of its call until all eight have passed the early check."""
+
+        def __str__(self) -> str:
+            gate.wait()
+            return "gated"
+
+    def work(_input: Any, ctx: ActivityContext) -> Any:
+        for n in range(1, 257 + 999):
+            ctx.log.info(f"line {n}")  # 256 in the held batch, 999 buffered behind it
+        threads = [threading.Thread(target=ctx.log.info, args=("%s", Gate())) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        held.release.set()
+        return {"ok": True}
+
+    host.register_activity("work", work)
+    await host.start()
+    capturing.leases = [one_lease()]
+    await until(lambda: len(capturing.of("CompleteStep")) == 1, "the report", 10.0)
+    sent = sum(len(call.request.records) for call in capturing.of("AppendStepLogs"))
+    carried = report(capturing).step_logs
+    assert carried.highest_sequence == 256 + 999 + 8
+    assert ("buffer_full", 7) in drops_of(events), drops_of(events)
+    assert sent + len(carried.records) == 256 + 999 + 1
+
+
+async def test_threads_logging_across_a_cut_and_across_the_end_of_the_attempt_lose_no_sequence_uncounted(
+    capturing: FakeWorkerService, make_host: MakeHost
+) -> None:
+    events: list[WorkerEvent] = []
+    lock = threading.Lock()
+
+    def keep(event: WorkerEvent) -> None:
+        with lock:
+            events.append(event)
+
+    host = make_host(transport="poll", max_inflight=1, on_event=keep)
+    stop = threading.Event()
+    threads: list[threading.Thread] = []
+
+    def work(_input: Any, ctx: ActivityContext) -> Any:
+        def logs(name: str) -> None:
+            n = 0
+            while not stop.is_set() and n < 2000:
+                n += 1
+                ctx.log.info(f"{name} {n}")
+
+        threads.extend(threading.Thread(target=logs, args=(f"thread-{i}",)) for i in range(4))
+        for thread in threads:
+            thread.start()
+        while capturing.of("AppendStepLogs") == []:  # at least one cut while the threads log
+            stop.wait(0.001)
+        return {"ok": True}  # the threads go on logging across the end of the attempt
+
+    host.register_activity("work", work)
+    await host.start()
+    capturing.leases = [one_lease()]
+    await until(lambda: len(capturing.of("CompleteStep")) == 1, "the report", 10.0)
+    stop.set()
+    for thread in threads:
+        thread.join()
+    await asyncio.sleep(0)
+    await until(lambda: len(capturing.append_answered) == len(capturing.of("AppendStepLogs")), "the answers")
+    carried = report(capturing).step_logs
+    seen = [record.sequence for call in capturing.of("AppendStepLogs") for record in call.request.records]
+    seen += [record.sequence for record in carried.records]
+    assert len(seen) == len(set(seen)), "no record twice"
+    for call in capturing.of("AppendStepLogs"):
+        assert sequences(call.request.records) == sorted(sequences(call.request.records))
+    with lock:
+        dropped = sum(
+            records or 0 for event in events if event.type == "steplogs.dropped" for records in [event.records]
+        )
+    assert len(seen) + dropped == carried.highest_sequence, (len(seen), dropped, carried.highest_sequence)
+    assert max(seen) <= carried.highest_sequence

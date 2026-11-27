@@ -15,12 +15,11 @@ import collections
 import contextlib
 import copy
 import datetime
-import decimal
 import enum
-import fractions
 import json
 import logging
 import math
+import numbers
 import random
 import re
 import sys
@@ -353,11 +352,7 @@ class _Exception:
 _PLAIN = (
     type(None),
     bool,
-    int,
-    float,
-    complex,
-    decimal.Decimal,
-    fractions.Fraction,
+    numbers.Number,  # int, float, complex, Decimal, Fraction and every type registered as a number (numpy's)
     datetime.date,
     datetime.time,
     datetime.timedelta,
@@ -825,10 +820,14 @@ class CaptureHost:
 class _Batch:
     held: list[tuple[pb.StepLogRecord, int]]
     done: asyncio.Future[None]
-    first_sent: float
+    first_sent: float = 0.0
+    """When it was first sent (``time.monotonic``): its 10 seconds are counted from there."""
     abandoned: bool = False
     """Given up by the attempt (the report's wait ended, or the attempt ended without a report): its records are
     counted, and it is not sent again."""
+    once: bool = False
+    """The shutdown batch: sent once, never again, and counted by its own answer (never given up by the attempt, whose
+    end does not end the call)."""
 
 
 _ON, _FINAL_ONLY, _STOPPED = 0, 1, 2
@@ -929,38 +928,48 @@ class AttemptCapture:
         except BaseException:
             # A failure of the capture path costs the record, never the activity; the record is counted.
             if sequence:
-                with contextlib.suppress(Exception), self._lock:
-                    self._count("send_failed")
+                with contextlib.suppress(Exception):
+                    with self._lock:
+                        self._count("send_failed")
+                    self._emit_late_drops()
 
     def _buffered(self, record: pb.StepLogRecord, size: int) -> None:
         """Step 7: the record joins the buffer in the order of its sequence, and the call that buffers the 256th record
         cuts the batch, in the call."""
         spawn: _Batch | None = None
         arm = False
+        refused: DropReason | None = None
         with self._lock:
-            if self._closed:
-                return
-            if self._state == _FINAL_ONLY:
-                self._count("after_ceiling")
-                return
-            if self._stopped():
-                self._count("send_failed")
-                return
-            at = len(self._buffer)
-            while at > 0 and self._buffer[at - 1][0].sequence > record.sequence:
-                at -= 1
-            self._buffer.insert(at, (record, size))
-            self._buffer_bytes += size
-            _HELD.add(size)
-            if self._batches_stopped:
-                self._keep_one_carry()
-            if not self._ticking and not self._ended:
-                self._ticking = arm = True
-            if len(self._buffer) >= FLUSH_RECORDS and self._in_flight is None and not self._batches_stopped:
-                if process_capture_stopped():
-                    self._drop_buffer("secret_set_full")
-                else:
-                    spawn = self._in_flight = self._cut(len(self._buffer))
+            # The record took its sequence before it was formatted, outside the lock: what happened meanwhile decides.
+            if self._closed or self._stopped():
+                refused = "send_failed"  # the attempt ended, or its capture stopped, while the record was formatted
+            elif self._state == _FINAL_ONLY:
+                refused = "after_ceiling"
+            elif len(self._buffer) >= ATTEMPT_RECORDS or self._buffer_bytes >= ATTEMPT_BYTES:
+                refused = "buffer_full"  # checked again: calls from several threads passed the early check together
+            elif _HELD.value >= PROCESS_BYTES:
+                refused = "process_bound"
+            if refused is not None:
+                self._count(refused)
+            else:
+                at = len(self._buffer)
+                while at > 0 and self._buffer[at - 1][0].sequence > record.sequence:
+                    at -= 1
+                self._buffer.insert(at, (record, size))
+                self._buffer_bytes += size
+                _HELD.add(size)
+                if self._batches_stopped:
+                    self._keep_one_carry()
+                if not self._ticking and not self._ended:
+                    self._ticking = arm = True
+                if len(self._buffer) >= FLUSH_RECORDS and self._in_flight is None and not self._batches_stopped:
+                    if process_capture_stopped():
+                        self._drop_buffer("secret_set_full")
+                    else:
+                        spawn = self._in_flight = self._cut(len(self._buffer))
+        if refused is not None:
+            self._emit_late_drops()
+            return
         if arm:
             self._loop.call_soon_threadsafe(self._arm_tick)
         if spawn is not None:
@@ -1009,7 +1018,7 @@ class AttemptCapture:
             count += 1
         held, self._buffer = self._buffer[:count], self._buffer[count:]
         self._buffer_bytes -= sum(one[1] for one in held)
-        return _Batch(held, self._loop.create_future(), time.monotonic())
+        return _Batch(held, self._loop.create_future())
 
     def _spawn(self, batch: _Batch, once: bool = False, within: float | None = None) -> asyncio.Task[None]:
         task = self._loop.create_task(self._deliver(batch, once, self._host.timeout if within is None else within))
@@ -1041,6 +1050,7 @@ class AttemptCapture:
         request = request_of(self._identity, worker_id, token, records)
         retries = 0
         session_resent = False
+        batch.first_sent = time.monotonic()
         while True:
             # Not sent again once it was given up, its attempt or its session stopped, or the process's capture did.
             if batch.abandoned:
@@ -1097,6 +1107,7 @@ class AttemptCapture:
                     self._failed(batch)
                     return
                 elif status in ("UNAUTHENTICATED", "PERMISSION_DENIED"):
+                    self._failed(batch)  # the batch it gives up is counted, as the records it still holds are
                     self._stop_session()
                     return
                 elif status == "UNIMPLEMENTED":
@@ -1128,7 +1139,7 @@ class AttemptCapture:
     def _abandon(self, reason: DropReason) -> None:
         """Gives up the batch in flight, if any. The caller holds the lock."""
         batch = self._in_flight
-        if batch is not None and not batch.abandoned:
+        if batch is not None and not batch.abandoned and not batch.once:
             batch.abandoned = True
             self._count(reason, len(batch.held))
 
@@ -1327,6 +1338,7 @@ class AttemptCapture:
                 self._drop_buffer("secret_set_full")
                 return None
             batch = self._in_flight = self._cut(len(self._buffer))
+            batch.once = True
             return batch
 
     async def send_once(self, batch: _Batch, within: float) -> None:

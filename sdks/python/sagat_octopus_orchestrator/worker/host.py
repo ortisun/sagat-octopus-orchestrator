@@ -1049,12 +1049,16 @@ class WorkerHost:
             try:
                 return Outcome(answer=await rpc.append_step_logs(request, timeout))
             except SagatError as error:
+                if self._rpc is not rpc:
+                    # The host stopped (or started again) while the call was on its way: its own abandonment.
+                    return Outcome(status=ABANDONED)
                 if error.status:
                     return Outcome(status=str(error.status), retry_after_ms=error.retry_after_ms)
-                # No status: the connection was closed under the call, which only the host's stop does.
-                return Outcome(status=ABANDONED if error.code == "CANCELLED" else "UNAVAILABLE")
-            except Exception:
+                # No status: the token provider failed, or the connection was found closed (``WorkerRpc`` raises
+                # CANCELLED without a status then); neither is an answer of the service, so the call is tried again.
                 return Outcome(status="UNAVAILABLE")
+            except Exception:
+                return Outcome(status=ABANDONED if self._rpc is not rpc else "UNAVAILABLE")
 
         capture = new_attempt_capture(
             CaptureHost(
