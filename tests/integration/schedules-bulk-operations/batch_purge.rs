@@ -2064,6 +2064,27 @@ fn the_prefix_and_the_reason_of_a_purged_job_reach_no_log_span_metric_or_audit_r
     );
 }
 
+/// What a capture hears does not depend on which thread reached a call site first (D2341). The call site of `said` is
+/// reached first on a thread with no subscriber, while this capture is the only one in the process, and then on this
+/// thread: `tracing-core` used to cache it from the other thread as "nobody is interested", and the line never reached the
+/// capture. Under the whole suite that is how the line of the purge went missing in the test above.
+#[test]
+fn a_line_whose_call_site_another_thread_reached_first_is_heard_by_the_capture() {
+    fn said() {
+        tracing::info!("said on two threads");
+    }
+    let (guard, logs) = capture_with_spans(tracing::Level::INFO);
+    std::thread::spawn(said).join().expect("the other thread");
+    said();
+    drop(guard);
+    let text = logs.text();
+    assert_eq!(
+        text.matches("said on two threads").count(),
+        1,
+        "the line said on this thread, and only that one: {text}"
+    );
+}
+
 // --- the migration -----------------------------------------------------------------------------------------
 
 /// This migration: the one version a renumbering at merge changes in this file.

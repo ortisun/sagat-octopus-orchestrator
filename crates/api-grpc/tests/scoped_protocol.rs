@@ -96,6 +96,8 @@ fn every_attempt_capability_carries_the_same_instance_identity() {
 #[test]
 fn generated_messages_preserve_scoped_paths_and_legacy_absence() {
     let scoped = pb::CompleteStepRequest {
+        // Design 041 (protocol 1.7): no step-log carry.
+        step_logs: None,
         task_id: "0198c5a0-0000-7000-8000-000000000001/charge/3".into(),
         run_id: "0198c5a0-0000-7000-8000-000000000001".into(),
         step_id: "0198c5a0-0000-7000-8000-000000000002".into(),

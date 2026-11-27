@@ -212,7 +212,7 @@ async fn the_list_the_preview_and_the_job_reach_the_same_runs_for_a_prefix_at_ev
             &format!("edge-prefix-job-{n}"),
         )
         .await;
-        select(&exec, &created).await;
+        select(&f, &exec, &created).await;
         let selected: Vec<Uuid> =
             sqlx::query_scalar("SELECT run_id FROM batch_items WHERE job_id = $1")
                 .bind(created.id)
@@ -260,7 +260,7 @@ async fn a_prefix_that_matches_nothing_counts_zero_and_a_job_over_it_completes_w
         "by-prefix-none",
     )
     .await;
-    select(&exec, &created).await;
+    select(&f, &exec, &created).await;
     settle(&exec, &created).await;
     let done = job(&f, created.id).await;
     assert_eq!(done.state, JobState::Completed);
@@ -356,7 +356,7 @@ async fn a_prefix_reaches_only_the_runs_of_its_own_namespace_and_tenant() {
         "by-prefix-scope",
     )
     .await;
-    select(&exec, &created).await;
+    select(&f, &exec, &created).await;
     settle(&exec, &created).await;
     let selected: Vec<Uuid> =
         sqlx::query_scalar("SELECT run_id FROM batch_items WHERE job_id = $1")
@@ -393,7 +393,7 @@ async fn a_job_by_prefix_takes_its_runs_in_pages_and_applies_the_action_to_those
         "by-prefix-pages",
     )
     .await;
-    select(&exec, &created).await;
+    select(&f, &exec, &created).await;
     for _ in 0..50 {
         f.clock.advance(Duration::seconds(1));
         if matches!(

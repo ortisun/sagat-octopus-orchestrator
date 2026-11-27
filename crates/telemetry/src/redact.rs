@@ -64,26 +64,53 @@ fn is_word_char(c: char) -> bool {
 }
 
 fn scrub_shapes(text: &str) -> Cow<'_, str> {
-    let without_userinfo = hide_userinfo(text);
-    match scrub_words(&without_userinfo) {
+    scrub_shapes_with(text, REDACTED)
+}
+
+/// Every credential-shaped part of `text` (a URL's user information, a bearer token, a credential-shaped word) replaced
+/// by `placeholder`, with nothing cut: the shapes [`scrub`] applies, for a caller with a placeholder and a length limit
+/// of its own (design 041, task T041-6: a step log writes `[REDACTED]` and cuts at 8 KiB). No second list of shapes.
+#[must_use]
+pub fn scrub_shapes_with<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
+    let without_userinfo = hide_userinfo(text, placeholder);
+    match scrub_words(&without_userinfo, placeholder) {
         Cow::Owned(done) => Cow::Owned(done),
         Cow::Borrowed(_) => without_userinfo,
     }
 }
 
 /// `scheme://user:pass@host/...`: what stands before the `@` of the authority.
-fn hide_userinfo(text: &str) -> Cow<'_, str> {
+fn hide_userinfo<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
     let mut out = String::new();
     let mut rest = text;
     let mut changed = false;
     while let Some(at) = rest.find("://") {
         let (head, tail) = rest.split_at(at + 3);
         out.push_str(head);
-        let authority_end = tail
+        let mut authority_end = tail
             .find(['/', '?', '#', ' ', '"', '\''])
             .unwrap_or(tail.len());
-        if let Some(userinfo_end) = tail[..authority_end].rfind('@') {
-            out.push_str(REDACTED);
+        // A password may hold a character that also ends an authority (`postgres://u:pa#ss@db`): when no `@` comes
+        // before it, the last `@` before the end of the word still ends the user information if a `:` comes before
+        // any `/`, `?` or `#` (a URL with a path and an `@` in it, `https://example.com/a@b`, is left as it is).
+        let userinfo_end = tail[..authority_end].rfind('@').or_else(|| {
+            let word_end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+            let word_end = tail[..word_end].find(['"', '\'']).unwrap_or(word_end);
+            tail[..word_end].rfind('@').filter(|&at| {
+                let before = &tail[..at];
+                before
+                    .find(':')
+                    .is_some_and(|colon| !before[..colon].contains(['/', '?', '#']))
+            })
+        });
+        if let Some(userinfo_end) = userinfo_end {
+            authority_end = authority_end.max(
+                userinfo_end
+                    + tail[userinfo_end..]
+                        .find(['/', '?', '#', ' ', '"', '\''])
+                        .unwrap_or(tail.len() - userinfo_end),
+            );
+            out.push_str(placeholder);
             out.push_str(&tail[userinfo_end..authority_end]);
             changed = true;
         } else {
@@ -98,7 +125,7 @@ fn hide_userinfo(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-fn scrub_words(text: &str) -> Cow<'_, str> {
+fn scrub_words<'a>(text: &'a str, placeholder: &str) -> Cow<'a, str> {
     let mut out = String::with_capacity(text.len());
     let mut changed = false;
     let mut previous_word = "";
@@ -113,7 +140,7 @@ fn scrub_words(text: &str) -> Cow<'_, str> {
         let end = rest.find(|c: char| !is_word_char(c)).unwrap_or(rest.len());
         let word = &rest[..end];
         if is_credential_word(word) || follows_scheme(previous_word, word) {
-            out.push_str(REDACTED);
+            out.push_str(placeholder);
             changed = true;
         } else {
             out.push_str(word);
@@ -133,9 +160,42 @@ fn scrub_words(text: &str) -> Cow<'_, str> {
 fn follows_scheme(previous: &str, word: &str) -> bool {
     (previous.eq_ignore_ascii_case("bearer") || previous.eq_ignore_ascii_case("basic"))
         && word.len() >= 12
-        && word
+        && (word
             .chars()
             .any(|c| c.is_ascii_digit() || matches!(c, '_' | '-' | '.' | '~' | '+' | '/' | '='))
+            || (previous.eq_ignore_ascii_case("basic") && is_basic_credential(word)))
+}
+
+/// A `Basic` credential of letters only (design 041, the security review of task T041-6): base64 that decodes to
+/// printable `user:password`. A word of prose almost never decodes to printable text holding a `:`.
+fn is_basic_credential(word: &str) -> bool {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some(u32::from(c - b'A')),
+            b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+            b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = word.trim_end_matches('=').as_bytes();
+    if !word.len().is_multiple_of(4) || bytes.len() < 4 {
+        return false;
+    }
+    let mut decoded = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut bits = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            let Some(value) = sextet(c) else {
+                return false;
+            };
+            bits |= value << (18 - 6 * i);
+        }
+        let [_, a, b, c] = bits.to_be_bytes();
+        decoded.extend_from_slice(&[a, b, c][..chunk.len() - 1]);
+    }
+    decoded.contains(&b':') && decoded.iter().all(|b| (0x20..0x7f).contains(b))
 }
 
 /// A JSON web token, or a key with a well-known prefix.
@@ -161,4 +221,61 @@ fn is_credential_word(word: &str) -> bool {
             && word
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod scrub_shapes_with_tests {
+    use super::{REDACTED, scrub, scrub_shapes_with};
+
+    /// Design 041, task T041-6: the public entry point equals what it replaces. With the logs' placeholder it is
+    /// exactly `scrub` on a value short enough not to be cut, for each shape (a URL's user information, a bearer
+    /// word, a credential-shaped word) and for text with none.
+    #[test]
+    fn scrub_shapes_with_the_logs_placeholder_is_scrub_below_the_cut() {
+        for text in [
+            "postgres://admin:hunter2@db.internal:5432/app",
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+            "key AKIAIOSFODNN7EXAMPLE in the log",
+            "nothing secret here",
+            "",
+        ] {
+            assert_eq!(scrub_shapes_with(text, REDACTED), scrub(text), "{text}");
+        }
+    }
+
+    /// Design 041, the security review of task T041-6: a connection string whose password holds a character that also
+    /// ends a URL's authority (`#`, `/`, `?`) still has its user information hidden; a `Basic` credential of letters
+    /// only is hidden when it decodes to `user:password`; prose after the word "basic" survives.
+    #[test]
+    fn userinfo_with_a_delimiter_and_a_letters_only_basic_credential_are_hidden() {
+        for (text, secret) in [
+            ("postgres://admin:pa#ss@db.internal/app", "pa#ss"),
+            ("postgres://admin:pa/ss@db.internal/app", "pa/ss"),
+            ("postgres://admin:pa?ss@db.internal/app", "pa?ss"),
+            ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+        ] {
+            let scrubbed = scrub_shapes_with(text, "[REDACTED]");
+            assert!(!scrubbed.contains(secret), "{text} -> {scrubbed}");
+            assert!(scrubbed.contains("[REDACTED]"), "{text} -> {scrubbed}");
+        }
+        for kept in [
+            "a basic configuration example",
+            "Basic construction works",
+            "https://example.com/a@b",
+            "see https://example.com/path?q=1#frag for details",
+        ] {
+            assert_eq!(scrub_shapes_with(kept, "[REDACTED]"), kept);
+        }
+    }
+
+    /// The placeholder is the caller's (a step log writes `[REDACTED]`), and nothing is cut, however long the text.
+    #[test]
+    fn scrub_shapes_with_uses_the_callers_placeholder_and_cuts_nothing() {
+        assert_eq!(
+            scrub_shapes_with("postgres://admin:hunter2@db/app", "[REDACTED]"),
+            "postgres://[REDACTED]@db/app"
+        );
+        let long = "x ".repeat(5_000);
+        assert_eq!(scrub_shapes_with(&long, "[REDACTED]"), long);
+    }
 }

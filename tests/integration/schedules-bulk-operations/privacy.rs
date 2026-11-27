@@ -393,7 +393,7 @@ fn the_prefix_of_a_batch_selector_reaches_only_the_job_that_holds_it() {
             )
             .await;
             said.push(("the job as created", format!("{job:?}")));
-            select(&exec, &job).await;
+            select(&f, &exec, &job).await;
             for _ in 0..50 {
                 f.clock.advance(time::Duration::seconds(1));
                 if crate::batch_executor::job(&f, job.id).await.state

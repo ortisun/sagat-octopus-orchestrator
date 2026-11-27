@@ -127,7 +127,7 @@ class CiRule(unittest.TestCase):
     def test_each_shard_prepares_what_its_suites_need_and_runs_their_preflight(self):
         block = job_block(self.text, "integration")
         names = [s.splitlines()[0] for s in steps(block)]
-        for name in ("isolated C# compiler and runtime images", "build isolated database executor for process tests",
+        for name in ("isolated C# compiler and runtime images", "build isolated database executor, control plane and engine for process tests",
                      "capacity and migration regression preflight", "bounded ChildRoot holder discovery",
                      "scoped event quota rollback boundary", "worker capacity lease boundary"):
             self.assertIn(f"      - name: {name}", names)

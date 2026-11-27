@@ -62,6 +62,129 @@ impl HandoverState {
     }
 }
 
+/// Why the automatic handover is blocked (ADR-0091 decision 5): the closed set the round function of the database writes to the
+/// attempt row, the job reports, the engines export as `trigger_schedule_handover_blocked{reason}` and runbook 6.3 explains row by
+/// row. A test holds this enum, `schedule_trigger_handover_reasons()` and the runbook's anchors to one set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HandoverBlock {
+    /// An execution engine seen within the horizon does not list `schedules-v1`.
+    EngineLacksCapability,
+    /// A scheduler membership within the horizon is named by no registered engine: an engine older than this release.
+    EngineUnregistered,
+    /// Fewer live engines than `--min-live`.
+    TooFewEngines,
+    /// The live set of engines changed between rounds, or has not held still for `--stable` fresh rounds.
+    FleetChanging,
+    /// The reconciliation made, revived, respecified, resumed or removed a trigger schedule within the horizon.
+    ReconciliationRecent,
+    /// No control plane is live in the registry.
+    NoControlPlane,
+    /// A cron trigger has no schedule equal to it (the drift view is not empty).
+    Unconverged,
+    /// Less than one horizon has passed since the job's first round.
+    FirstHorizon,
+    /// The activation waited for a lock (the epoch, the triggers' table) or its step bound, and rolled back: a wait cures it.
+    Busy,
+    /// Three rounds in a row hit their statement timeout.
+    CheckTooSlow,
+    /// The job received SIGTERM or SIGINT and started no activation.
+    Interrupted,
+    /// The job's wait ended.
+    Deadline,
+}
+
+impl HandoverBlock {
+    /// Every reason, in the order of ADR-0091 decision 5.
+    pub const ALL: [Self; 12] = [
+        Self::EngineLacksCapability,
+        Self::EngineUnregistered,
+        Self::TooFewEngines,
+        Self::FleetChanging,
+        Self::ReconciliationRecent,
+        Self::NoControlPlane,
+        Self::Unconverged,
+        Self::FirstHorizon,
+        Self::Busy,
+        Self::CheckTooSlow,
+        Self::Interrupted,
+        Self::Deadline,
+    ];
+
+    /// The code stored, exported and documented.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::EngineLacksCapability => "ENGINE_LACKS_CAPABILITY",
+            Self::EngineUnregistered => "ENGINE_UNREGISTERED",
+            Self::TooFewEngines => "TOO_FEW_ENGINES",
+            Self::FleetChanging => "FLEET_CHANGING",
+            Self::ReconciliationRecent => "RECONCILIATION_RECENT",
+            Self::NoControlPlane => "NO_CONTROL_PLANE",
+            Self::Unconverged => "UNCONVERGED",
+            Self::FirstHorizon => "FIRST_HORIZON",
+            Self::Busy => "BUSY",
+            Self::CheckTooSlow => "CHECK_TOO_SLOW",
+            Self::Interrupted => "INTERRUPTED",
+            Self::Deadline => "DEADLINE",
+        }
+    }
+
+    /// The reason a stored code stands for; `None` for a code this build does not know.
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.code() == code)
+    }
+
+    /// The anchor of the reason's row in `docs/runbooks/schedules.md` section 6.3.
+    #[must_use]
+    pub fn anchor(self) -> String {
+        format!(
+            "handover-reason-{}",
+            self.code().to_ascii_lowercase().replace('_', "-")
+        )
+    }
+}
+
+/// Who made the handover: the operator's command (`--apply`) or the job (`--auto`, as `sagat_handover`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoverMode {
+    Operator,
+    Automatic,
+}
+
+impl HandoverMode {
+    pub const ALL: [Self; 2] = [Self::Operator, Self::Automatic];
+
+    /// The stored value, and the label of `trigger_schedule_handover_mode{mode}`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Operator => "OPERATOR",
+            Self::Automatic => "AUTOMATIC",
+        }
+    }
+
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.code() == code)
+    }
+}
+
+/// What an engine reads of the handover for its gauges (ADR-0091 decision 5): the state, the mode once handed over, the reasons of the
+/// job's runs that are before their deadline (and of the most recent one), the age of the most recent round, and how many tenants of
+/// the handover's set still lack their audit record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HandoverView {
+    pub state: HandoverState,
+    pub mode: Option<HandoverMode>,
+    /// Every reason a live run (or the most recent one) last wrote; a code this build does not know is left out.
+    pub blocked: Vec<HandoverBlock>,
+    /// Seconds since the most recent round of any run, on the database's clock; `None` while no run wrote one.
+    pub attempt_age_seconds: Option<f64>,
+    /// Tenants of the handover's recorded set whose audit record is not written; `None` before the handover.
+    pub audit_pending: Option<u32>,
+}
+
 /// The identity of the run a tick starts: the one feature 004 gave it (`D87`), shared by the legacy cron pass and the
 /// schedule pass so that a tick reached by both starts one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +587,20 @@ pub struct DriftPage {
 pub trait TriggerScheduleStore: Send + Sync {
     /// Where the cron triggers fire from. One row.
     fn handover(&self) -> impl Future<Output = Result<HandoverState, StoreError>> + Send;
+
+    /// The state with the mode and the job's most recent attempt, for the gauges of ADR-0091 decision 5. A store that keeps no
+    /// attempts answers the state alone.
+    fn handover_view(&self) -> impl Future<Output = Result<HandoverView, StoreError>> + Send {
+        async move {
+            Ok(HandoverView {
+                state: self.handover().await?,
+                mode: None,
+                blocked: Vec::new(),
+                attempt_age_seconds: None,
+                audit_pending: None,
+            })
+        }
+    }
 
     /// How the schedules differ from the cron triggers in force, in one query for the whole window.
     fn drift(

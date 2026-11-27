@@ -379,8 +379,29 @@ async fn a_job_of_a_thousand_runs_loses_its_process_three_times_between_an_effec
         u32::try_from(RUNS).expect("small"),
         "all the runs, the one that was held among them"
     );
+    // The watched round is the first that takes a step. At the highest rate the job's next slot is 5 ms after its last item,
+    // stamped by the executor's clock (the database's, as it read it once at the start), and a round that comes sooner, or
+    // while that clock reads ahead of the database's, finds nothing due (the scan reads the database's clock) or nothing to
+    // do (the step reads the executor's), takes no step and writes nothing, and says when to look again (`next_due_in`), as
+    // the engine's own loop does. Until 2026-11-26 the test watched one round and required that it took a step, which held
+    // only when the slot had come by both clocks by then (it failed once on a loaded laptop, whose VM steps the database's
+    // clock back every ten seconds: "the watched round took steps").
     wire.watch().await;
-    let round = leader.pass.round().await;
+    let round = within("a watched round takes a step", WAIT, async {
+        loop {
+            let round = leader.pass.round().await;
+            if round.steps > 0 {
+                return round;
+            }
+            assert_eq!(
+                (round.refused, round.failed),
+                (0, 0),
+                "a round that takes no step refuses nothing and fails nothing: {round:?}"
+            );
+            tokio::time::sleep(round.next_due_in.unwrap_or(StdDuration::from_millis(1))).await;
+        }
+    })
+    .await;
     wire.disarm().await;
     assert!(round.steps > 0, "the watched round took steps: {round:?}");
     let writes = wire.writes().await;

@@ -295,6 +295,12 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         false
     }
 
+    /// Whether this adapter stores step logs (design 041, protocol 1.7): the store of `AppendStepLogs` and of a
+    /// report's carry. False by default, so that an adapter that has not proven the storage keeps workers at 1.6.
+    fn supports_step_log_protocol(&self) -> bool {
+        false
+    }
+
     /// The activity patterns `subject` is bound to in `namespace` (canonical text, see
     /// `sagat_domain::binding`). Empty when the identity has no binding there.
     fn bound_patterns(
@@ -3026,14 +3032,21 @@ where
         let state = tx.parts().1;
         let step = state.instance(task.instance);
         let stop_allowed = step.is_some_and(|s| stop.allows(s.status()));
+        // The stop rule is one domain function, which the step-log ingest's T2 applies too (OD-2026-11-16-11); a
+        // report the stop allowance admits is the answer to a cancellation.
         let valid_step = step.is_some_and(|s| {
             (legacy_attempt || s.attempt() == task.fence.attempt)
                 && s.generation() == task.fence.generation
-                && (stop_allowed || !s.cancel_requested())
-        }) && (stop_allowed
-            || state.stop_reason().is_none()
-            || task.instance.node().is_derived())
-            && !state.is_finished();
+                && sagat_domain::execution::report_fence_allows(
+                    sagat_domain::execution::ReportFence {
+                        cancel_requested: s.cancel_requested(),
+                        run_stopping: state.stop_reason().is_some(),
+                        run_finished: state.is_finished(),
+                        derived_node: task.instance.node().is_derived(),
+                    },
+                    stop_allowed,
+                )
+        });
         if !valid_step
             || !tx
                 .lease_unexpired_instance(task.instance, &Token::hash_of(task.lease_token))

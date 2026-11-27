@@ -23,6 +23,13 @@ oidc:
 secrets:
   existingSecret: sagat-keys         # SAGAT_SECRETS_KEYS, the same ring for the API and the engine
 
+schedules:
+  # The automatic handover of the cron triggers (docs/runbooks/schedules.md, section 6): a Secret with DATABASE_URL of the role
+  # sagat_handover (no password in it) and SAGAT_HANDOVER_PASSWORD; `autoHandover: false` keeps the handover manual.
+  autoHandover:
+    databaseSecret: sagat-handover
+    retireRole: true                 # take the role's login away once the handover and its audit are done
+
 nats:
   url: nats://nats.nats.svc:4222
   credentialsSecret: sagat-nats
