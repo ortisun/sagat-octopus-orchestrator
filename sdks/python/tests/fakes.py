@@ -130,6 +130,24 @@ class Scripted:
     retry_after_ms: int | None = None
 
 
+@dataclass
+class Held:
+    """An ``AppendStepLogs`` answer held until the test sets ``release``, then answered with ``then`` (a verdict or a
+    scripted failure; ``CONTINUE`` when ``None``): the barrier that keeps a batch in flight (AGENTS.md Rule 18)."""
+
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+    then: pb.AppendStepLogsResponse | Scripted | None = None
+
+
+def verdict(name: str, stop_reason: str = "STEP_LOG_STOP_REASON_UNSPECIFIED", retry_after_ms: int = 0) -> Any:
+    """An ``AppendStepLogsResponse`` by the names of its enums."""
+    return pb.AppendStepLogsResponse(
+        verdict=cast(Any, pb.StepLogVerdict.Value(name)),
+        stop_reason=cast(Any, pb.StepLogStopReason.Value(stop_reason)),
+        retry_after_ms=retry_after_ms,
+    )
+
+
 class FakeWorkerService(pb_grpc.WorkerServiceServicer):
     """An in-memory worker service: queued leases, queued failures, a record of every call."""
 
@@ -156,6 +174,12 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         self.stream_cancelled = 0
         self.fail_gate: Callable[[], Awaitable[None]] | None = None
         """Awaited by ``FailStep`` after the call is recorded and before it is answered: a test holds failures there."""
+        self.step_logs: bool | None = None
+        """The ``StepLogPolicy`` of the registration (protocol 1.7): ``None`` sends no policy."""
+        self.append_script: list[pb.AppendStepLogsResponse | Scripted | Held] = []
+        """The answers of ``AppendStepLogs`` in order; ``CONTINUE`` once it is empty."""
+        self.append_answered: list[float] = []
+        """When each ``AppendStepLogs`` was answered (``time.monotonic``), a scripted failure included."""
         self.port = 0
         self._server: grpc.aio.Server | None = None
 
@@ -185,19 +209,26 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         queue = self.failures.get(method)
         scripted = queue.pop(0) if queue else self.always.get(method)
         if scripted is not None:
-            trailers = []
-            if scripted.reason:
-                trailers.append(("x-sagat-error", scripted.reason))
-            if scripted.retry_after_ms is not None:
-                trailers.append(("retry-after-ms", str(scripted.retry_after_ms)))
-            context.set_trailing_metadata(tuple(trailers))
-            await context.abort(scripted.code, "scripted")
+            await self._abort(scripted, context)
+
+    @staticmethod
+    async def _abort(scripted: Scripted, context: grpc.aio.ServicerContext[Any, Any]) -> None:
+        trailers = []
+        if scripted.reason:
+            trailers.append(("x-sagat-error", scripted.reason))
+        if scripted.retry_after_ms is not None:
+            trailers.append(("retry-after-ms", str(scripted.retry_after_ms)))
+        context.set_trailing_metadata(tuple(trailers))
+        await context.abort(scripted.code, "scripted")
 
     async def RegisterWorker(self, request: Any, context: Any) -> Any:
         await self._enter("RegisterWorker", request, context)
-        return pb.RegisterWorkerResponse(
+        response = pb.RegisterWorkerResponse(
             worker_id="w-1", session_token=self.session_token, accepted_protocol_version=self.accepted_version
         )
+        if self.step_logs is not None:
+            response.step_logs.enabled = self.step_logs
+        return response
 
     async def PollTasks(self, request: Any, context: Any) -> Any:
         await self._enter("PollTasks", request, context)
@@ -258,6 +289,17 @@ class FakeWorkerService(pb_grpc.WorkerServiceServicer):
         if self.resolve_delay > 0:
             await asyncio.sleep(self.resolve_delay)
         return pb.ResolveSecretsResponse(secrets=self.secrets)
+
+    async def AppendStepLogs(self, request: Any, context: Any) -> Any:
+        await self._enter("AppendStepLogs", request, context)
+        step = self.append_script.pop(0) if self.append_script else None
+        if isinstance(step, Held):
+            await step.release.wait()
+            step = step.then
+        self.append_answered.append(time.monotonic())
+        if isinstance(step, Scripted):
+            await self._abort(step, context)
+        return step if step is not None else verdict("STEP_LOG_VERDICT_CONTINUE")
 
 
 def lease(**overrides: Any) -> pb.TaskLease:

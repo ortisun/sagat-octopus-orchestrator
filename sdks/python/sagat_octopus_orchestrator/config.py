@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 SDK_VERSION = "0.2.0"
 """Sent in ``User-Agent`` as ``sagat-sdk-python/<version>``."""
 
-PROTOCOL_VERSION = "1.5"
+PROTOCOL_VERSION = "1.7"
 """The newest minor version of worker protocol 1 this SDK speaks (``sdks/SPEC.md`` section 6.1)."""
 
 LANGUAGE = "python"

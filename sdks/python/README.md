@@ -249,6 +249,35 @@ same token. Inside an `async def` handler, `await run_blocking(function, *args)`
 The SDK does not fence the lease by its own clock: only a `STALE_ATTEMPT` answer stops a handler's result from being
 reported, so external effects stay at-least-once.
 
+### Step logs
+
+`ctx.log` writes to the host's `logger` as before and, when the server accepted worker protocol 1.7 and its policy
+says capture is on, also keeps each call at or above the capture level as a line of the run's log
+(`GET /runs/{runId}/logs`; [sdks/SPEC.md](../SPEC.md) section 6.9):
+
+```python
+from sagat_octopus_orchestrator import TRACE, ActivityContext
+
+async def charge(order: dict, ctx: ActivityContext) -> dict:
+    ctx.log.info("charging %s", order["currency"], extra={"amount": order["amount"]})  # extra: the line's fields
+    try:
+        return await provider.charge(order, key=ctx.idempotency_key)
+    except ProviderError:
+        ctx.log.exception("the provider refused")  # the traceback is the line's exception text
+        raise
+```
+
+A level maps onto five: below 10 `trace` (`ctx.log.trace`, `TRACE = 5`), then `debug`, `info`, `warn`, and `error`
+from 40 (`CRITICAL` included). The capture is independent of the host logger's level: `WorkerConfig.step_logs_capture`
+turns it off and `step_logs_level` changes its level (`logging.INFO` by default). The message is captured as
+`logging` formats it (`msg % args`), `exc_info` and `stack_info=True` as the exception text, and the task's own
+identifiers are not captured. Before a line leaves the process, every secret value the process has resolved is
+replaced by `[REDACTED]` (in the message, its arguments, the field keys and values, the numbers and the exception
+text); a message or an exception is cut at 8,192 bytes and the fields at 32 keys and 2,048 bytes. A logger call never
+waits for the network and never raises: lines travel in batches while the activity runs, and the last ones on its
+report, which waits at most 2 seconds for a batch still on its way. Lines the SDK had to drop are counted through
+`on_event` (`steplogs.dropped`, with `reason` and `records`).
+
 ## Workflows: build the document
 
 ```python
@@ -334,7 +363,7 @@ SemVer. Before 1.0 a minor version may change the Python API; the **wire** contr
 REST API is additive within `/v1` and the worker protocol additive within `1.x`. A newer SDK against an older
 server runs the worker at the server's protocol version (negotiated at registration); an older SDK against a newer
 server ignores the fields it does not know.
-This SDK offers worker protocol `1.5`; the package version remains independent. A server that
+This SDK offers worker protocol `1.7`; the package version remains independent. A server that
 negotiates `1.4` or older continues to receive root-compatible requests without scoped identity.
 
 ## Runtime matrix: declared and tested

@@ -1018,7 +1018,9 @@ with other builds), never in CI. The bound is a p99 under 1 ms. Each SDK's pull 
 
 - Go (T041-16): recorded by its pull request.
 
-- Python (T041-17): recorded by its pull request.
+- Python (T041-17, `SAGAT_STEP_LOG_BENCH=1 .venv/bin/python -m pytest -q -s tests/test_step_logs_bench.py`): p50 0.093 ms,
+  p99 0.120 ms, max 0.193 ms (2026-11-27, after the review fixes; its prefilter is a sampled index of short grams, a pure
+  Python Aho–Corasick having taken about 0.45 ms on an 8 KiB text alone). Under the bound.
 
 - C# (T041-18): recorded by its pull request.
 

@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 import grpc.aio
 
@@ -36,6 +36,19 @@ from ..config import (
 from ..errors import SagatError
 from ..retry import DEFAULT_RETRY, MAX_SERVER_WAIT, RetryPolicy, backoff_delay, server_wait
 from ._grpc import GrpcConfig, WorkerRpc
+from ._step_logs import (
+    ABANDONED,
+    SHUTDOWN_SEND_SECONDS,
+    AttemptCapture,
+    AttemptIdentity,
+    CaptureHost,
+    CaptureSession,
+    Outcome,
+    add_process_secrets,
+    new_attempt_capture,
+    process_capture_stopped,
+    warn_once,
+)
 from .activity import (
     ActivityContext,
     ActivityFailure,
@@ -49,6 +62,7 @@ from .activity import (
     Secrets,
     TaskKind,
     Verdict,
+    _TaskLog,
     is_cancellation,
 )
 
@@ -70,6 +84,9 @@ HAND_BACK_MINOR = 8
 one would record it as an ordinary failure that spends the attempt (decision D006-080)."""
 """Seconds. After ``stop`` has cancelled the tokens of the tasks left, it waits this long for them to react and be
 reported before it closes the connection; it never interrupts a handler."""
+STEP_LOG_MINOR = 7
+"""The first protocol minor of step logs (design 041, SPEC section 6.9)."""
+_SECRET_SET_FULL_LINE = "the secret set of the process is full: step-log capture stops for the process"
 _VERSION = re.compile(r"1(?:\.([0-9]+))?")
 _REPEATABLE = frozenset({"TRANSPORT", "UNAVAILABLE", "RATE_LIMITED"})
 _TASK_KINDS: dict[str, TaskKind] = {"COMPENSATION": "COMPENSATION", "RECONCILIATION": "RECONCILIATION"}
@@ -93,6 +110,7 @@ class WorkerEvent:
         "heartbeat",
         "receive.failed",
         "reconnect",
+        "steplogs.dropped",
     ]
     task_id: str | None = None
     activity: str | None = None
@@ -104,6 +122,9 @@ class WorkerEvent:
     protocol_version: str | None = None
     tasks: int | None = None
     traceparent: str | None = None
+    records: int | None = None
+    """``steplogs.dropped``: how many step-log records of the attempt the SDK dropped for ``reason`` (``sdks/SPEC.md``
+    section 6.9), counted once when the attempt ends."""
 
 
 @dataclass(frozen=True)
@@ -135,6 +156,12 @@ class WorkerConfig:
     interceptors: Sequence[grpc.aio.ClientInterceptor] = ()
     """Interceptors of the ``grpc.aio`` channel: the hook of the conformance suite and of tests."""
     on_event: Callable[[WorkerEvent], None] | None = None
+    step_logs_capture: bool = True
+    """Step-log capture at protocol 1.7 (``sdks/SPEC.md`` section 6.9): what an activity logs through ``ctx.log`` at or
+    above ``step_logs_level`` is kept with its run when the server's policy says capture is on."""
+    step_logs_level: int = logging.INFO
+    """The capture level, a ``logging`` level: below 10 trace, 10 to 19 debug, 20 to 29 info, 30 to 39 warn, 40 and
+    above error."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.token, Secret):
@@ -167,21 +194,8 @@ class _Task:
     finished: bool = False
     """True once the handler has returned: its secrets are gone and ``ctx.secrets()`` raises."""
     secrets_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-
-if TYPE_CHECKING:
-    _AdapterBase = logging.LoggerAdapter[logging.Logger]
-else:
-    _AdapterBase = logging.LoggerAdapter
-
-
-class _TaskLog(_AdapterBase):
-    """The logger of an activity: every line carries the task's identifiers, and nothing else of it."""
-
-    def process(self, msg: Any, kwargs: Any) -> tuple[Any, Any]:
-        fields = dict(self.extra or {})
-        kwargs["extra"] = {"sagat": fields}
-        return f"{msg} " + " ".join(f"{key}={value}" for key, value in fields.items()), kwargs
+    capture: AttemptCapture | None = field(default=None, repr=False)
+    """The attempt's step-log capture (SPEC section 6.9), when its session captures."""
 
 
 def _minor_of(version: str) -> int:
@@ -189,7 +203,7 @@ def _minor_of(version: str) -> int:
     return int(match[1] or 0) if match else 0
 
 
-def _scoped_instance(lease: pb.TaskLease, minor: int) -> dict[str, pb.ExecutionInstanceIdentity]:
+def _scoped_instance(lease: pb.TaskLease, minor: int) -> dict[str, Any]:
     if minor >= 5 and lease.HasField("instance"):
         return {"instance": lease.instance}
     return {}
@@ -233,6 +247,11 @@ class WorkerHost:
             raise SagatError("VALIDATION_FAILED", "max_inflight is between 1 and 1000")
         if config.transport not in ("auto", "poll", "stream"):
             raise SagatError("VALIDATION_FAILED", "transport is auto, poll or stream")
+        if not isinstance(config.step_logs_capture, bool):
+            raise SagatError("VALIDATION_FAILED", "step_logs_capture is True or False")
+        level = config.step_logs_level
+        if not isinstance(level, int) or isinstance(level, bool) or level < 0:
+            raise SagatError("VALIDATION_FAILED", "step_logs_level is a logging level: an int of 0 or more")
         self._config = config
         self._log = config.logger
         self._handlers: dict[str, _Registered] = {}
@@ -258,6 +277,9 @@ class WorkerHost:
         """Awaited with the number of leases after a poll answer or a stream frame is read and before it is looked at;
         ``None`` except in the tests, which hold the loop there while ``stop`` begins."""
         self._lifecycle = asyncio.Lock()
+        # Step-log capture: the session's state from its registration, and the attempts that capture now (SPEC 6.9).
+        self._capture_session = CaptureSession(False)
+        self._captures: set[AttemptCapture] = set()
 
     @property
     def protocol_version(self) -> str:
@@ -402,9 +424,18 @@ class WorkerHost:
         if pending:
             _, late = await asyncio.wait(pending, timeout=max(0.0, grace_ends - clock()))
             if late:
+                # An attempt whose handler still runs sends its oldest buffered records once, as its batch in flight,
+                # before the channel closes; one that waits before its report is left to it (SPEC section 6.9).
+                flushes: set[asyncio.Future[Any]] = set()
+                for capture in list(self._captures):
+                    batch = capture.shutdown_batch()
+                    if batch is not None:
+                        within = min(SHUTDOWN_SEND_SECONDS, self._config.timeout)
+                        flushes.add(asyncio.ensure_future(capture.send_once(batch, within)))
                 for task in list(self._inflight):
                     self._cancel_activity(task, "shutdown")
-                await asyncio.wait(late, timeout=SHUTDOWN_GRACE)  # they may react to the token and be reported
+                # They may react to the token and be reported.
+                await asyncio.wait(late | flushes, timeout=SHUTDOWN_GRACE)
         # Whatever is left keeps its lease until it lapses; its heartbeats end with the host.
         for task in list(self._inflight):
             if task.beat is not None:
@@ -412,6 +443,10 @@ class WorkerHost:
         self._orphans |= self._inflight
         self._inflight = set()
         self._running = False
+        # The captures still open send nothing more once the channel closes; what they hold is counted (SPEC 6.9).
+        for capture in list(self._captures):
+            capture.discard()
+        self._captures.clear()
         rpc, self._rpc = self._rpc, None
         if rpc is not None:
             await rpc.close()
@@ -467,6 +502,13 @@ class WorkerHost:
             self._worker_id = response.worker_id
             self._session = Secret(response.session_token)
             self._accepted = response.accepted_protocol_version
+            # A new session: the policy of this registration, for the attempts dispatched from now on (SPEC 6.9).
+            self._capture_session = CaptureSession(
+                _minor_of(self._accepted) >= STEP_LOG_MINOR
+                and response.HasField("step_logs")
+                and response.step_logs.enabled
+                and self._config.step_logs_capture
+            )
             self._stream_unavailable = False
             log(self._log, logging.INFO, "worker registered", worker=self._config.worker_name, protocol=self._accepted)
             self._emit(WorkerEvent("registered", protocol_version=self._accepted))
@@ -830,6 +872,7 @@ class WorkerHost:
             collection_index = raw_index
 
         node_id = document.get("node")
+        capture = task.capture = self._capture_of(task)
         context = ActivityContext(
             activity_name=lease.activity_name,
             task_id=lease.task_id,
@@ -856,6 +899,7 @@ class WorkerHost:
                     "node": node_id or lease.step_id,
                     "attempt": lease.attempt,
                 },
+                capture,
             ),
             deadline_ms=lambda: task.deadline_ms,
             secrets=lambda: self._secrets_of(task, minor),
@@ -878,8 +922,13 @@ class WorkerHost:
             task.finished = True
             if task.secrets is not None:  # the values are dropped when the handler returns
                 task.secrets._drop()
+            if capture is not None:  # its logger captures nothing more; the report carries what it captured
+                capture.end()
             await self._conclude(task, registered, kind, handler_task, started)
         finally:
+            if capture is not None:
+                capture.discard()  # nothing when the report carried it already
+                self._captures.discard(capture)
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await heartbeat
@@ -924,21 +973,23 @@ class WorkerHost:
                 task=lease.task_id,
             )
             return
+        # The handler ran and the attempt reports: its step-log carry, the same on every resend (SPEC section 6.9).
+        carry = await task.capture.carry() if task.capture is not None else None
         if cancelled and task.token.reason == "run-cancelled":
-            await self._fail(task, "CANCELLED", "the activity was cancelled", False, started)
+            await self._fail(task, "CANCELLED", "the activity was cancelled", False, started, carry)
             return
         if handler_task.cancelled():
-            await self._fail(task, "ACTIVITY_ERROR", "CancelledError", True, started)
+            await self._fail(task, "ACTIVITY_ERROR", "CancelledError", True, started, carry)
             return
         if error is not None:
             if isinstance(error, ActivityFailure):
                 # TASK_NOT_STARTED is the host's word that no handler ran (SPEC section 6.2): a handler that uses it
                 # reports an ordinary failure, with its own message and retryable.
                 code = "WORKER_ERROR" if error.code == "TASK_NOT_STARTED" else error.code
-                await self._fail(task, code, error.message, error.is_retryable, started)
+                await self._fail(task, code, error.message, error.is_retryable, started, carry)
             else:
                 # Only the type name: the text of an ordinary error may hold the data it was handed.
-                await self._fail(task, "ACTIVITY_ERROR", type(error).__name__, True, started)
+                await self._fail(task, "ACTIVITY_ERROR", type(error).__name__, True, started, carry)
             return
 
         result = handler_task.result()
@@ -949,6 +1000,7 @@ class WorkerHost:
                 "a reconciler answers applied, not_applied or unknown",
                 False,
                 started,
+                carry,
             )
             return
         if isinstance(result, Verdict):
@@ -957,13 +1009,15 @@ class WorkerHost:
         if isinstance(result, BlobOutput):
             if minor < 3:
                 await self._fail(
-                    task, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", False, started
+                    task, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", False, started, carry
                 )
                 return
             try:
                 self._validate_blob_descriptor(result.descriptor)
             except SagatError:
-                await self._fail(task, "OUTPUT_INVALID", "the blob output descriptor is malformed", False, started)
+                await self._fail(
+                    task, "OUTPUT_INVALID", "the blob output descriptor is malformed", False, started, carry
+                )
                 return
             blob = result.descriptor
             output = ""
@@ -971,12 +1025,65 @@ class WorkerHost:
             try:
                 output = encode_json(result)
             except SagatError as invalid:
-                await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started)
+                await self._fail(task, "OUTPUT_INVALID", invalid.message, False, started, carry)
                 return
         if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            await self._fail(task, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started)
+            await self._fail(task, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", False, started, carry)
             return
-        await self._complete(task, output, started, blob)
+        await self._complete(task, output, started, blob, carry)
+
+    def _capture_of(self, task: _Task) -> AttemptCapture | None:
+        """The step-log capture of an attempt when its session captures (SPEC section 6.9), on the channel the task was
+        leased on: a batch still on its way after ``stop`` never opens another one."""
+        session = self._capture_session
+        # An attempt dispatched after stop began does not capture.
+        if self._stopping or not session.enabled or session.stopped or process_capture_stopped():
+            return None
+        lease = task.lease
+        rpc = task.rpc
+        assert rpc is not None
+
+        async def append(request: pb.AppendStepLogsRequest, timeout: float) -> Outcome:
+            if self._rpc is not rpc:
+                return Outcome(status=ABANDONED)
+            try:
+                return Outcome(answer=await rpc.append_step_logs(request, timeout))
+            except SagatError as error:
+                if self._rpc is not rpc:
+                    # The host stopped (or started again) while the call was on its way: its own abandonment.
+                    return Outcome(status=ABANDONED)
+                if error.status:
+                    return Outcome(status=str(error.status), retry_after_ms=error.retry_after_ms)
+                # No status: the token provider failed, or the connection was found closed (``WorkerRpc`` raises
+                # CANCELLED without a status then); neither is an answer of the service, so the call is tried again.
+                return Outcome(status="UNAVAILABLE")
+            except Exception:
+                return Outcome(status=ABANDONED if self._rpc is not rpc else "UNAVAILABLE")
+
+        capture = new_attempt_capture(
+            CaptureHost(
+                session=lambda: (self._worker_id, self._session.reveal()),
+                append=append,
+                timeout=self._config.timeout,
+                dropped=lambda reason, records: self._emit(
+                    WorkerEvent("steplogs.dropped", task_id=lease.task_id, reason=reason, records=records)
+                ),
+                warn_once=lambda line: warn_once(self._log, line),
+            ),
+            session,
+            AttemptIdentity(
+                task_id=lease.task_id,
+                run_id=lease.run_id,
+                step_id=lease.step_id,
+                attempt=lease.attempt,
+                generation=lease.generation,
+                lease_token=task.lease_token,
+                instance=lease.instance if task.protocol_minor >= 5 and lease.HasField("instance") else None,
+            ),
+            self._config.step_logs_level,
+        )
+        self._captures.add(capture)
+        return capture
 
     @staticmethod
     def _validate_blob_descriptor(descriptor: BlobDescriptor) -> None:
@@ -1177,7 +1284,14 @@ class WorkerHost:
                     continue
                 raise
 
-    async def _complete(self, task: _Task, output: str, started: float, blob: BlobDescriptor | None = None) -> None:
+    async def _complete(
+        self,
+        task: _Task,
+        output: str,
+        started: float,
+        blob: BlobDescriptor | None = None,
+        carry: pb.StepLogCarry | None = None,
+    ) -> None:
         lease = task.lease
         rpc = task.rpc
         assert rpc is not None
@@ -1195,6 +1309,8 @@ class WorkerHost:
             output_sha256=blob.sha256 if blob else "",
             **_scoped_instance(lease, task.protocol_minor),
         )
+        if carry is not None and task.protocol_minor >= STEP_LOG_MINOR:
+            request.step_logs.CopyFrom(carry)  # built once: every resend carries the same carry
         try:
             answer = await self._with_retries(lambda: rpc.complete_step(request, lease.traceparent or None))
         except SagatError as error:
@@ -1208,7 +1324,15 @@ class WorkerHost:
             WorkerEvent("task.completed", task_id=lease.task_id, duration_ms=round((time.monotonic() - started) * 1000))
         )
 
-    async def _fail(self, task: _Task, code: str, message: str, retryable: bool, started: float) -> None:
+    async def _fail(
+        self,
+        task: _Task,
+        code: str,
+        message: str,
+        retryable: bool,
+        started: float,
+        carry: pb.StepLogCarry | None = None,
+    ) -> None:
         lease = task.lease
         rpc = task.rpc
         assert rpc is not None
@@ -1229,6 +1353,8 @@ class WorkerHost:
             traceparent=lease.traceparent,
             **_scoped_instance(lease, task.protocol_minor),
         )
+        if carry is not None and task.protocol_minor >= STEP_LOG_MINOR:
+            request.step_logs.CopyFrom(carry)
         try:
             answer = await self._with_retries(lambda: rpc.fail_step(request, lease.traceparent or None))
         except SagatError as error:
@@ -1289,4 +1415,7 @@ class WorkerHost:
             ),
             lease.traceparent or None,
         )
+        # Every value the process resolves joins its secret set before any handler can see it (SPEC 6.7, 6.9).
+        if add_process_secrets([secret.value for secret in answer.secrets]):
+            warn_once(self._log, _SECRET_SET_FULL_LINE)
         return Secrets({secret.name: secret.value for secret in answer.secrets})

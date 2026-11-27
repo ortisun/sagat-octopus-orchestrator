@@ -14,7 +14,8 @@ Worker and activity API over an internal authenticated grpc.aio adapter. [__init
 
 - The host supports 1–1000 inflight slots and 1–256 unique pre-start handlers; task dispatch respects receive credit and the 8 MiB stream input bound. [host.py:WorkerHost] [host.py:MAX_RECEIVE_INPUT_BYTES]
 - Cancellation sets a cooperative token reason; stale/lost results are dropped and shutdown cancellation errors are not reported. Completion/failure uses stable keys and bounded safe retries. [host.py:_cancel_activity] [host.py:_conclude] [host.py:_with_retries] [host.py:_complete] [host.py:_fail]
-- The host offers 1.5. Task kinds/secrets require minor 2, blobs 3, streams 4 and scoped identity 5. Inline outputs cap at 256 KiB; blob streams validate ordering, chunks, size and SHA-256. [../config.py:PROTOCOL_VERSION] [host.py:_scoped_instance] [host.py:MAX_OUTPUT_BYTES] [host.py:_validate_blob_descriptor] [host.py:_read_blob]
+- The host offers 1.7. Task kinds/secrets require minor 2, blobs 3, streams 4, scoped identity 5 and step logs 7. Inline outputs cap at 256 KiB; blob streams validate ordering, chunks, size and SHA-256. [../config.py:PROTOCOL_VERSION] [host.py:_scoped_instance] [host.py:MAX_OUTPUT_BYTES] [host.py:_validate_blob_descriptor] [host.py:_read_blob]
+- Step-log capture (1.7, policy on, option on) numbers each call at or above the capture level, redacts it with the process's secret set, cuts it, buffers it per attempt, sends batches through AppendStepLogs and carries the newest records on the report after at most 2 s; a call never raises or waits. [_step_logs.py:AttemptCapture] [activity.py:_TaskLog] [host.py:_capture_of]
 - Secret resolution is lazy and attempt-scoped; returned values are copies and internal buffers are invalidated/wiped when the handler finishes, including late resolutions. [host.py:_secrets_of] [activity.py:_drop]
 
 ## Side Effects
