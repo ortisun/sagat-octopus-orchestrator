@@ -12,59 +12,59 @@
 
 - [ ] CHK001 Is each of the four operator permissions (`scaling:read`, `scaling:manage`, `scaling:override`, `scaling:publish`) mapped in a requirement to the operations it authorizes, with no operation left without one? [Completeness, Spec §FR-036-023, contracts/operator-scaling.openapi.yaml] **[Release-blocking]**
 - [ ] CHK002 Does the specification state how an operator is authenticated (the token audience, who issues it, what identifies the person or system), or is that only in the ADR and the OpenAPI document? [Gap, Spec §FR-036-023, ADR-0074 §1] **[Release-blocking]**
-- [ ] CHK003 Is the rule that the operator listener is off by default and reachable only from explicitly named peers a requirement of the specification, not only a statement of the plan? [Gap, Plan §Risks, ADR-0074 §1, §3] **[Release-blocking]**
+- [x] CHK003 Is the rule that the operator listener is off by default and reachable only from explicitly named peers a requirement of the specification, not only a statement of the plan? [Gap, Plan §Risks, ADR-0074 §1, §3] **[Release-blocking]**
 - [ ] CHK004 Is the rule that the hard ceilings, the destination allowlist, the database budget and the pool names cannot be changed through the management interface a requirement, not only a decision of the plan? [Gap, Spec §FR-036-032, Research §D1706] **[Release-blocking]**
 - [ ] CHK005 Are audit requirements defined for refused attempts on the operator and tenant surfaces (a tenant token on the operator listener, a source off the allowlist, a cross-tenant read), and not only for successful changes? [Gap, Spec §FR-036-002, §FR-036-025, SC-036-013]
-- [ ] CHK006 Are the requirements for rotating, revoking and replacing a source credential specified (who, how, effect on running sources)? [Gap, Spec §FR-036-058, Research §D1717]
+- [x] CHK006 Are the requirements for rotating, revoking and replacing a source credential specified (who, how, effect on running sources)? [Gap, Spec §FR-036-058, Research §D1717]
 - [ ] CHK007 Is the behaviour specified when the credential file named by a declared source disappears or becomes unreadable after the declaration was accepted? [Edge Case, Gap, Spec §FR-036-058]
-- [ ] CHK008 Are the audit requirements complete for changes that arrive from the configuration file (who is the actor, is each applied version recorded with a reason), as for changes that arrive through the interface? [Ambiguity, Spec §FR-036-018, §FR-036-025]
+- [x] CHK008 Are the audit requirements complete for changes that arrive from the configuration file (who is the actor, is each applied version recorded with a reason), as for changes that arrive through the interface? [Ambiguity, Spec §FR-036-018, §FR-036-025]
 
 ## Requirement Clarity
 
-- [ ] CHK009 Is "operator" defined so that it cannot be read as the existing tenant role named Operator (which holds read permissions inside a tenant)? [Ambiguity, Spec §FR-036-023, platform role set in `crates/domain/src/identity.rs`] **[Release-blocking]**
-- [ ] CHK010 Is "indistinguishable from a missing resource" defined by what must be identical (status, body, headers, and a bound on timing)? [Clarity, Spec §FR-036-002, §FR-036-023, Constitution V] **[Release-blocking]**
-- [ ] CHK011 Are the bounds on a pulled-source query (timeout, response size, minimum interval) stated in the specification as values or as configurable limits with defaults, and not only in the plan? [Clarity, Spec §FR-036-059, Research §D1716]
-- [ ] CHK012 Is "read-only" defined for a source whose query text the operator supplies, and for a broker-queue source (what makes it read-only, and what is done about an expensive query)? [Ambiguity, Spec §FR-036-059]
-- [ ] CHK013 Is "an encrypted connection" specified (certificate validation, trust roots, minimum version) for a source that carries a credential? [Gap, Spec §FR-036-058]
+- [x] CHK009 Is "operator" defined so that it cannot be read as the existing tenant role named Operator (which holds read permissions inside a tenant)? [Ambiguity, Spec §FR-036-023, platform role set in `crates/domain/src/identity.rs`] **[Release-blocking]**
+- [x] CHK010 Is "indistinguishable from a missing resource" defined by what must be identical (status, body, headers, and a bound on timing)? [Clarity, Spec §FR-036-002, §FR-036-023, Constitution V] **[Release-blocking]**
+- [x] CHK011 Are the bounds on a pulled-source query (timeout, response size, minimum interval) stated in the specification as values or as configurable limits with defaults, and not only in the plan? [Clarity, Spec §FR-036-059, Research §D1716]
+- [x] CHK012 Is "read-only" defined for a source whose query text the operator supplies, and for a broker-queue source (what makes it read-only, and what is done about an expensive query)? [Ambiguity, Spec §FR-036-059]
+- [x] CHK013 Is "an encrypted connection" specified (certificate validation, trust roots, minimum version) for a source that carries a credential? [Gap, Spec §FR-036-058]
 - [ ] CHK014 Is the matching rule of the destination allowlist defined (exact host and port, address literals, names that resolve to other addresses, redirects, wildcards)? [Clarity, Spec §FR-036-057, contracts/scaling-config.schema.json] **[Release-blocking]**
-- [ ] CHK015 Is "within the tenant's quotas" for a tenant's parallelism and rate defined, given that the plan introduces no quota kind for parallelism and bounds it by a platform cap? [Conflict, Spec §FR-036-023, §FR-036-012, Research §D1712]
+- [x] CHK015 Is "within the tenant's quotas" for a tenant's parallelism and rate defined, given that the plan introduces no quota kind for parallelism and bounds it by a platform cap? [Conflict, Spec §FR-036-023, §FR-036-012, Research §D1712]
 
 ## Requirement Consistency
 
 - [ ] CHK016 Do the specification and the plan agree on tenant-published custom signals: the specification allows them with no automatic effect, the plan defers publishing by tenants? [Conflict, Spec §FR-036-024, US05 AC8, Research §G1700]
 - [ ] CHK017 Is the boundary between what a tenant may do programmatically consistent across FR-036-019 ("everything configurable is programmable"), FR-036-023 (policies are operator-only) and the decision that the SDKs do not change? [Consistency, Spec §FR-036-019, §FR-036-023, O1708]
-- [ ] CHK018 Do the platform audit trail and the tenant audit trail together cover every change class of FR-036-025 without a class that falls between them? [Consistency, Spec §FR-036-025, Research §D1714]
+- [x] CHK018 Do the platform audit trail and the tenant audit trail together cover every change class of FR-036-025 without a class that falls between them? [Consistency, Spec §FR-036-025, Research §D1714]
 - [ ] CHK019 Is it consistent that an operator may mark any signal "exported" (FR-036-061) with the rule that aggregates carry no tenant identity (FR-036-002), for a pulled source that reflects a single tenant's queue? [Conflict, Spec §FR-036-056, §FR-036-061, §FR-036-002] **[Release-blocking]**
 
 ## Acceptance Criteria Quality
 
-- [ ] CHK020 Can SC-036-013 be objectively verified, given that "fails as a missing resource" is not defined by observable properties? [Measurability, Spec §SC-036-013, §FR-036-002] **[Release-blocking]**
-- [ ] CHK021 Does SC-036-018 enumerate the refused cases (redirect, rebinding to a private address, address literals including IPv6, oversize and slow answers) or leave the list open? [Measurability, Spec §SC-036-018] **[Release-blocking]**
-- [ ] CHK022 Is the scope of SC-036-016 (permissions of the applier's credentials) stated for the first delivery, when the applier belongs to the third? [Clarity, Spec §SC-036-016, O1709]
+- [x] CHK020 Can SC-036-013 be objectively verified, given that "fails as a missing resource" is not defined by observable properties? [Measurability, Spec §SC-036-013, §FR-036-002] **[Release-blocking]**
+- [x] CHK021 Does SC-036-018 enumerate the refused cases (redirect, rebinding to a private address, address literals including IPv6, oversize and slow answers) or leave the list open? [Measurability, Spec §SC-036-018] **[Release-blocking]**
+- [x] CHK022 Is the scope of SC-036-016 (permissions of the applier's credentials) stated for the first delivery, when the applier belongs to the third? [Clarity, Spec §SC-036-016, O1709]
 
 ## Scenario and Edge Case Coverage
 
 - [ ] CHK023 Are requirements defined for a compromised or leaked operator token (expiry, revocation, the effect of rotating the signing key, the blast radius)? [Gap, Exception Flow, ADR-0074 §1] **[Release-blocking]**
 - [ ] CHK024 Are requirements defined for what remains guaranteed if the control plane or the runtime database role is compromised and writes the scaling tables? [Gap, Research §G1707, ADR-0074 §Consequences] **[Release-blocking]**
-- [ ] CHK025 Are rate limiting and abuse requirements defined for the operator listener and the tenant consumption endpoint, and not only for custom-signal publication? [Gap, Spec §FR-036-024, contracts/tenant-scaling.openapi-fragment.yaml]
-- [ ] CHK026 Are requirements specified for a pulled source whose data an outside party can influence, so that it drives a shared role? [Coverage, Spec §FR-036-046, §FR-036-056]
+- [x] CHK025 Are rate limiting and abuse requirements defined for the operator listener and the tenant consumption endpoint, and not only for custom-signal publication? [Gap, Spec §FR-036-024, contracts/tenant-scaling.openapi-fragment.yaml]
+- [x] CHK026 Are requirements specified for a pulled source whose data an outside party can influence, so that it drives a shared role? [Coverage, Spec §FR-036-046, §FR-036-056]
 - [ ] CHK027 Are requirements defined to prevent re-identification when an aggregate exported by connector kind covers a single tenant's connector? [Gap, Spec §FR-036-002, contracts/metrics.md `connector_lag_messages`] **[Release-blocking]**
 
 ## Data Protection
 
-- [ ] CHK028 Are retention and classification requirements specified for decision records and the platform audit trail, which can carry values derived from tenant connectors? [Gap, Spec §FR-036-028, Research §D1702, §D1714]
+- [x] CHK028 Are retention and classification requirements specified for decision records and the platform audit trail, which can carry values derived from tenant connectors? [Gap, Spec §FR-036-028, Research §D1702, §D1714]
 - [ ] CHK029 Is embedding a credential in a source's destination address or query text prohibited, and is that prohibition detectable, in the requirements? [Gap, Spec §FR-036-056, §FR-036-058, NFR-036-SEC] **[Release-blocking]**
-- [ ] CHK030 Are the error responses of the tenant-facing endpoints specified so that they reveal nothing operator-only (ceilings, source names, other tenants' limits)? [Gap, Spec §FR-036-023, contracts/tenant-scaling.openapi-fragment.yaml]
+- [x] CHK030 Are the error responses of the tenant-facing endpoints specified so that they reveal nothing operator-only (ceilings, source names, other tenants' limits)? [Gap, Spec §FR-036-023, contracts/tenant-scaling.openapi-fragment.yaml]
 
 ## Dependencies & Assumptions
 
-- [ ] CHK031 Is the assumption that the supported identity providers (including the development provider) can issue tokens with a separate operator audience documented and validated? [Assumption, ADR-0074 §1, O1710]
-- [ ] CHK032 Is the permission that gates a tenant's lag read validated against who legitimately needs to see it, and against who must not? [Assumption, contracts/tenant-scaling.openapi-fragment.yaml, Spec §FR-036-002]
-- [ ] CHK033 Does the specification state what changes if the owner answers O1710 differently (the affected requirements and the first-delivery milestone)? [Dependency, Research §O1710, Spec §FR-036-019, §FR-036-023]
+- [x] CHK031 Is the assumption that the supported identity providers (including the development provider) can issue tokens with a separate operator audience documented and validated? [Assumption, ADR-0074 §1, O1710]
+- [x] CHK032 Is the permission that gates a tenant's lag read validated against who legitimately needs to see it, and against who must not? [Assumption, contracts/tenant-scaling.openapi-fragment.yaml, Spec §FR-036-002]
+- [x] CHK033 Does the specification state what changes if the owner answers O1710 differently (the affected requirements and the first-delivery milestone)? [Dependency, Research §O1710, Spec §FR-036-019, §FR-036-023]
 
 ## Ambiguities & Conflicts
 
-- [ ] CHK034 For a decision applied automatically in enforce mode, is the audit actor defined (the system, the policy, the evaluator's identity), given that FR-036-025 asks for "actor, reason and before and after"? [Ambiguity, Spec §FR-036-025]
+- [x] CHK034 For a decision applied automatically in enforce mode, is the audit actor defined (the system, the policy, the evaluator's identity), given that FR-036-025 asks for "actor, reason and before and after"? [Ambiguity, Spec §FR-036-025]
 
 ## Notes
 
@@ -78,4 +78,31 @@
 - Release-blocking items: CHK001–CHK004, CHK009, CHK010, CHK014, CHK019–CHK021, CHK023, CHK024, CHK027, CHK029 (14 of 34)
 - Other checklists of this feature, not yet generated: decision correctness and safety, consumer lag and partitions, contracts and operation
 - Amended 2026-10-28 (the spec's Clarifications record the correction): the specification, plan, research, data model, contracts and ADR-0074 were changed to address CHK001–CHK034. The items stay unchecked: the reviewer decides whether each criterion is now satisfied. Where to look: CHK001 and CHK030 FR-036-023; CHK002, CHK023 FR-036-062; CHK003 FR-036-063; CHK004, CHK024 FR-036-064; CHK005 FR-036-065; CHK006, CHK007 FR-036-067; CHK008, CHK034 FR-036-066; CHK009 Terms; CHK010, CHK020 FR-036-002 and SC-036-013; CHK011–CHK014, CHK029 FR-036-057 to FR-036-059; CHK015 FR-036-023 and D1712; CHK016 FR-036-024; CHK017 FR-036-019; CHK018 FR-036-025; CHK019, CHK027 FR-036-002 and FR-036-061; CHK021 SC-036-018; CHK022 SC-036-016; CHK025 FR-036-068; CHK026 FR-036-046; CHK028 FR-036-028; CHK031, CHK032 Assumptions; CHK033 O1710. Not closed by a requirement: CHK027 relies on the metrics being operator-only, which is a statement, not a technical barrier.
+- **Settled 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-506.** An independent
+  `security-reviewer` read every item against the requirements on 2026-11-24 (no conversation context; the documents
+  as data). Its verdicts, and what was done:
+  - *Satisfied, ticked above:* CHK003, CHK006, CHK008 to CHK013, CHK015, CHK018, CHK020 to CHK022, CHK025, CHK026,
+    CHK028, CHK030 to CHK034 (21 items).
+  - *Acceptable as stated, accepted unticked:* CHK019 (an exported signal is operator data, never shown to tenants; a
+    single-tenant source is the operator's declared responsibility) and CHK027 (the aggregates are operator data; the
+    residual re-identification risk reaches only readers who already see logs and traces). Both stay unticked because
+    the criterion is not met technically; the acceptance lifts the gate.
+  - *Not satisfied, then fixed in the requirements on 2026-11-24, each to be re-read by the reviewer before it is
+    ticked:* CHK001 (`GET /scaling/audit` under `scaling:read`, FR-036-065 and the operator contract); CHK002 and
+    CHK023 (a separate operator issuer and keys, the permission claim, the lifetime as `exp - iat`, the blast
+    radius, TLS on the listener, FR-036-062); CHK004 (FR-036-019 excepts the configuration-only limits); CHK005
+    (cross-tenant writes and the trail and actor of a refusal, FR-036-065); CHK007 (`credential_unavailable` in the
+    source health enumeration of the operator contract); CHK014 (forbidden address classes, broker-advertised and
+    derived endpoints, canonical form, FR-036-057); CHK016 and CHK017 (User story 5's narrative no longer gives a
+    tenant policies or signal publication); CHK024 (the exporter clamps to the configured bounds and publishes only
+    fenced decisions, FR-036-064); CHK029 (closed source objects and a closed list of credential-like names,
+    FR-036-058 and both contracts).
+  - The reviewer's nits are recorded for the build: the layer that enforces the operator listener's peers; the
+    Secret propagation delay and `subPath` mounts; the configuration change note; the version author and audit actor
+    spelling; the per-request headers excepted from "indistinguishable"; the decoded-body limit; the fixed path of a
+    metrics query and the server-side timeout; the rate of `testScalingSource`; signal and source names carrying no
+    tenant identity; the statistic of SC-036-013; certificate and proxy cases in SC-036-018; the evaluator's lease
+    holder in the audit actor; and three gaps outside the checklist (TLS on the operator listener, now required;
+    credentials not tied to destinations, which an allowlist entry should name; telling the retention purge of
+    decision records from a compromised role's delete).
 - Amended again 2026-10-28 after `/speckit-analyze` (the spec's Clarifications record it): FR-036-067 now audits the use of a credential (first use after a start or a rotation, and every failure; the rest counted), which bears on CHK006, CHK007 and CHK028; FR-036-002, FR-036-023 and FR-036-028 now say what a tenant reads about how scaling treats its connectors, which bears on CHK010, CHK027 and CHK030; FR-036-046 says the dominance record names no tenant, which bears on CHK026 and CHK028; operator errors use the platform's closed codes with a `reason` (D1738). The items stay unchecked.
