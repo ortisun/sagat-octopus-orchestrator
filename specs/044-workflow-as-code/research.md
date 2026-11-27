@@ -972,6 +972,33 @@ finding was answered.
   refused in a fragment, as the code profiles already refuse them: a repeated `outputSchema` could drop a `secret`
   classification. delegate (OD-2026-11-24-4).
 
+### Decisions on the merge of develop into the contracts (2026-11-27)
+
+- **D044-255** (2026-11-27) Design 044 keeps worker-protocol minor **1.10**, and draft 019's three named minors move to
+  **1.11, 1.12 and 1.13**. `develop` (pull request #279) had written into the register of `sdks/SPEC.md` section 9 that
+  draft 019 names 1.10 to 1.12, while this contract took 1.10 on its branch (Decision 044-233). The register's rule is
+  that a minor is taken when its contract merges; design 044 is being built and its contract merges first, while draft
+  019 is approved but unbuilt and its own text keeps `1.N` to `1.N+2` for exactly this case (its Decision D019-002 and
+  Gap G1048). The register now has a row for 1.10 (design 044), a row for 1.11 to 1.13 (draft 019) and the next free
+  minor for every other draft is 1.14 or later; draft 019's research, plan, tasks and the notes of drafts 024 and 025
+  that named 019's minors are corrected with a pointer here. delegate (OD-2026-11-24-4), the coordinator's decision.
+- **D044-256** (2026-11-27) Field numbers after the merge of design 041's step logs into `develop`: design 044 keeps
+  `CompleteStepRequest.accept_workflow_task` at **14** (field 13 is design 041's `StepLogCarry step_logs`, protocol 1.7,
+  on `CompleteStepRequest` and `FailStepRequest` alike; the contract never used 13). The register of field numbers across
+  `sdks/SPEC.md` section 9 and the drafts was read again for every message this contract extends: `TaskLease` 28 to 30,
+  `WorkerCapabilities` 11 and 12, `CompleteStepRequest` 14, `StepCommandResponse` 5, `ReadBlobRequest` 9 and
+  `FailWorkflowTaskRequest` and the other new messages (design 044's own). Two drafts had named a number now taken: draft
+  024 named `CompleteStepRequest.data_result = 14` on 2026-11-27, after this contract had taken it on its branch, so
+  `data_result` moves to **15** (draft 024's own rule: "a field taken by another feature in between moves this draft's
+  number, never the other's"); draft 019 named `FailStepRequest.details_json = 13`, already design 041's, so it moves
+  to **15** (14 is design 045's `next_retry_delay_ms`). Both drafts' contract fragments, plans and tasks are corrected.
+  The generated code of the six SDKs (Go `internal/workerpb` with `sdks/go/scripts/generate.sh`, Python `_proto` with
+  `sdks/python/scripts/sync_shared.py`, both at the pinned generator versions) and `worker.baseline.json` were
+  regenerated after the merge, and their diffs read: compared field by field, the merged `worker.baseline.json` keeps
+  every entry of `develop`'s and every entry of this contract's, except `AppendStepLogsRequest` fields 11 and 12, which
+  design 041 removed on `develop` before its minor was served; the generated code differs from this contract's only by
+  design 041's field 13 and comments. delegate (OD-2026-11-24-4).
+
 ## 3. Gaps
 
 - **G044-001** (2026-11-24) The memory of an idle cached run is not measured in any SDK; the TypeScript spike's heap

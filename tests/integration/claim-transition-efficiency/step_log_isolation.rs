@@ -1,8 +1,8 @@
 //! Design 041, task T041-5: the step-log tables and the exact quota leases of ADR-0097, against a real PostgreSQL.
 //!
 //! Each test stores lines with a plain `INSERT` into `step_log_lines` (as an ingest batch does; its statement trigger
-//! charges the writer's quota lease) or calls a function of data-model.md §3b directly. The carry's cases are task
-//! T041-36's. Races are made with held transactions, `pg_stat_activity` and `pg_locks`, never with sleeps.
+//! charges the writer's quota lease) or calls a function of data-model.md §3b directly, except those of `ingest`,
+//! which call the ingest of task T041-6 itself. The carry's cases are task T041-36's. Races are made with held transactions, `pg_stat_activity` and `pg_locks`, never with sleeps.
 //!
 //! Writers connect as the runtime role when `SAGAT_TEST_AS_RUNTIME_ROLE` is set, so that every insert, top-up,
 //! reservation and reclaim a test makes is one the runtime role may make; the ledger, the held usage rows and the
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::support::{self, TestDb, bounded};
 
 mod accounting;
+mod ingest;
 mod leases;
 mod reclaims;
 mod schema;

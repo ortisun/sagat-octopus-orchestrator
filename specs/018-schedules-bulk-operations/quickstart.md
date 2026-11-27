@@ -34,7 +34,7 @@ is what the binaries do too ([schedules](../../docs/runbooks/schedules.md#2-turn
 turn it on and off):
 
 ```sh
-SAGAT_SCHEDULES_ENABLED=true            # the schedule routes (control plane) and the schedule pass (engine)
+SAGAT_SCHEDULES_ENABLED=true            # the schedule routes (control plane) and the schedule pass (engine); the default since 0.3.0
 SAGAT_BATCHES_ENABLED=true              # the batch routes and the batch pass
 SAGAT_RESET_REAPPLY_ENABLED=true        # a reset may deliver signals and Updates again (control plane only)
 SAGAT_RESET_CANCEL_SOURCE_ENABLED=true  # a reset may cancel a run that has not ended (control plane and engine)

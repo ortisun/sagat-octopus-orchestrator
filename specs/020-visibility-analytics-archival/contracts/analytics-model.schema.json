@@ -342,6 +342,44 @@
             "null"
           ]
         },
+        "startDeadlineAt": {
+          "description": "Design 045 (added 2026-11-24, research Decision 020-008): the schedule-to-start deadline of the step, when it has one. Optional; internal.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "closeDeadlineAt": {
+          "description": "Design 045: the schedule-to-close deadline of the step, when it has one. Optional; internal.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "attemptDeadlineAt": {
+          "description": "Design 045: the deadline this attempt runs against, as the step view shows it. Optional; internal.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "attemptDeadlineCause": {
+          "description": "Design 045: which deadline `attemptDeadlineAt` is. Optional; internal; consumers ignore values they do not know.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deadline": {
+          "description": "Design 045: the deadline cause carried by the event that ended the attempt (startToClose, scheduleToClose, heartbeat), when a deadline ended it. Optional; internal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "spanId": {
           "type": "string"
         }

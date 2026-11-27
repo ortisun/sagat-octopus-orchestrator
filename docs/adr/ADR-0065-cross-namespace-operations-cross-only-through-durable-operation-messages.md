@@ -1,9 +1,9 @@
 # ADR-0065: Cross-namespace service operations cross the boundary only through durable operation messages, under a pinned contract, an endpoint allow-list and a declared result disclosure
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24)
+**Decided by:** agent proposal of 2026-10-26, accepted by an agent, delegate (Owner decision 2026-11-24-4), after the readiness review of feature 030 on 2026-11-24 (`specs/030-cross-namespace-services/research.md`, Decision 030-007): its rules hold against `origin/develop` at `546d5aa5`. Two refinements are recorded with the acceptance: the handler run's start is a creating path checked by design 043's run-input gate (Decision 030-001), and the call's deadlines are named `scheduleToCloseMs` and `scheduleToStartMs`, on the database clock, as design 045 names the deadlines of a leased step (Decision 030-002)
 **Refines / supersedes:** refines ADR-0002, ADR-0012, ADR-0020, ADR-0030 (§18–19), ADR-0031 and
-ADR-0033 for calls between namespaces; follows the admission order of ADR-0050 (proposed) and the
+ADR-0033 for calls between namespaces; follows the admission order of ADR-0050 (accepted) and the
 registries of features 018, 020, 028 and 031 (drafts); supersedes none.
 **Enforced by:** planned tests of feature 030 — the commit-point crash matrix and duplicate/lost-hint
 suites in `tests/fault/service-operations/`, the isolation battery in

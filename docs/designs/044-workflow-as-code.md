@@ -3335,6 +3335,42 @@ a replaying worker derives from `ReadHistory`.
   `...::a_fourth_dead_verifier_session_ends_verifier_session_ended`.
   Refs: Requirement 044-023
   Owner-gate: OD-2026-11-26-458
+- [ ] T044-39 Before Task 044-6, adopt Architecture decision 0112, accepted with design 054 after this design's approval (Gaps
+  054-007 and 054-012): the hold's body is design 054's Technical Plan 15 (the requirement epoch `FOR SHARE` first, in the
+  registry's lock order, then the requirement's row read without a lock), which replaces Decision 044-206 and the body in section
+  14; the refusal of removing `code-workflows-v1` while a code version exists is one row of `platform_requirement_floors` and one
+  `SECURITY DEFINER` function with a fixed search path, `EXECUTE` revoked from `PUBLIC`, instead of a trigger of this design's own on
+  `platform_requirements`; the drift guard follows Architecture decision 0112 decision 3; the refusal stays `CAPABILITY_NOT_ACTIVE`
+  with the capability named (Gap 054-010). Task 054-18 lands first, or Task 044-6 lands it if neither design 045 nor design 054 has,
+  with the held-lock tests of Task 045-21 on the operator's commands under a continuous stream of holds and any fairness gate they
+  require (Owner decision 2026-11-26-564). Section 14 is amended through a review of its own.
+  Red tests: `integration_workflow_as_code::publication::removing_code_workflows_is_refused_by_its_floor_row_while_a_code_version_exists`,
+  `integration_platform_foundation::requirement_hold::an_activation_commits_under_a_continuous_stream_of_holds` and
+  `...::a_removal_commits_under_a_continuous_stream_of_holds`.
+  Refs: Requirement 044-030
+  Owner-gate: OD-2026-11-26-565
+- [ ] T044-40 Before Task 044-21, cite design 054's inbox contract (Gap 054-006): an inbox row is deleted when it is consumed, not
+  marked consumed (Technical Plan 10 of design 054), `consume_pending_signals` consumes a completion's sequences all or nothing and
+  refuses a sequence that is not a pending signal of that run (Requirement 054-017), each row's `version_id` classifies its payload,
+  and an undeclared name on a code run follows Requirement 054-003; drop from Architecture decision 0108 the statement that a code
+  version's consumer is its function, which Architecture decision 0111 decision 1 owns. The table of command records and section 4
+  are amended through a review of their own.
+  Red tests: `integration_workflow_as_code::signals::a_consumed_signal_leaves_no_inbox_row`,
+  `...::a_consumption_list_with_one_unknown_sequence_consumes_nothing`.
+  Refs: Requirement 044-014
+  Owner-gate: OD-2026-11-26-565
+- [ ] T044-41 Before Task 044-21, apply design 054's 2 MiB cap to a code version's signal declarations (Gap 054-008):
+  publication refuses a sum of `maxPending` above 1,000 (`SIGNAL_BOUNDS_OVER_RUN`) and a sum of `maxPending × maxBytes` above
+  2,097,152 bytes, half of a run's 4 MiB (`SIGNAL_BYTES_OVER_RUN`), as Requirement 054-001 does for graph documents; every code run
+  refuses a new signal `409 SIGNAL_PENDING_BYTES_FULL` while its pending bytes and the payload together would pass 2,097,152 bytes
+  (Requirement 054-007, Owner decision 2026-11-26-542). The guide states both bounds with this design's headroom: signals are
+  refused `HISTORY_HEADROOM` from 3,145,728 bytes (3 MiB) of retained bytes, pending signals included, so a code run whose step
+  outputs hold more than 3,145,728 − 2,097,152 = 1,048,576 bytes (1 MiB) can refuse a signal before its declared inbox is full,
+  while outputs keep at least 4,194,304 − 2,097,152 = 2,097,152 bytes free of signals.
+  Red tests: `integration_workflow_as_code::publication::code_signal_declarations_above_2_mib_are_refused`,
+  `integration_workflow_as_code::signals::a_signal_past_2_mib_of_pending_bytes_is_refused_pending_bytes_full`.
+  Refs: Requirement 044-014, Requirement 044-027
+  Owner-gate: OD-2026-11-26-565
 
 ### Verification Plan
 

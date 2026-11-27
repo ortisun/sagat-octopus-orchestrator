@@ -5711,11 +5711,13 @@ dependencies = [
  "sagat-infra-secrets",
  "sagat-telemetry",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "time",
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -6080,6 +6082,7 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "metrics",
+ "metrics-exporter-prometheus",
  "sagat-application",
  "sagat-domain",
  "sagat-telemetry",

@@ -70,7 +70,7 @@ a capability that was served. That reason argues against a withdrawal, not for a
    take first (round 16).
 5. An engine of the floor build clamps the holder's minor to its own ceiling (Decision 006-059 (3)), so, as built, a 1.8 hand-back
    that reaches it is an ordinary failure. This decision makes a request of that build (round 16; request (10) of Decision
-   006-059, built by the follow-up of pull request #260, which is not built yet): in `hand_back_verdict`, a session whose stored
+   006-059, built by the follow-up of pull request #260 as Task 006-074, decision D006-099): in `hand_back_verdict`, a session whose stored
    minor, before the clamp, is 8 or more while the clamped minor is below 8 MUST decide the lapse of rule 1 instead of an ordinary
    failure; the clamped minor alone still decides a withdrawal, so that build never withdraws a 1.8 hand-back.
 

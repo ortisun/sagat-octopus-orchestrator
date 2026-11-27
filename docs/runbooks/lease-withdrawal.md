@@ -65,6 +65,49 @@ control-plane capability-activate lease-withdrawal-v1 --operator NAME --expect-l
 - A live process that does not list the capability is refused by its instance id; nothing is recorded.
 - A second run says the requirement is recorded already and exits 0.
 - Each engine reads the requirement at its next heartbeat (within about ten seconds) and withdraws from then on.
+- The requirement counts only when it is recorded for control planes and engines, as the command records it. A row
+  recorded by hand SQL for one kind withdraws nothing: every withdrawal reads the row again under its lock and finds it
+  incomplete (decision D006-095).
+
+## Activate `lease-withdrawal-v2`
+
+`lease-withdrawal-v2` is the floor's own capability (decision D006-096; ADR-0099): a process that lists it replays every
+cause of `step.lease_withdrawn`, the cause `NOT_ACKNOWLEDGED` of protocol 1.8 included, and, for an engine, serves no
+capability call while its registry has been silent (`docs/runbooks/instance-registry.md`, section 3). Recording it keeps
+every older binary out of the fleet, a build of `lease-withdrawal-v1` alone among them. It needs `lease-withdrawal-v1`
+recorded for both kinds first; the command refuses otherwise, and checks again under the epoch lock.
+
+```sh
+control-plane capability-activate lease-withdrawal-v2 --operator NAME --expect-live N --dry-run
+control-plane capability-activate lease-withdrawal-v2 --operator NAME --expect-live N
+```
+
+The other rules are those of `lease-withdrawal-v1` above. On a large journal, build its partial index before you migrate,
+as for `run_events_lease_withdrawn_idx`:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS run_events_lease_not_acknowledged_idx ON run_events (tenant_id)
+    WHERE event_type = 'step.lease_withdrawn' AND detail->>'cause' = 'NOT_ACKNOWLEDGED';
+```
+
+It can be removed again (`platform_requirement_remove('lease-withdrawal-v2', ...)`, under READ COMMITTED and the 1.5 s
+statement timeout, as below) until a journal holds a withdrawal with the cause `NOT_ACKNOWLEDGED`. From then on the removal
+is refused (`lease-withdrawal-v2 cannot be removed while a journal holds step.lease_withdrawn with the cause
+NOT_ACKNOWLEDGED`), and the down migrations `20270211000150_lease_withdrawal_v2_floor` and `20270211000100_lease_withdrawal_v2`
+refuse as well. The migration that builds the index (`20270211000150`) touches no registry table, so heartbeats never wait
+for its read of the journal. This build writes no such
+withdrawal: only a build of protocol 1.8 does.
+
+### The forward order to protocol 1.8
+
+1. Every control plane and engine runs the build of the follow-up of pull request #260 (it lists `lease-withdrawal-v2`;
+   check `serving_instances`, section 5 of `docs/runbooks/instance-registry.md`).
+2. `lease-withdrawal-v1` is activated, then `lease-withdrawal-v2` (above).
+3. The build of protocol 1.8 is deployed.
+4. `delivery-acknowledgement-v1` is activated (its own runbook, with that build).
+
+A rollback walks the same steps back; once a journal holds a `NOT_ACKNOWLEDGED` withdrawal, the binaries roll back no
+further than step 1's build (ADR-0099, decision 10; decision D006-059 request (9)).
 
 ## Watching it
 
@@ -99,7 +142,9 @@ The requirement is a replay floor (decision D006-032). A build older than this f
 `step.lease_withdrawn`, so once one journal holds the event:
 
 - `platform_requirement_remove('lease-withdrawal-v1', ...)` is refused (`lease-withdrawal-v1 cannot be removed while a
-  journal holds step.lease_withdrawn`). The check is a probe of the partial index `run_events_lease_withdrawn_idx`.
+  journal holds step.lease_withdrawn`; the message ends by saying that `SAGAT_LEASE_WITHDRAWAL=off` stops new withdrawals
+  of unmarked leases, which is all the switch does from protocol 1.8). The check is a probe of the partial index
+  `run_events_lease_withdrawn_idx`.
 - The removal runs only under READ COMMITTED, the default (decision D006-084); a session or role whose
   `default_transaction_isolation` is stricter is refused (`is removed only under READ COMMITTED`): run it with
   `SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED` first.

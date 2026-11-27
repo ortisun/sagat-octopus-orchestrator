@@ -2,14 +2,119 @@
 
 **Branch**: `feature/032-multi-region-failover` | **Date**: 2026-10-26 | **Spec**: [spec.md](./spec.md)
 
-Status: Proposed — not started.
+Status: approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision 2026-11-24-1), not
+started. Until 2026-11-24 this line read "Proposed — not started".
 
-**Input**: [spec.md](./spec.md), [research.md](./research.md), proposed
-[ADR-0067](../../docs/adr/ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md).
-Implementation MUST NOT start before the owner answers O1560 (ADR and constitution amendment).
-*Note (2026-11-24):* O1560 is answered by Owner decision 2026-11-24-2 and the amendment is applied in
-constitution 5.0.0; the Delivery Constraints row of the Constitution Check below now reads against
-the "Regions" bullet, whose evidence gate replaces D1592's sequencing of the amendment.
+**Input**: [spec.md](./spec.md), [research.md](./research.md),
+[ADR-0067](../../docs/adr/ADR-0067-a-cell-has-one-writable-region-and-fails-over-by-a-fenced-epoch.md) (accepted
+2026-11-24). The gate "Implementation MUST NOT start before the owner answers O1560" is lifted: the owner answered it
+(Owner decision 2026-11-24-2, constitution 5.0.0). Implementation starts after the constitution 5.0.0 amendment is
+merged, because the amendment is what admits it (Task T032-001).
+
+## Readiness against `develop` (2026-11-24)
+
+Read again against `develop` at `546d5aa5`. None of 032 is built: there is no region epoch, cell or region code (the
+`epoch` columns that exist belong to the instance registry and to capacity groups). Where this section and an older
+line below disagree, this section is right.
+
+**Corrections.**
+
+1. **Governance.** The amendment is MAJOR (5.0.0), decided now, with the wording "one writable region per cell with
+   fenced failover (032)"; D1592's sequencing (the amendment after the evidence) and the "1.0.0 to 1.1.0" text are
+   overtaken. The drill report and the commit-latency benchmark (Task T032-063) are the release gate of this feature.
+   The constitution is 4.7.0 until the amendment merges; the transitional clause lets this spec, plan and tasks stand in
+   for a design doc; tasks that depend on an owner decision now carry `Owner-gate:` lines.
+2. **Sequences.** "No sequence or identity column exists" is no longer true: `platform_requirement_history.id` is an
+   identity column (migration `20270113000000_instance_registry`). Decision D032-001: an identity column is allowed when its
+   values are never exported, never used as a cursor and never compared across an activation (an operator's history
+   ordered by time); the contract test of Task T032-009 lists such columns by name with that reason and fails on any
+   other.
+3. **Six SDKs.** The Rust SDK exists (feature 034): every "five SDKs" and every list of five languages means six,
+   Rust included.
+4. **Protocol minor.** 1.7 is taken by step logs (design 041) and 1.8 by design 051 (the next step in a completion);
+   this feature takes the next free minor at build time.
+5. **The instance registry (Architecture decision 0082) must be reconciled.** A passive process today fails to
+   register on a read-only standby and answers the registry's `BINARY_CAPABILITY_MISSING` instead of `REGION_PASSIVE`;
+   registry rows of the former region's processes replicate and look live for 30 s; the registry's census is the way to
+   know that every process is region-aware. Decision D032-002: the region check runs before the registry's serving gate
+   and `/v1/region` is exempt from both; a passive process skips the registry heartbeat; activation removes the serving
+   rows of earlier epochs in its transaction; region-awareness is a registry capability `region-v1`, and `region-init`
+   refuses while the census shows a live process without it (this replaces "replace every process before region-init"
+   by a check). New Tasks T032-065 to T032-067.
+6. **More loops to gate by role.** The engine also runs the instance heartbeat, housekeeping, trigger schedules, the
+   schedule pass, the batch pass, the reset pass and the blob cleanup (`apps/execution-engine/src/lib.rs`). FR-032-005's
+   rule covers every loop that writes; schedules and batches are shard-scoped and so fenced by the epoch with the shards.
+   The `secret-cleanup` CronJob opens the database as the runtime role and must carry `sagat.region`; the sandbox and
+   database runners do not open the platform's database and need no region identity. New Task T032-068.
+7. **More replay paths.** About 25 store modules answer from a receipt or a duplicate (among them `business_ids.rs`,
+   `batch.rs`, `execution/resets.rs`, the `capacity_*` modules, `scoped_leaf_finish.rs`, `approval_progress.rs`,
+   `trigger_schedules.rs`, `declared_operations.rs`, `database_results.rs`, `managed_secrets.rs`,
+   `execution/scoped_events.rs`). Design 048 does not add a write per replay (Architecture decision 0130 supersedes
+   ADR-0067's decision 6(b) and (d) in part): it never lets a commit's wait be cancelled (Requirement 048-012), and after
+   a change of server identity, an unknown commit outcome or a read-only refusal a process serves nothing until its
+   registry confirmation, a waited write, has reached a standby (Requirement 048-013, Task T048-10). Task T032-058 builds
+   the cross-region quorum and ADR-0067's durability lease on that confirmation (the registry row's confirmed identity,
+   renewed on a schedule), which replaces the `region_beacons` of `data-model.md`; a transaction must write a row for its
+   commit to wait, so D1590's `pg_current_xact_id()` alone would not wait. This feature uses design 048's reason
+   `DATABASE_UNCONFIRMED` (for its `DURABILITY_UNCONFIRMED`), its `SAGAT_DB_COMMIT_DEADLINE_MS` (for
+   `SAGAT_COMMIT_DEADLINE_MS`) and its commit (Task T048-7, for T032-024's guard); T032-009's contract test allows the
+   unlogged `server_incarnation` by name, which holds no state of record.
+8. **In-region high availability is now design 048's reference topology.** The HA manager (CloudNativePG or Patroni)
+   owns `synchronous_standby_names`; this feature MUST NOT set it by hand (D1591's manual setting is replaced). Gap
+   G1585: CloudNativePG replica clusters and Patroni standby clusters stream asynchronously, so `sync_quorum` across
+   regions needs one HA cluster stretched across the regions (Patroni with an etcd of three regions, or CloudNativePG on
+   a Kubernetes cluster that spans them); Task T032-003's harness decides which reference it uses and records the gap's
+   answer. Design 048 relies on the HA manager's failover quorum for in-region promotion (its Requirement 048-001); FR-032-010's verification of the highest synchronous flush position stays this feature's.
+9. **Rolling upgrades follow design 053** (split from design 048 on 2026-11-25). This feature's migration is expand-only (inert lease triggers, a down that
+   refuses once a cell is initialized); the epoch-aware behaviour waits for the `region-v1` capability (item 5).
+10. **Journal partitioning (design 049) and the epoch column.** `run_events.region_epoch` is added on the partitioned
+    parent if 049 lands first, or carried by 049's partitioning if this lands first; the divergence report's head scan
+    and `infra/dr/journal_digest.sql` read across partitions; the bucket-maintenance function of 049 runs only in the
+    active region. Recorded in both task lists.
+11. **Other code facts.** Span ids are computed in `crates/telemetry/src/span.rs` (`event_span_id`), not in the
+    application; the admin listener is plain HTTP, so the peer probe over verified TLS (D1598) is new work; the
+    notification transport may be NATS or Redis Streams (Architecture decision 0069), so "each region uses its own NATS"
+    means its own selected transport; the operator CLI may use flags (`schedule-trigger-handover` does); the time
+    classification file of feature 028 does not exist yet, so Task T032-006 records its entries in this feature's
+    research until it does.
+12. **Cursors that carry an epoch.** Step logs (design 041, approved) page by `(stored_xid, sequence)`; after a lossy
+    activation transaction ids can be reused, so the step-log cursor carries the epoch too (Architecture decision 0067,
+    decision 9). New Task T032-069. Feature 026's cursor `<epoch>.<offset>` uses "epoch" for its own stream generation;
+    Decision D032-003: 032's region epoch is a separate component, and feature 026's build adds it (gap G1586 until then).
+13. **Hot-path budget.** Changes under `crates/infra-postgres/` select `integration_claim_transition_efficiency`; the
+    epoch default on every journal row and the epoch predicate in the fence are recorded in that budget in the change
+    that adds them (Task T032-054).
+
+**Decisions taken on 2026-11-24.** O1560 answered by the owner (Owner decision 2026-11-24-2); ADR-0067 accepted
+(delegate, Owner decision 2026-11-24-4, Owner decision 2026-11-24-507); O1561 and O1562 as recommended (delegate, Owner
+decision 2026-11-20-6, Owner decisions 2026-11-24-508 and 2026-11-24-509); the five unticked items of
+`checklists/requirements.md` accepted as they stand (delegate, Owner decision 2026-11-24-4, Owner decision
+2026-11-24-510); D032-001 to D032-003 and gaps G1585 and G1586 in `research.md`.
+
+**Dependencies, built or not.** Built: 001 to 012 (010 included), 016, 017 (OpenBao), 034 (Rust SDK). Mostly built: 014,
+018 (with the registry), 033, 037. Not built: 019, 020, 021, 022, 025, 026, 028, 029, 030, 031, 036; the keys and cursors
+those would add are absent and this feature works with today's behaviour where they are absent (spec, "Dependencies").
+New and needed first: design 048 (in-region topology and the waited replay).
+
+**Build slices**, in order (each mergeable alone, single-region behaviour unchanged until a cell is initialized):
+
+1. Foundation and observe-only: T032-002 to T032-017, with T032-065 to T032-068. Needs design 048's topology and the
+   constitution 5.0.0 merge.
+2. Planned switchover and the fence: T032-018 to T032-022 and T032-059.
+3. Unplanned failover and durability: T032-023 to T032-029, T032-058 (on design 048's Task T048-7) and T032-062. The
+   riskiest slice; it proves G1578.
+4. Work after a failover, server side: T032-030 to T032-033, T032-035 to T032-037, T032-061 and T032-069; then the
+   clients: T032-034 (Studio), T032-038 and T032-039 (six SDKs).
+5. Placement: T032-040 to T032-044, in parallel after slice 1.
+6. The drill and the benchmark: T032-045 to T032-047 and T032-063 (the release gate).
+7. Reconciliation: T032-048 and T032-049.
+8. Polish: T032-050 to T032-057.
+
+T032-060 (tombstones downstream) and T032-064 (change data capture) stay parked behind features 020 and 021.
+
+*Note (2026-11-26):* constitution 5.0.0 is merged (`81e87775`); the Delivery Constraints row of the Constitution
+Check below reads against its "Regions" bullet, whose evidence gate is Task T032-063.
+
 
 ## Summary
 

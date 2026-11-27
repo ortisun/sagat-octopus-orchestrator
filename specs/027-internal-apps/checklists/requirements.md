@@ -12,10 +12,15 @@ holds, and a note says where it holds only partly. This is not owner review.
 - [ ] No implementation details (languages, frameworks, APIs) — **partly**: as in the house style of
   feature 017, the spec states security contracts that must be testable (CSP directives, sandboxed
   frames, opaque session tokens, route families). Crates, tables and libraries are kept in the plan.
+  *Accepted as it stands, 2026-11-24, delegate (Owner decision 2026-11-24-4, row OD-2026-11-24-704):* a security boundary is
+  only reviewable when its contract is stated where the requirement is; moving the directives to the plan would hide
+  them from the reader of the requirement.
 - [x] Focused on user value and business needs (seven stories from author, operator, viewer,
   administrator and developer perspectives).
 - [ ] Written for non-technical stakeholders — **partly**: the context, stories and success criteria
   are; the requirements are written for reviewers of a security-sensitive platform feature.
+  *Accepted as it stands, 2026-11-24, delegate (row OD-2026-11-24-704):* the stories and success criteria are plain; rewriting
+  the requirements for a non-technical reader would lose the precision the reviewers and builders need.
 - [x] All mandatory sections completed.
 
 ## Requirement Completeness
@@ -26,6 +31,7 @@ holds, and a note says where it holds only partly. This is not owner review.
 - [x] Success criteria are measurable (counts, matrices, zero-leak canaries, a timed authoring task).
 - [ ] Success criteria are technology-agnostic — **partly**: SC-027-007/009 name browser behaviour
   and axe-core because the criterion is about the browser boundary and WCAG evidence.
+  *Accepted as it stands, 2026-11-24, delegate (row OD-2026-11-24-704):* the criterion is about that browser behaviour.
 - [x] All acceptance scenarios are defined (Given/When/Then for US01–US07, including failures).
 - [x] Edge cases are identified (continuation, contract change, expiry, rate, truncation, popups,
   encrypted fields, restart).
@@ -41,6 +47,7 @@ holds, and a note says where it holds only partly. This is not owner review.
   embedding, custom components).
 - [x] Feature meets measurable outcomes defined in Success Criteria (SC-027-001..013 map every FR).
 - [ ] No implementation details leak into specification — **partly**, see the first item.
+  *Accepted as it stands, 2026-11-24, delegate (row OD-2026-11-24-704):* the same reason as the first item.
 
 ## Constitution-specific checks (house rules)
 

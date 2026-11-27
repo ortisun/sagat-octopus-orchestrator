@@ -1,0 +1,38 @@
+# egm-review, Stage 9 (Implementation Readiness) of design 013 (2026-11-25)
+
+Doc: docs/designs/013-federated-login.md
+Reviewed-commit: cc36272b
+Reviewer: egm-review (Stage 9, egm-implementation-readiness)
+EGM-hash: 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+Note: the reviewer's findings are condensed by the author to one paragraph each, with every severity, location and fix kept. The reviewer read the implementation-readiness standard, Architecture decisions 0140 to 0142, the constitution (4.7.0) and the resolution; it found no settled fix wrong, and three only partly carried into the plan.
+Counts: Blocker 0, Major 17, Nit 10
+
+**Verdict of the reviewer.** Tasks 013-1, 013-4 and 013-6 could start; from Task 013-2 on the builders would come back with questions, and the clients lane does not work as written.
+
+1. **Major. Plan introduction, Tasks 013-2 to 013-17, Verification Plan.** The five targets do not exist and have no paths; about 150 red tests name no target; no `security_*` target exists; the SAML corpus has two homes (Architecture decision 0141 and the Verification Plan); the browser journey needs a Playwright spec and a `BROWSER_SUITES` entry. Fix: a target table, one home for the corpus and oracle, a verification line per task, the spec and the entry.
+2. **Major. Technical Plan 11, Task 013-2.** `x-implemented` before the routes fails the battery (the repository uses `x-planned` and `not_built`); the battery has no rule for the anonymous sign-in routes; CI does not lint the SCIM fragment; `the_studio_configuration_offers_both_issuers` needs a `studio.rs` change no task owns. Fix all four, and say which task turns each test green.
+3. **Major. Requirement 013-030, Technical Plan 11, Task 013-1.** Of 24 reasons only three have a status; remediation is code keyed by (code, reason); the token endpoint's media type and error format are not said. Fix: a reason-code-status table, the token endpoint's format, the remediation rows in the tasks that add the reasons.
+4. **Major. Plan introduction; Tasks 013-9, 013-13, 013-14, 013-16, 013-10, 013-12.** Milestone A contains parts of B, C and D, and many tests are untagged. Fix: tag every test and part, or split.
+5. **Major. Tasks 013-5, 013-8, 013-9, 013-10.** Several red tests need later tasks (signer, redemption, verifier, SCIM), so they would fail for the wrong reason. Fix: move each test, or order the tasks by dependency.
+6. **Major. Redemption, lock order, Requirements 013-001, 013-013, 013-016, Task 013-2.** Milestone A uses feature 029's fence, grant revocation, catalog, `lock_order.rs` and `x-access` classes, none of which exist; `a_reactivated_member_has_no_old_grants` is in no task. Fix: say they are absent in A, B and D, move them to Task 013-17, place the test, give or defer the `x-access` classes.
+7. **Major. Requirement 013-032, Technical Plans 7 and 10.** The capability list does not exist (design 050 is in review); the apps, sandbox and public-forms origins belong to unbuilt features; Astryx is not on the branch. Fix: a task that builds the field when design 050 has not, conditional origin checks, whether Task 013-14 waits for #267.
+8. **Major. Plan introduction, Tasks 013-9, 013-14, 013-15.** The dev-idp serves no `/v1/auth/*`, so the CLI cannot sign in before Tasks 013-9 and 013-10; Task 013-15's tests are server behaviours; no task names the refresh grant; a Studio reload test sits in a server task; nobody owns `schema.d.ts` or `frontend/e2e`. Fix: the refresh grant in Task 013-9, CLI-side tests only in Task 013-15, move the reload test, name the owners.
+9. **Major. Technical Plans 2 and 4, Requirement 013-019, Task 013-10.** `Core::verifier` returns a concrete type and `Core::authenticate` has five implementations; the worker gRPC path also authenticates; the new store method is unnamed; the new reasons contradict `authenticate_gives_the_same_answer_for_every_kind_of_failure`; streams re-check every 30 seconds with `Who` holding no `sid`. Fix: the signatures, the five implementations, the engine's deployment-only verifier, the test change, the stream change.
+10. **Major. Requirement 013-032, Rollout, Task 013-10.** The capability needs the `Capability` enum, three CHECK constraints with their `down`, a removal guard and an activation command that does not exist. Fix: list them and name the command.
+11. **Major. Requirement 013-025, Technical Plans 4 and 9, Rollout, Task 013-8.** The federation setting, the mount path, the policy, the token, the refresh setting, the sealing key's creation and loading, the break-glass arguments are not named; the bootstrap is `infra/openbao/bootstrap-development.py` (and Kubernetes and Helm for production), not the compose file; `start_openbao` must enable the mount. Fix: a settings table, the commands, the policy, the files.
+12. **Major. Decision 013-010, Technical Plan 9, Tasks 013-3, 013-18.** No pinned Keycloak or `xmlsec1` image, no realm fixture, no service-provider entity identifier, and the consumer service address holds a connection identifier made at run time. Fix: pin both, the realm file, the entity identifier format, the client registration, the healthcheck and ports.
+13. **Major. Requirement 013-033, Technical Plan 9, Task 013-3.** The development OIDC provider's issuer, key, discovery path, break switch and people-file format are undefined; sharing the deployment key would blur `an_id_token_is_refused_as_an_access_token`. Fix: state each and name the tests.
+14. **Major. Requirement 013-017, Technical Plans 2 and 11, Task 013-11.** The SCIM base address is undecided while "a path that names another connection" implies a connection segment. Fix: one base address.
+15. **Major. Task 013-12; Requirements 013-002, 013-003, 013-010, 013-014, 013-021.** A stale reset test contradicts the staging rule; several acceptance tests (the crossed callback, template and issuer-change refusals, the raised-context revocation, Architecture decision 0142's group tests and its subject-ownership test) are in no task. Fix: replace and place them.
+16. **Major. Requirements 013-004, 013-026; Tasks 013-7, 013-8, 013-15.** The X.509 parser, key-store, file-lock and browser crates are not chosen; the key-store entry, fallback path, discovery and `sagat logout` are not said; engine-bound CLI commands meet a key-store token the engine refuses. Fix: name each.
+17. **Major. Technical Plan 11; Tasks 013-8, 013-10, 013-13.** Two alert mechanisms exist (product `AlertKind`, Prometheus rules); `IDENTITY_SIGNING_UNAVAILABLE` is per process; "a rule test" is unspecified; two alerts are in no task. Fix: mechanism, runbook anchor, test and task per alert.
+18. **Nit. Task 013-8.** `JwksCache` "moved into `infra-federation`" contradicts Task 013-6; `HttpJwksFetcher::new` takes `AuthConfig`; its users are not listed.
+19. **Nit. Tasks 013-5, 013-8.** Missing `Owner-gate:` lines for Owner decision 2026-11-24-717.
+20. **Nit. Architecture rules.** Two of the three new rules are in no task.
+21. **Nit. Task 013-5.** List the caller families of `sagat_lock_memberships`.
+22. **Nit. Task 013-3.** Its first red test is a command; the dev OIDC tests have no names.
+23. **Nit. Uploads.** The `blobs.rs` and `database_results.rs` change is a test only, in no task's description.
+24. **Nit. Task 013-1.** Name the docs scripts.
+25. **Nit. Lock order.** The registry-epoch read is omitted, and the harness `Slot` enum has no sub-slots of 4a.
+26. **Nit. Migration name.** It must sort after `20270119000000_batch_purge`.
+27. **Nit. Refs.** Task 013-13 omits Requirement 013-001; Task 013-10 omits Requirement 013-016.

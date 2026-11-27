@@ -741,6 +741,64 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertIn("feature `testing` enables", out)
 
 
+class TheRuntimeRoleCannotDeleteTheJournal(unittest.TestCase):
+    """Constitution 5.1.0, principle I: journal rows leave only by two audited paths, and the runtime role holds no DELETE
+    on runs, steps, the journal or payloads (architecture review of 5.1.0, Major 6)."""
+
+    MIGRATION = "crates/infra-postgres/migrations/20990101000000_x.up.sql"
+
+    def test_the_grants_the_runtime_role_has_pass(self):
+        code, out = creator_check(creator_tree(**{
+            self.MIGRATION: "GRANT SELECT, INSERT, UPDATE ON runs, steps TO sagat_app;\n"
+                            "GRANT SELECT, INSERT ON run_events, payloads TO sagat_app;\n"
+                            "GRANT SELECT, INSERT, UPDATE, DELETE ON event_outbox TO sagat_app;\n",
+        }))
+        self.assertEqual(code, 0, out)
+        self.assertIn("the runtime role cannot delete the journal", out)
+
+    def test_a_delete_truncate_or_all_grant_on_a_journal_table_is_refused(self):
+        for sql in ("GRANT SELECT, DELETE ON runs TO sagat_app;",
+                    "GRANT TRUNCATE ON TABLE public.run_events TO sagat_app;",
+                    "grant all privileges on steps, other to sagat_app;",
+                    'GRANT DELETE ON "payloads" TO sagat_app, sagat_other;',
+                    "GRANT DELETE ON ALL TABLES IN SCHEMA public TO sagat_app;",
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT DELETE ON TABLES TO sagat_app;",
+                    "GRANT DELETE ON runs TO PUBLIC;",
+                    "GRANT DELETE ON runs TO sagat_app WITH GRANT OPTION;",
+                    "GRANT DELETE ON runs TO sagat_app GRANTED BY sagat_owner;",
+                    "GRANT DELETE ON run_payloads TO sagat_app;",
+                    "GRANT sagat_owner TO sagat_app;",
+                    "ALTER TABLE runs OWNER TO sagat_app;",
+                    "DO $$ BEGIN EXECUTE format('GRANT DELETE ON %I TO sagat_app', 'runs'); END $$;",
+                    "GRANT sagat_owner TO sagat_app WITH ADMIN OPTION;",
+                    "GRANT sagat_owner TO sagat_app WITH INHERIT TRUE, SET TRUE;",
+                    "CREATE ROLE sagat_purger NOLOGIN ROLE sagat_app;",
+                    "ALTER GROUP sagat_owner ADD USER sagat_app;",
+                    "REASSIGN OWNED BY sagat_owner TO sagat_app;",
+                    "GRANT DELETE ON run_events_2026_12 TO sagat_app;",
+                    "DO $$ BEGIN EXECUTE format('GRANT %s ON %I TO %I', 'DELETE', 'runs', 'sagat_app'); END $$;",
+                    "/* a block comment */ GRANT DELETE ON runs TO sagat_app"):
+            with self.subTest(sql=sql):
+                code, out = creator_check(creator_tree(**{self.MIGRATION: "-- a comment\n" + sql + "\n"}))
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"{self.MIGRATION}:2", out)
+                self.assertIn("principle I", out)
+
+    def test_a_down_migration_is_read_too(self):
+        down = self.MIGRATION.replace(".up.sql", ".down.sql")
+        code, out = creator_check(creator_tree(**{down: "GRANT TRUNCATE ON steps TO sagat_app;\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"{down}:1", out)
+
+    def test_a_grant_on_another_table_or_a_comment_passes(self):
+        for sql in ("GRANT DELETE ON runs_archive TO sagat_app;", "-- GRANT DELETE ON runs TO sagat_app;",
+                    "GRANT DELETE ON runs TO sagat_owner;", "REVOKE DELETE ON runs FROM sagat_app;",
+                    "REVOKE GRANT OPTION FOR SELECT ON runs FROM sagat_app;\nGRANT SELECT ON steps TO sagat_app;",
+                    "/* GRANT DELETE ON runs TO sagat_app; */ SELECT 1;",
+                    "GRANT DELETE ON run_events_archive TO sagat_app;"):
+            with self.subTest(sql=sql):
+                code, out = creator_check(creator_tree(**{self.MIGRATION: sql + "\n"}))
+                self.assertEqual(code, 0, out)
 
 
 

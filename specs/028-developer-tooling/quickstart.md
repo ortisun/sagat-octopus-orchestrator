@@ -2,12 +2,12 @@
 
 Nothing below runs today: the commands, files and outputs are the demo the implementation must make reproducible
 (Definition of Done). Each step names the success criterion it demonstrates. When a step cannot run on a machine (no
-Docker, no provider credentials, no five toolchains), the demo report says so instead of claiming it.
+Docker, no provider credentials, no six toolchains), the demo report says so instead of claiming it.
 
 ## Prerequisites
 
 - The pinned Rust toolchain, a PostgreSQL the tests can create databases in (`SAGAT_TEST_DATABASE_URL`), Node 20+ for the
-  TypeScript SDK and the extension; the other four toolchains for the five-language run.
+  TypeScript SDK and the extension; the other five toolchains for the six-language run.
 - `cargo build -p sagat-cli -p sagat-test-server --locked` (two binaries; the test server is never in the production
   image).
 

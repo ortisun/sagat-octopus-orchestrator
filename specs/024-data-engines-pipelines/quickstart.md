@@ -20,7 +20,14 @@ own containers (AGENTS.md rule 16); the transcript of a real run is recorded wit
 - `infra/docker/compose.yaml` with the existing feature-017 overlay `infra/docker/compose.database.yaml`
   (TLS OpenBao and a TLS PostgreSQL target) and a planned 024 overlay `infra/docker/compose.data.yaml`
   that adds a pinned MySQL 8.4 demo database (loopback port, seeded `orders` table, restricted
-  `demo_reader` login) and the sandbox runner configured with the data runtime image.
+  `demo_reader` login), the data runner (`apps/data-runner`, role `data-runner`, no engine socket) and
+  a data-mode sandbox runner with the data runtime image, sharing a work volume and a socket directory
+  as feature 035's `infra/docker/compose.lake.yaml` does for the lake runner and its lake-mode sandbox
+  runner.
+- The registry capabilities `database-engines-v1` and `data-pipelines-v1` recorded by the operator
+  (Architecture decision 0082; the demo's setup script records them through the existing operator
+  command and fails if either is refused). Without them the connection below is refused
+  `DRIVER_NOT_ENABLED` and the workflow `DATA_PIPELINES_NOT_ENABLED`.
 - A development namespace (`$NS` = its id) and an administrator access token (`$TOKEN`) from the
   development identity provider, as in `docs/runbooks/developer-experience.md`; `$SAGAT` is the
   control-plane base URL. The current CLI has no connection or asset commands; the demo uses REST.
@@ -86,7 +93,7 @@ curl -sS -X PUT "$SAGAT/v1/namespaces/$NS/data-assets/orders-daily" \
 
 ## 3. Pipeline workflow (US03)
 
-`orders-pipeline.json` (canonical IR; any of the five SDK builders produces the same document):
+`orders-pipeline.json` (canonical IR; any of the six SDK builders produces the same document):
 
 ```json
 {
@@ -127,8 +134,11 @@ Expected:
   `filter: event.subject == "orders-daily"`) starts exactly once for that publication.
 
 The casts matter: a staged database result exposes integers as `HUGEINT` and decimals with their
-retained scale, and the engine refuses any output whose Parquet schema differs from the contract
-(`DATA_CONTRACT_VIOLATION`).
+retained scale, and the engine refuses any output whose Parquet schema the contract does not accept
+under the encoding table of the data runtime contract (`DATA_CONTRACT_VIOLATION`). DuckDB writes
+every query column `OPTIONAL`; that is accepted for `order_id` and `order_date` (`nullable: false`)
+because the generated not-null audit catches a null, and it writes `decimal(18,2)` as `INT64`, one of
+the accepted encodings.
 
 ## 4. Failure path (US03)
 
@@ -140,7 +150,9 @@ Expected:
 - The run fails at `transform` with `DATA_AUDIT_FAILED`.
 - The new snapshot is `QUARANTINED` with `unique_order_id: FAILED, failingCount: 1`; the pointer is
   still version 1; no `data.asset.published` event is written; `DATA_SNAPSHOT_QUARANTINED` fires for
-  `orders-daily` on the next monitor look.
+  `orders-daily` on the next monitor look, because an unretired quarantined snapshot newer than the
+  current one exists, and resolves once a newer snapshot is published or the quarantined one is
+  retired.
 - `POST …/publications` with that snapshot answers `409` reason `SNAPSHOT_QUARANTINED`.
 - Logs, spans, metrics and audit contain no SQL text, row value or credential (checked by the
   canary script of T024-063).
@@ -154,5 +166,6 @@ docker compose -f infra/docker/compose.yaml -f infra/docker/compose.database.yam
 
 ## What the demo does not show
 
-Warehouses (they need owner-provided accounts, O1241), Polars (O1242), manual publication with an
-approval (US06, covered by T024-049) and external assets (US08). Each has its own integration test.
+Warehouses (they need owner-provided accounts, Owner decision 2026-11-26-161), Polars (it needs
+design 046 built, Owner decision 2026-11-26-162), manual publication with an approval (US06, covered
+by T024-049) and external assets (US08). Each has its own integration test.

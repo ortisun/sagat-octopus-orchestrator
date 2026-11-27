@@ -1,7 +1,7 @@
 # ADR-0072: Scaling decisions are a deterministic evaluation, recorded with their inputs and published; the platform applies only what lives inside a replica
 
-**Status:** Proposed (2026-10-28)
-**Decided by:** agent proposal for the owner's review; the owner's answers O1706 to O1709 of 2026-10-28 (`docs/owner-decisions.md`) fix the boundary it states
+**Status:** Accepted (2026-11-24) for implementation; the evidence section is filled when the tests it names have run
+**Decided by:** agent proposal for the owner's review; the owner's answers O1706 to O1709 of 2026-10-28 (`docs/owner-decisions.md`) fix the boundary it states. Accepted on 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-505: of the options it weighs it is the only one that is reproducible, safe under a paused evaluator and never shows a false zero to an autoscaler, and the owner's answers already fixed its boundary. Corrected at acceptance: the chart has no `lag` and `cpu` modes but two toggles (`engine.autoscaling.keda.enabled`, `engine.autoscaling.hpa.enabled`); "the existing modes" below means those toggles, and this decision adds a third (`specs/036-elastic-scaling/research.md`, D036-002)
 **Refines / supersedes:** refines ADR-0020 (lease with a fence, observed without a tenant on a metric) and ADR-0017; supersedes nothing
 **Enforced by:** property tests and golden vectors of `crates/domain/src/scaling/` (`contracts/evaluation.md`), `scripts/check-architecture.py` (the domain stays pure), the two-evaluators fault test, `no_metric_is_labelled_with_something_that_grows_with_the_data`, and the chart contract test that every autoscaler query uses a metric the code emits
 
