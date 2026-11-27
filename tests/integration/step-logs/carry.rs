@@ -23,7 +23,8 @@ use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::{QuotaResource, ceiling, resolve};
 use sagat_domain::step_logs::{
     AttemptCeilings, CarryMark, CeilingReason, DropReason, FIRST_MARKER_SEQUENCE, MarkOnlyReason,
-    NotStoredReason, Plan, SizedRecord, StepLogLevel, StreamCounters, TenantAllowance, plan_batch,
+    NotStoredReason, Plan, PlannedMarkReason, SizedRecord, StepLogLevel, StreamCounters,
+    TenantAllowance, plan_batch,
 };
 use sagat_infra_postgres::{step_log_policy_fence_keys, stream_lock_key};
 use serde_json::Value;
@@ -82,6 +83,7 @@ struct Rec {
     exception: Option<String>,
     fields: Option<String>,
     truncated: bool,
+    worker_time: Option<time::OffsetDateTime>,
 }
 
 impl Rec {
@@ -131,13 +133,14 @@ struct Case {
     tenant_limit: Option<i64>,
     records: Vec<Rec>,
     highest: u64,
-    mark: Option<MarkOnlyReason>,
+    mark: Option<PlannedMarkReason>,
     /// Run on the connection whose quota lease was topped up (the fast path when its room covers the carry).
     topped_up: bool,
 }
 
 fn text(rng: &mut Rng, max: u64) -> String {
-    const ALPHABET: [&str; 6] = ["a", "b", "é", "€", " ", "z"];
+    // U+FFFD is what C3 puts where a worker sent a NUL.
+    const ALPHABET: [&str; 7] = ["a", "b", "é", "€", " ", "z", "\u{FFFD}"];
     (0..rng.below(max + 1))
         .map(|_| rng.pick(&ALPHABET))
         .collect()
@@ -181,7 +184,15 @@ fn generate(rng: &mut Rng) -> Case {
                 records,
                 bytes: records * rng.below(60),
                 last_sequence: last,
-                ceiling_sequence: ceiling.map(|_| rng.below(last + 1)),
+                // A ceiling is met at the high mark, which becomes the last sequence; a ceiling above the last is
+                // generated too, so that the plan's branch for it is compared.
+                ceiling_sequence: ceiling.map(|_| {
+                    if rng.chance(10) {
+                        last + 1 + rng.below(5)
+                    } else {
+                        rng.below(last + 1)
+                    }
+                }),
                 ceiling,
                 not_stored_reason: rng.chance(15).then_some(NotStoredReason::ServiceBusy),
                 dropped_by_worker: near(rng),
@@ -193,7 +204,7 @@ fn generate(rng: &mut Rng) -> Case {
         }
     });
     let last = existing.map_or(0, |e| e.counters.last_sequence);
-    let mark = rng.chance(30).then(|| rng.pick(&MarkOnlyReason::PLANNED));
+    let mark = rng.chance(30).then(|| rng.pick(&PlannedMarkReason::ALL));
     let n = rng.below(13);
     let record = |rng: &mut Rng, sequence: u64| Rec {
         sequence,
@@ -204,12 +215,24 @@ fn generate(rng: &mut Rng) -> Case {
             .chance(20)
             .then(|| format!("{{\"k\":\"{}\"}}", text(rng, 20))),
         truncated: rng.chance(15),
+        // Whole microseconds, as PostgreSQL keeps them.
+        worker_time: rng.chance(70).then(|| {
+            time::OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(1_795_000_000_000_000 + rng.below(1_000_000_000_000)) * 1_000,
+            )
+            .expect("a time")
+        }),
     };
     let (records, highest) = if mark.is_some() {
         // A mark-only carry's sequences in any order, with duplicates.
         let records: Vec<Rec> = (0..n)
             .map(|_| {
-                let sequence = 1 + rng.below(last + 15);
+                // A mark-only carry is often an invalid one: 0 and sequences past 2^62 − 1 come too.
+                let sequence = match rng.below(20) {
+                    0 => 0,
+                    1 => (1 << 62) + rng.below(3),
+                    _ => 1 + rng.below(last + 15),
+                };
                 record(rng, sequence)
             })
             .collect();
@@ -415,7 +438,7 @@ async fn carry_with_slots(
     .bind(
         records
             .iter()
-            .map(|_| None::<time::OffsetDateTime>)
+            .map(|r| r.worker_time)
             .collect::<Vec<_>>(),
     )
     .bind(records.iter().map(|r| r.message.clone()).collect::<Vec<_>>())
@@ -499,11 +522,12 @@ async fn stored(conn: &mut PgConnection, id: Identity) -> Option<Stored> {
     })
 }
 
-/// A line as stored: (sequence, kind, level, message, exception, fields, truncated, marker reason).
+/// A line as stored: (sequence, kind, level, worker time, message, exception, fields, truncated, marker reason).
 type Line = (
     i64,
     String,
     String,
+    Option<time::OffsetDateTime>,
     Option<String>,
     Option<String>,
     Option<String>,
@@ -513,7 +537,8 @@ type Line = (
 
 async fn lines_stored_now(conn: &mut PgConnection, tenant: Uuid, stream: i64) -> Vec<Line> {
     sqlx::query_as(
-        "SELECT sequence, kind, level, message, exception, fields, truncated, marker_reason FROM step_log_lines \
+        "SELECT sequence, kind, level, worker_time, message, exception, fields, truncated, marker_reason \
+           FROM step_log_lines \
           WHERE tenant_id = $1 AND stream_id = $2 AND stored_xid = pg_current_xact_id() ORDER BY sequence",
     )
     .bind(tenant)
@@ -562,6 +587,7 @@ fn planned_lines(plan: &Plan, records: &[Rec]) -> Vec<Line> {
                 signed(r.sequence),
                 "line".to_owned(),
                 r.level.as_str().to_owned(),
+                r.worker_time,
                 Some(r.message.clone()),
                 r.exception.clone(),
                 r.fields.clone(),
@@ -575,6 +601,7 @@ fn planned_lines(plan: &Plan, records: &[Rec]) -> Vec<Line> {
             signed(sequence),
             "ceiling_marker".to_owned(),
             "info".to_owned(),
+            None,
             None,
             None,
             None,
@@ -736,12 +763,13 @@ async fn the_carry_function_plans_every_carry_as_plan_batch_plans_it() {
             insert_existing(&mut tx, id, existing).await;
         }
         let tenant_allowance = allowance(&mut tx, tenant).await;
+        let room_before = lease_room(&mut tx, tenant).await;
         let answer = carry(
             &mut tx,
             id,
             &case.records,
             case.highest,
-            case.mark.map(|m| m.drop_reason().as_str()),
+            case.mark.map(|m| m.reason().drop_reason().as_str()),
         )
         .await
         .unwrap_or_else(|e| panic!("{label}: the call failed: {e}"));
@@ -767,7 +795,13 @@ async fn the_carry_function_plans_every_carry_as_plan_batch_plans_it() {
             let (stream, in_order) = case
                 .existing
                 .map_or((StreamCounters::new(), true), |e| (e.counters, e.in_order));
-            let plan = expected(&case, &stream, in_order, tenant_allowance, case.mark);
+            let plan = expected(
+                &case,
+                &stream,
+                in_order,
+                tenant_allowance,
+                case.mark.map(PlannedMarkReason::reason),
+            );
             let outcome = if case.mark.is_some() {
                 "mark_only"
             } else {
@@ -793,6 +827,33 @@ async fn the_carry_function_plans_every_carry_as_plan_batch_plans_it() {
                 );
             }
             let charge_planned = !plan.keep.is_empty() || plan.marker.is_some();
+            // The room the call returns is the writer's quota lease's room after its charge, never below zero; on
+            // the fast path it is the room before the call less the plan's charge (text bytes plus 128 a row, the
+            // marker included): a reservation that held less than the charge would show here.
+            if answer.path != "none" {
+                let room_after = lease_room(&mut tx, tenant).await;
+                assert_eq!(
+                    answer.room, room_after,
+                    "{label}: the room returned is the lease's"
+                );
+                assert!(
+                    answer.room >= Some(0),
+                    "{label}: the room is never negative"
+                );
+            }
+            if answer.path == "fast" {
+                let charge = plan
+                    .keep
+                    .iter()
+                    .map(|&i| case.records[i].size() + 128)
+                    .sum::<u64>()
+                    + plan.marker.map_or(0, |_| 128);
+                assert_eq!(
+                    answer.room,
+                    room_before.map(|room| room - signed(charge)),
+                    "{label}: the fast path's room is the room before less the charge"
+                );
+            }
             match answer.path.as_str() {
                 "fast" => assert!(case.topped_up, "{label}: only a topped-up writer has room"),
                 "refill" => assert!(charge_planned, "{label}: a refill charges"),
@@ -820,6 +881,16 @@ async fn the_carry_function_plans_every_carry_as_plan_batch_plans_it() {
     }
 }
 
+/// The room of the writer's quota lease of `tenant`, read in the caller's transaction through the reservation (the
+/// runtime role may not read the quota leases): none when the writer has no quota lease.
+async fn lease_room(conn: &mut PgConnection, tenant: Uuid) -> Option<i64> {
+    sqlx::query_scalar("SELECT room FROM sagat_quota_step_log_reserve($1, 1)")
+        .bind(tenant)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("the writer's room")
+}
+
 /// Three records of 700 bytes and their charge, 3 × (700 + 128) = 2,484 bytes.
 fn three_records() -> Vec<Rec> {
     (1..=3)
@@ -830,6 +901,7 @@ fn three_records() -> Vec<Rec> {
             exception: None,
             fields: None,
             truncated: false,
+            worker_time: None,
         })
         .collect()
 }
@@ -1073,6 +1145,204 @@ async fn the_blocks_answers_and_the_closed_streams_are_planned_as_plan_batch_pla
     }
 }
 
+/// Records `from..=to` of `bytes` bytes each.
+fn sized_records(from: u64, to: u64, bytes: usize) -> Vec<Rec> {
+    (from..=to)
+        .map(|sequence| Rec {
+            sequence,
+            level: StepLogLevel::Info,
+            message: "x".repeat(bytes),
+            exception: None,
+            fields: None,
+            truncated: false,
+            worker_time: None,
+        })
+        .collect()
+}
+
+/// The refills counted so far (a sequence: not transactional, so a rolled-back refill counts too).
+async fn refills(conn: &mut PgConnection) -> i64 {
+    sqlx::query_scalar("SELECT refills FROM sagat_quota_step_log_counters()")
+        .fetch_one(&mut *conn)
+        .await
+        .expect("the refill counter")
+}
+
+/// The block's exact charge (review finding m1 of decision D041-156): the reservation asks for a bound (every sent
+/// record and a possible marker, 128 bytes a row), so a quota lease whose room lies between the carry's charge and that
+/// bound sends it to the block; there the write reserves the exact charge before its insert, finds it, and no refill
+/// runs: `path` is `fast`, not `refill`, and `step_log_quota_fallbacks_total` will not count it. A limit of 4,000 bytes,
+/// the writer's quota lease topped up to ⌊4,000 / 2⌋ = 2,000; three records of 500 bytes charge 3 × 628 = 1,884 and
+/// their bound is 1,884 + 128 = 2,012 > 2,000; the room left is 2,000 − 1,884 = 116, under 65,536: a top-up.
+#[tokio::test]
+async fn a_charge_the_writers_quota_lease_holds_after_its_bound_did_not_refills_nothing() {
+    let w = world().await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let mut limit = None;
+    write_tenant_limit(&w, Some(4_000), &mut limit).await;
+    let pool = pool_of(&w, 1).await;
+    let mut conn = writer(&pool).await;
+    let (made, granted): (String, i64) =
+        sqlx::query_as("SELECT outcome, room FROM sagat_quota_step_log_top_up($1)")
+            .bind(tenant)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("the writer's top-up");
+    assert_eq!((made.as_str(), granted), ("made", 2_000));
+    let id = Identity {
+        tenant,
+        namespace: w.namespace.id().as_uuid(),
+        run: Uuid::now_v7(),
+        step: Uuid::now_v7(),
+    };
+    let before = refills(&mut conn).await;
+    let mut tx = conn.begin().await.expect("a transaction");
+    let answer = carry(&mut tx, id, &sized_records(1, 3, 500), 3, None)
+        .await
+        .expect("the call");
+    assert_eq!(
+        (
+            answer.outcome.as_str(),
+            answer.kept,
+            answer.path.as_str(),
+            answer.room,
+            answer.top_up
+        ),
+        ("written", 3, "fast", Some(116), true)
+    );
+    tx.commit().await.expect("committed");
+    assert_eq!(refills(&mut conn).await, before, "no refill ran");
+}
+
+/// The block's other two answers on an existing stream that already holds a line and gets a duplicate (review finding
+/// m2 of decision D041-156): `limit` (`tenant_step_log_quota_exceeded`), reached with the usage row held by the test
+/// while the writer's refill waits on it with a wait slot (the fallback's budget replaced by 60 seconds in this
+/// database, so that the test, not *b*, bounds the wait), the test then raising the stored usage to 1,000 bytes under
+/// the limit and committing: the refill finds 1,000 bytes free for a charge of 2 × 828 = 1,656; and `busy` past *b*
+/// (the budget back to 200 ms, the usage row held, a wait slot free). Each is the mark-only final mark `plan_batch`
+/// plans for `tenant_quota` and `service_busy`.
+#[tokio::test]
+async fn the_blocks_limit_and_timeout_answers_on_an_existing_stream_are_planned_as_plan_batch_plans_them()
+ {
+    let w = world().await;
+    let tenant = w.admin.tenant_id().as_uuid();
+    let namespace = w.namespace.id().as_uuid();
+    let pool = pool_of(&w, 2).await;
+    let existing = Existing {
+        counters: StreamCounters {
+            records: 1,
+            bytes: 700,
+            last_sequence: 1,
+            ..StreamCounters::new()
+        },
+        in_order: true,
+    };
+    let records = sized_records(1, 3, 700);
+    let replace_budget = |bound: &'static str| {
+        let owner = w.db.pool.clone();
+        async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "CREATE OR REPLACE FUNCTION sagat_quota_step_log_refill_wait() RETURNS interval \
+                 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS \
+                 $$ SELECT interval '{bound}' $$"
+            )))
+            .execute(&owner)
+            .await
+            .expect("the fallback's budget");
+        }
+    };
+    let limit: i64 = sqlx::query_scalar("SELECT max_value FROM sagat_quota_step_log_allowance($1)")
+        .bind(tenant)
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("the limit");
+    for (cause, mark) in [
+        ("limit", MarkOnlyReason::TenantQuota),
+        ("busy", MarkOnlyReason::ServiceBusy),
+    ] {
+        replace_budget(if cause == "limit" {
+            "60 seconds"
+        } else {
+            "200 milliseconds"
+        })
+        .await;
+        let id = Identity {
+            tenant,
+            namespace,
+            run: Uuid::now_v7(),
+            step: Uuid::now_v7(),
+        };
+        let mut holder = w.db.pool.begin().await.expect("the holder");
+        let holder_pid: i32 = sqlx::query_scalar(
+            "SELECT pg_backend_pid() FROM tenant_retained_usage WHERE tenant_id = $1 FOR UPDATE",
+        )
+        .bind(tenant)
+        .fetch_one(&mut *holder)
+        .await
+        .expect("hold the usage row");
+        let call = {
+            let pool = pool.clone();
+            let records = records.clone();
+            tokio::spawn(async move {
+                let mut conn = pool.acquire().await.expect("the writer");
+                let mut tx = conn.begin().await.expect("a transaction");
+                insert_existing(&mut tx, id, existing).await;
+                let allowance = allowance(&mut tx, tenant).await;
+                let answer = carry(&mut tx, id, &records, 3, None)
+                    .await
+                    .expect("the call");
+                let after = stored(&mut tx, id).await.expect("the stream");
+                let lines = lines_stored_now(&mut tx, tenant, after.stream_id).await;
+                tx.rollback().await.expect("rolled back");
+                (allowance, answer, after, lines)
+            })
+        };
+        let (allowance, answer, after, lines) = if cause == "limit" {
+            crate::support::step_logs::until_blocked_by(&w.db.pool, holder_pid).await;
+            sqlx::query(
+                "UPDATE tenant_retained_usage SET step_log_bytes = $2 - 1000 WHERE tenant_id = $1",
+            )
+            .bind(tenant)
+            .bind(limit)
+            .execute(&mut *holder)
+            .await
+            .expect("the usage near the limit");
+            holder.commit().await.expect("released");
+            call.await.expect("the writer's task")
+        } else {
+            let done = call.await.expect("the writer's task");
+            holder.rollback().await.expect("released");
+            done
+        };
+        if cause == "limit" {
+            sqlx::query("UPDATE tenant_retained_usage SET step_log_bytes = 0 WHERE tenant_id = $1")
+                .bind(tenant)
+                .execute(&w.db.pool)
+                .await
+                .expect("the usage back to 0");
+        }
+        let case = Case {
+            existing: Some(existing),
+            records_policy: Settings::default(),
+            bytes_policy: Settings::default(),
+            retention_policy: Settings::default(),
+            tenant_limit: None,
+            records: records.clone(),
+            highest: 3,
+            mark: None,
+            topped_up: false,
+        };
+        let plan = expected(&case, &existing.counters, true, allowance, Some(mark));
+        assert_as_planned(cause, &answer, &after, &lines, &plan, &records, "mark_only");
+        assert_eq!(answer.cause.as_deref(), Some(cause));
+        assert_eq!(
+            (answer.path.as_str(), answer.room, answer.top_up),
+            ("none", None, false),
+            "{cause}"
+        );
+    }
+}
+
 /// Decision D041-146 (3): the carry builds its keys in SQL (security review Nit S-4), the ingest in Rust; the two
 /// builders return exactly the same keys for the same inputs, the edges of each part included, so that a carry and an
 /// ingest of one attempt, and a change of a step-log resource, always take the same fences and the same stream lock.
@@ -1182,14 +1452,14 @@ async fn the_carry_function_refuses_a_reason_or_records_it_was_not_given() {
         assert_eq!(locks, 0, "{reason:?}: refused before any lock");
         tx.rollback().await.expect("rolled back");
     }
-    for reason in MarkOnlyReason::PLANNED {
+    for reason in PlannedMarkReason::ALL {
         let mut tx = conn.begin().await.expect("a transaction");
         let answer = carry(
             &mut tx,
             id,
             &records,
             5,
-            Some(reason.drop_reason().as_str()),
+            Some(reason.reason().drop_reason().as_str()),
         )
         .await
         .expect("a planned reason");
@@ -1213,6 +1483,93 @@ async fn the_carry_function_refuses_a_reason_or_records_it_was_not_given() {
         );
         tx.rollback().await.expect("rolled back");
     }
+    // Records C2 would not pass (review findings m4 and N1 of decision D041-156): more than 64, a sequence of 0 or of
+    // 2^62, and a highest sequence of 2^62.
+    for (label, records, highest) in [
+        ("65 records", sized_records(1, 65, 1), 65),
+        ("a sequence of 0", sized_records(0, 1, 1), 1),
+        (
+            "a sequence of 2^62",
+            sized_records(1 << 62, 1 << 62, 1),
+            1 << 62,
+        ),
+        ("a highest of 2^62", sized_records(1, 1, 1), 1 << 62),
+    ] {
+        let mut tx = conn.begin().await.expect("a transaction");
+        let error = carry(&mut tx, id, &records, highest, None)
+            .await
+            .expect_err(label);
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("22023"),
+            "{label}"
+        );
+        tx.rollback().await.expect("rolled back");
+    }
+    // Arrays of different lengths, a level that is not one, a negative highest sequence.
+    for (label, arrays) in [
+        (
+            "arrays of different lengths",
+            "'{1,2}', '{info,info}', '{NULL}', '{a,b}', '{NULL,NULL}', '{NULL,NULL}', '{f,f}', '{1,1}', 2",
+        ),
+        (
+            "a level that is not one",
+            "'{1}', '{fatal}', '{NULL}', '{a}', '{NULL}', '{NULL}', '{f}', '{1}', 1",
+        ),
+        (
+            "a negative highest sequence",
+            "'{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}', -1",
+        ),
+    ] {
+        let mut tx = conn.begin().await.expect("a transaction");
+        let error = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT * FROM sagat_step_log_carry($1, $2, $3, $4, 'act', '{{}}', '{{}}', 1, 0, {arrays}, 5, NULL)"
+        )))
+        .bind(id.tenant)
+        .bind(id.namespace)
+        .bind(id.run)
+        .bind(id.step)
+        .fetch_one(&mut *tx)
+        .await
+        .expect_err(label);
+        assert_eq!(
+            error.as_database_error().and_then(|e| e.code()).as_deref(),
+            Some("22023"),
+            "{label}"
+        );
+        tx.rollback().await.expect("rolled back");
+    }
+    // A namespace that is not its existing stream's (review finding m3): its fences and ceilings would be another's.
+    let mut tx = conn.begin().await.expect("a transaction");
+    insert_existing(
+        &mut tx,
+        id,
+        Existing {
+            counters: StreamCounters::new(),
+            in_order: true,
+        },
+    )
+    .await;
+    let error = carry(
+        &mut tx,
+        Identity {
+            namespace: Uuid::now_v7(),
+            ..id
+        },
+        &records,
+        5,
+        None,
+    )
+    .await
+    .expect_err("another namespace");
+    assert_eq!(
+        error
+            .as_database_error()
+            .map(|e| e.message().to_owned())
+            .as_deref(),
+        Some("a step-log carry names a namespace that is not its stream's")
+    );
+    tx.rollback().await.expect("rolled back");
     // A size that is not its text's: the caller's measure and the trigger's would disagree.
     let mut tx = conn.begin().await.expect("a transaction");
     let error = sqlx::query(

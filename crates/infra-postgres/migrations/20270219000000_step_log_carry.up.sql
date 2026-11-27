@@ -217,16 +217,18 @@ $$;
 -- existing stream locked if free (CC′) and planned from its counters; the kept lines and the marker (CD, whose
 -- statement trigger charges them once); the existing stream's counters and final mark (CE). `outcome` is `written`
 -- (a full carry), `mark_only`, `contended` (the stream row held), `removed` (removed or expired) or `final_recorded`.
--- `drops` and `charge` are the plan's (see `sagat_step_log_carry_plan`).
+-- `drops` and `charge` are the plan's (see `sagat_step_log_carry_plan`). With `p_reserve` (inside the block), a plan that
+-- charges first reserves its exact charge: `reserved` says whether the writer's quota lease held it, so that the
+-- caller tells a charge that found room from one that refilled, and `reserved_room` is that lease's room before CD.
 CREATE FUNCTION sagat_step_log_carry_write(
     p_tenant uuid, p_namespace uuid, p_run uuid, p_step uuid, p_node text,
     p_path_nodes text[], p_path_indices integer[], p_attempt integer, p_generation bigint,
     p_sequences bigint[], p_levels text[], p_worker_times timestamptz[], p_messages text[],
     p_exceptions text[], p_fields text[], p_truncated boolean[], p_sizes integer[],
     p_highest bigint, p_mark text, p_max_records bigint, p_max_bytes bigint, p_retention integer,
-    p_remaining bigint,
+    p_remaining bigint, p_reserve boolean,
     OUT outcome text, OUT kept integer, OUT drops bigint[], OUT ceiling_reason text, OUT not_stored_reason text,
-    OUT charge bigint)
+    OUT charge bigint, OUT reserved boolean, OUT reserved_room bigint)
 LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
 #variable_conflict use_column
 DECLARE
@@ -240,6 +242,7 @@ DECLARE
 BEGIN
     kept := 0;
     charge := 0;
+    reserved := false;
     -- The plan of a new stream, before any write (D041-111).
     v_plan := public.sagat_step_log_carry_plan(0, 0, 0, NULL, NULL, NULL, 0, 0, 4611686018427387904, 0,
         p_max_records, p_max_bytes, p_remaining, p_sequences, p_sizes, p_truncated, p_highest, true, p_mark);
@@ -268,7 +271,8 @@ BEGIN
                s.not_stored_reason, s.dropped_by_worker, s.dropped_by_server, s.next_marker_sequence,
                s.truncated_records, (s.removed_at IS NOT NULL OR s.expires_at <= clock_timestamp()) AS removed,
                s.final_at IS NOT NULL AS is_final,
-               (s.last_stored_xid IS NULL OR s.last_stored_xid < pg_current_xact_id()) AS in_order
+               (s.last_stored_xid IS NULL OR s.last_stored_xid < pg_current_xact_id()) AS in_order,
+               s.namespace_id
           INTO v_row
           FROM public.step_log_streams s
          WHERE s.tenant_id = p_tenant AND s.run_id = p_run AND s.step_id = p_step AND s.attempt = p_attempt
@@ -286,6 +290,12 @@ BEGIN
             outcome := 'final_recorded';
             RETURN;
         END IF;
+        IF v_row.namespace_id IS DISTINCT FROM p_namespace THEN
+            -- The attempt's identity is the fence's; a namespace that is not the stream's would take another
+            -- namespace's fences and ceilings.
+            RAISE EXCEPTION 'a step-log carry names a namespace that is not its stream''s'
+                USING ERRCODE = 'invalid_parameter_value';
+        END IF;
         v_stream := v_row.stream_id;
         v_existing := true;
         v_plan := public.sagat_step_log_carry_plan(v_row.records, v_row.bytes, v_row.last_sequence,
@@ -295,6 +305,10 @@ BEGIN
     END IF;
     -- CD: the kept lines and the marker, at most once each; the statement trigger charges them once.
     v_planned := cardinality(v_plan.keep) + CASE WHEN v_plan.marker_sequence IS NULL THEN 0 ELSE 1 END;
+    IF p_reserve AND v_plan.charge > 0 THEN
+        SELECT r.reserved, r.room INTO reserved, reserved_room
+          FROM public.sagat_quota_step_log_reserve(p_tenant, v_plan.charge) r;
+    END IF;
     IF v_planned > 0 THEN
         INSERT INTO public.step_log_lines AS l (tenant_id, stream_id, sequence, run_id, worker_time, level, kind,
                                            truncated, message, exception, fields, marker_reason)
@@ -399,7 +413,13 @@ BEGIN
            OR coalesce(cardinality(p_sizes), 0) <> v_n THEN
             RAISE EXCEPTION 'the arrays of a step-log carry differ in length' USING ERRCODE = 'invalid_parameter_value';
         END IF;
+        IF v_n > 64 THEN
+            RAISE EXCEPTION 'a step-log carry holds more than 64 records' USING ERRCODE = 'invalid_parameter_value';
+        END IF;
         FOR i IN 1 .. v_n LOOP
+            IF p_levels[i] IS NULL OR p_levels[i] NOT IN ('trace', 'debug', 'info', 'warn', 'error') THEN
+                RAISE EXCEPTION 'a level of a step-log carry is not a level' USING ERRCODE = 'invalid_parameter_value';
+            END IF;
             IF p_sequences[i] IS NULL OR p_sequences[i] <= v_previous OR p_sequences[i] > 4611686018427387903 THEN
                 RAISE EXCEPTION 'the sequences of a step-log carry are not strictly increasing in 1 to 2^62 - 1'
                     USING ERRCODE = 'invalid_parameter_value';
@@ -452,6 +472,10 @@ BEGIN
       INTO v_max_records, v_max_bytes, v_retention, v_used, v_limit, v_enforced
       FROM public.sagat_step_log_policies(p_tenant, p_namespace) p,
            public.sagat_quota_step_log_allowance(p_tenant) a;
+    IF NOT FOUND THEN
+        -- No accounting row: nothing to plan against; the report is re-run without its carry.
+        RAISE EXCEPTION 'a step-log carry found no quota accounting row' USING ERRCODE = 'internal_error';
+    END IF;
     IF v_max_records = 0 THEN
         outcome := 'off';
         RETURN NEXT;
@@ -468,7 +492,7 @@ BEGIN
         v_write := public.sagat_step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node, p_path_nodes,
             p_path_indices, p_attempt, p_generation, p_sequences, p_levels, p_worker_times, p_messages,
             p_exceptions, p_fields, p_truncated, p_sizes, p_highest, v_mark, v_max_records, v_max_bytes,
-            v_retention, v_remaining);
+            v_retention, v_remaining, false);
         IF v_reserved AND v_write.outcome IN ('written', 'mark_only') THEN
             path := 'fast';
             room := v_reserved_room - v_write.charge;
@@ -481,8 +505,13 @@ BEGIN
             v_write := public.sagat_step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node,
                 p_path_nodes, p_path_indices, p_attempt, p_generation, p_sequences, p_levels, p_worker_times,
                 p_messages, p_exceptions, p_fields, p_truncated, p_sizes, p_highest, v_mark, v_max_records,
-                v_max_bytes, v_retention, v_remaining);
-            IF v_write.charge > 0 THEN
+                v_max_bytes, v_retention, v_remaining, true);
+            IF v_write.charge > 0 AND v_write.reserved THEN
+                -- The exact charge found room after all (the bound asked for the marker and every sent record): no
+                -- refill ran.
+                path := 'fast';
+                room := v_write.reserved_room - v_write.charge;
+            ELSIF v_write.charge > 0 THEN
                 path := 'refill';
                 -- The writer's room after the charge: its quota lease is this transaction's, so it is found.
                 SELECT r.room INTO room FROM public.sagat_quota_step_log_reserve(p_tenant, 1) r;
@@ -508,7 +537,7 @@ BEGIN
             v_write := public.sagat_step_log_carry_write(p_tenant, p_namespace, p_run, p_step, p_node,
                 p_path_nodes, p_path_indices, p_attempt, p_generation, p_sequences, p_levels, p_worker_times,
                 p_messages, p_exceptions, p_fields, p_truncated, p_sizes, p_highest, v_mark, v_max_records,
-                v_max_bytes, v_retention, v_remaining);
+                v_max_bytes, v_retention, v_remaining, false);
         END;
     END IF;
     outcome := v_write.outcome;
@@ -532,7 +561,7 @@ REVOKE ALL ON FUNCTION sagat_step_log_policy_fence_keys(uuid, uuid),
                               bigint, bigint, bigint[], integer[], boolean[], bigint, boolean, text),
     sagat_step_log_carry_write(uuid, uuid, uuid, uuid, text, text[], integer[], integer, bigint, bigint[], text[],
                                timestamptz[], text[], text[], text[], boolean[], integer[], bigint, text, bigint,
-                               bigint, integer, bigint),
+                               bigint, integer, bigint, boolean),
     sagat_step_log_carry(uuid, uuid, uuid, uuid, text, text[], integer[], integer, bigint, bigint[], text[],
                          timestamptz[], text[], text[], text[], boolean[], integer[], bigint, integer, text)
     FROM PUBLIC;
@@ -546,7 +575,7 @@ BEGIN
                                       bigint, bigint, bigint, bigint[], integer[], boolean[], bigint, boolean, text),
             sagat_step_log_carry_write(uuid, uuid, uuid, uuid, text, text[], integer[], integer, bigint, bigint[],
                                        text[], timestamptz[], text[], text[], text[], boolean[], integer[], bigint,
-                                       text, bigint, bigint, integer, bigint),
+                                       text, bigint, bigint, integer, bigint, boolean),
             sagat_step_log_carry(uuid, uuid, uuid, uuid, text, text[], integer[], integer, bigint, bigint[], text[],
                                  timestamptz[], text[], text[], text[], boolean[], integer[], bigint, integer, text)
             TO sagat_app;

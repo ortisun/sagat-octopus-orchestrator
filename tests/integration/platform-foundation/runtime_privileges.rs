@@ -1234,6 +1234,7 @@ async fn the_step_log_carrys_functions_are_invokers_only_the_runtime_role_may_ex
         "the carry's six functions: {functions:?}"
     );
     let mut gaps = Vec::new();
+    let mut found: Vec<String> = Vec::new();
     for (signature, definer, config, executable, public, body) in &functions {
         assert!(!definer, "{signature} is SECURITY INVOKER");
         assert_eq!(
@@ -1244,6 +1245,7 @@ async fn the_step_log_carrys_functions_are_invokers_only_the_runtime_role_may_ex
         assert!(executable, "{RUNTIME_ROLE} may execute {signature}");
         assert!(!public, "PUBLIC may not execute {signature}");
         for need in sql_needs::needs(body) {
+            found.push(need.to_string());
             if matches!(&need, sql_needs::Need::Execute(name) if name.starts_with("pg_")) {
                 continue;
             }
@@ -1251,6 +1253,21 @@ async fn the_step_log_carrys_functions_are_invokers_only_the_runtime_role_may_ex
                 gaps.push(format!("{signature}: {need}: {why}"));
             }
         }
+    }
+    // The scanner read the bodies: what the carry writes and calls is among what it found, so this test can fail.
+    for expected in [
+        "INSERT step_log_lines(",
+        "INSERT step_log_streams(",
+        "UPDATE step_log_streams.",
+        "ROW LOCK step_log_streams",
+        "SELECT quota_limits",
+        "EXECUTE sagat_quota_step_log_reserve()",
+        "EXECUTE sagat_quota_step_log_allowance()",
+    ] {
+        assert!(
+            found.iter().any(|need| need.starts_with(expected)),
+            "the bodies ask for {expected}: {found:?}"
+        );
     }
     assert!(
         gaps.is_empty(),

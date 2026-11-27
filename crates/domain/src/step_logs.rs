@@ -540,8 +540,38 @@ impl Carry {
     pub fn plan(&self) -> CarryPlan {
         match self.shape() {
             CarryShape::Full => CarryPlan::Full,
-            CarryShape::MarkOnly => CarryPlan::MarkOnly(MarkOnlyReason::Invalid),
+            CarryShape::MarkOnly => CarryPlan::MarkOnly(PlannedMarkReason::Invalid),
             CarryShape::Ignored => CarryPlan::None,
+        }
+    }
+}
+
+/// A mark-only reason the application plans, the values `p_mark_reason` of the carry function may take (data-model.md
+/// §8a, item 0): the carry's own block answers the other two, `tenant_quota` and `service_busy`, which no plan names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlannedMarkReason {
+    Invalid,
+    Secret,
+    ContentFallback,
+    Failed,
+}
+
+impl PlannedMarkReason {
+    pub const ALL: [Self; 4] = [
+        Self::Invalid,
+        Self::Secret,
+        Self::ContentFallback,
+        Self::Failed,
+    ];
+
+    /// The mark-only reason, and so the drop reason, this planned reason records.
+    #[must_use]
+    pub const fn reason(self) -> MarkOnlyReason {
+        match self {
+            Self::Invalid => MarkOnlyReason::Invalid,
+            Self::Secret => MarkOnlyReason::Secret,
+            Self::ContentFallback => MarkOnlyReason::ContentFallback,
+            Self::Failed => MarkOnlyReason::Failed,
         }
     }
 }
@@ -565,19 +595,19 @@ pub enum CarryPlan {
     /// The carry's records, planned by the carry function against the stream (T5 and T6 of a carry).
     Full,
     /// No record kept and no marker planned: each sequence the carry sent above the stream's last is counted dropped
-    /// by the server with this reason, one of [`MarkOnlyReason::PLANNED`], and the stream gets its final mark.
-    MarkOnly(MarkOnlyReason),
+    /// by the server with this reason, and the stream gets its final mark.
+    MarkOnly(PlannedMarkReason),
     /// Nothing written: the report is recorded as without a carry.
     None,
 }
 
 impl CarryPlan {
     /// The plan of a transaction that records a report whose output or failure code held a declared secret
-    /// ([`MarkOnlyReason::Secret`]) or that a content-quota fallback records ([`MarkOnlyReason::ContentFallback`]): a
+    /// ([`PlannedMarkReason::Secret`]) or that a content-quota fallback records ([`PlannedMarkReason::ContentFallback`]): a
     /// full carry becomes mark-only with `reason`; a mark-only carry keeps its reason and none stays none, so that the
     /// plan never goes up.
     #[must_use]
-    pub const fn mark_only(self, reason: MarkOnlyReason) -> Self {
+    pub const fn mark_only(self, reason: PlannedMarkReason) -> Self {
         match self {
             Self::Full => Self::MarkOnly(reason),
             other => other,
@@ -586,18 +616,19 @@ impl CarryPlan {
 
     /// The plan of the re-run after the carry made the transaction fail (ADR-0095 decision 5): a guard's raise turns a
     /// full carry into a mark-only one whose reason is `failed`; any other failure, or any failure of a carry that is
-    /// not full, turns it into none. The plan is always strictly lower than before, so that the re-runs end.
+    /// not full, turns it into none. A plan that is not none is always strictly lower after it, so that the re-runs
+    /// end; a plan that is none cannot fail because of its carry.
     #[must_use]
     pub const fn after(self, failure: CarryFailure) -> Self {
         match (self, failure) {
-            (Self::Full, CarryFailure::GuardRaised) => Self::MarkOnly(MarkOnlyReason::Failed),
+            (Self::Full, CarryFailure::GuardRaised) => Self::MarkOnly(PlannedMarkReason::Failed),
             _ => Self::None,
         }
     }
 
     /// The `p_mark_reason` of the carry function: the reason of a mark-only carry, none for a full carry or none.
     #[must_use]
-    pub const fn mark_reason(self) -> Option<MarkOnlyReason> {
+    pub const fn mark_reason(self) -> Option<PlannedMarkReason> {
         match self {
             Self::MarkOnly(reason) => Some(reason),
             Self::Full | Self::None => None,
@@ -1181,11 +1212,11 @@ mod tests {
         assert_eq!(carried(&[1, 2, 3], 5, 100).plan(), CarryPlan::Full);
         assert_eq!(
             carried(&[2, 1], 5, 100).plan(),
-            CarryPlan::MarkOnly(MarkOnlyReason::Invalid)
+            CarryPlan::MarkOnly(PlannedMarkReason::Invalid)
         );
         assert_eq!(
             carried(&[1], 1, MAX_CARRY_BYTES + 1).plan(),
-            CarryPlan::MarkOnly(MarkOnlyReason::Invalid)
+            CarryPlan::MarkOnly(PlannedMarkReason::Invalid)
         );
         assert_eq!(
             carried(&[1], MAX_WORKER_SEQUENCE + 1, 100).plan(),
@@ -1205,14 +1236,17 @@ mod tests {
     /// mark-only carry; a mark-only carry keeps its reason and none stays none.
     #[test]
     fn a_secret_or_a_content_fallback_makes_a_full_carry_mark_only_and_never_raises_one() {
-        for reason in [MarkOnlyReason::Secret, MarkOnlyReason::ContentFallback] {
+        for reason in [
+            PlannedMarkReason::Secret,
+            PlannedMarkReason::ContentFallback,
+        ] {
             assert_eq!(
                 CarryPlan::Full.mark_only(reason),
                 CarryPlan::MarkOnly(reason)
             );
             assert_eq!(
-                CarryPlan::MarkOnly(MarkOnlyReason::Failed).mark_only(reason),
-                CarryPlan::MarkOnly(MarkOnlyReason::Failed),
+                CarryPlan::MarkOnly(PlannedMarkReason::Failed).mark_only(reason),
+                CarryPlan::MarkOnly(PlannedMarkReason::Failed),
                 "a content fallback keeps the downgraded carry"
             );
             assert_eq!(CarryPlan::None.mark_only(reason), CarryPlan::None);
@@ -1220,8 +1254,17 @@ mod tests {
         assert_eq!(CarryPlan::Full.mark_reason(), None);
         assert_eq!(CarryPlan::None.mark_reason(), None);
         assert_eq!(
-            CarryPlan::MarkOnly(MarkOnlyReason::Secret).mark_reason(),
-            Some(MarkOnlyReason::Secret)
+            CarryPlan::MarkOnly(PlannedMarkReason::Secret).mark_reason(),
+            Some(PlannedMarkReason::Secret)
+        );
+    }
+
+    /// The planned reasons are exactly the reasons `p_mark_reason` may take.
+    #[test]
+    fn the_planned_mark_reasons_are_the_four_the_function_takes() {
+        assert_eq!(
+            PlannedMarkReason::ALL.map(PlannedMarkReason::reason),
+            MarkOnlyReason::PLANNED
         );
     }
 
@@ -1241,7 +1284,7 @@ mod tests {
     fn a_carry_failure_lowers_the_plan_strictly() {
         assert_eq!(
             CarryPlan::Full.after(CarryFailure::GuardRaised),
-            CarryPlan::MarkOnly(MarkOnlyReason::Failed)
+            CarryPlan::MarkOnly(PlannedMarkReason::Failed)
         );
         assert_eq!(
             CarryPlan::Full.after(CarryFailure::CallFailed),
@@ -1249,8 +1292,8 @@ mod tests {
         );
         let plans = [
             CarryPlan::Full,
-            CarryPlan::MarkOnly(MarkOnlyReason::Invalid),
-            CarryPlan::MarkOnly(MarkOnlyReason::Failed),
+            CarryPlan::MarkOnly(PlannedMarkReason::Invalid),
+            CarryPlan::MarkOnly(PlannedMarkReason::Failed),
             CarryPlan::None,
         ];
         for plan in plans {

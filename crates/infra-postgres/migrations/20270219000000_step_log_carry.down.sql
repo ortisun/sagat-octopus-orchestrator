@@ -4,7 +4,7 @@ DROP FUNCTION sagat_step_log_carry(uuid, uuid, uuid, uuid, text, text[], integer
                                    timestamptz[], text[], text[], text[], boolean[], integer[], bigint, integer, text);
 DROP FUNCTION sagat_step_log_carry_write(uuid, uuid, uuid, uuid, text, text[], integer[], integer, bigint, bigint[],
                                          text[], timestamptz[], text[], text[], text[], boolean[], integer[], bigint,
-                                         text, bigint, bigint, integer, bigint);
+                                         text, bigint, bigint, integer, bigint, boolean);
 DROP FUNCTION sagat_step_log_carry_plan(bigint, bigint, bigint, bigint, text, text, bigint, bigint, bigint, bigint,
                                         bigint, bigint, bigint, bigint[], integer[], boolean[], bigint, boolean, text);
 DROP FUNCTION sagat_step_log_policies(uuid, uuid);
