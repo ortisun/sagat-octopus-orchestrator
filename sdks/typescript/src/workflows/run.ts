@@ -3,7 +3,7 @@
  * completion it answers (design 044, Technical Plan 4 and 6). A worker keeps a `CodeRun` in its cache between workflow
  * tasks and reuses it when the next lease's window starts where it stopped (section 4.2); any other worker replays.
  */
-import { bodyDigest, EMPTY_CHAIN, extendChain } from './chain.js';
+import { bodyDigest, EMPTY_CHAIN, extendChain, hex as hexOf } from './chain.js';
 import {
   BLOB_CAPABLE_FIELD, canonicalSize, MAX_BLOB_CARRIED_BYTES, MAX_BLOBS, MAX_FUNCTION_COMMANDS, MAX_FUNCTION_METADATA_BYTES,
   MAX_FAILURE_MESSAGE, MAX_INLINE_BYTES, MAX_SIDE_EFFECT_BYTES, metadataSize, TERMINAL_KINDS,
@@ -74,6 +74,8 @@ export class CodeRun {
   #chain: Uint8Array = EMPTY_CHAIN;
   #bodyDigests: Uint8Array[] = [];
   #deferredDigest: Uint8Array | undefined;
+  /** Whether the value of the deferred command travelled as a blob: its re-emission keeps that carrier (Decision 044-325). */
+  #deferredAsBlob: boolean | undefined;
   #inFlight: { completion: Completion; startedSeq: number } | undefined;
   #broken = false;
   #closed = false;
@@ -126,9 +128,17 @@ export class CodeRun {
       const numbered = result.commands.filter((command) => command.commandNumber !== undefined);
       checkNumbering(numbered, this.#accepted);
       for (const command of numbered) this.#chainCommand(command);
-      const terminal = result.commands.find((command) => TERMINAL_KINDS.includes(command.kind));
-      if (deferred && terminal) this.#deferredDigest = bodyDigest(terminal);
-      else if (terminal) { this.#deferredDigest = undefined; this.#closed = true; }
+      const index = result.commands.findIndex((command) => TERMINAL_KINDS.includes(command.kind));
+      const terminal = index < 0 ? undefined : result.commands[index]!;
+      if (deferred && terminal) {
+        // The carrier its first emission took, packed as that completion was (the same commands, the same rule).
+        this.#deferredAsBlob = prepare(inlineFlags(result.commands, this.init), this.#pin())[index]!.valueAsBlob;
+        this.#deferredDigest = bodyDigest(terminal);
+      } else if (terminal) {
+        this.#deferredDigest = undefined;
+        this.#deferredAsBlob = undefined;
+        this.#closed = true;
+      }
       this.#windowStart = activation.started.seq;
       this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
       return { kind: 'replayed' };
@@ -154,7 +164,7 @@ export class CodeRun {
       // The runtime's bounds are checked again here, on values the context can no longer change: a context whose code
       // defeated its own checks fails the workflow task as a risk instead of sending what the server would refuse.
       checkNumbering(result.commands.filter((command) => command.commandNumber !== undefined), this.#accepted);
-      prepared = prepareChecked(result.commands, this.init);
+      prepared = prepareChecked(result.commands, this.init, this.#pin());
     } catch {
       this.#broken = true;
       return { kind: 'failure', failure: { cause: 'NONDETERMINISM_RISK' }, logs: result.logs };
@@ -191,10 +201,10 @@ export class CodeRun {
       }
       if (deferred) {
         const held = firstTimeTerminal ?? deferredCommand;
-        if (held) this.#deferredDigest = held.bodyDigest;
+        if (held) { this.#deferredDigest = held.bodyDigest; this.#deferredAsBlob = held.valueAsBlob; }
       } else {
         if (deferredCommand) this.#chainCommand({ ...deferredCommand, commandNumber: this.#accepted + 1 });
-        if (firstTimeTerminal || deferredCommand) { this.#deferredDigest = undefined; this.#closed = true; }
+        if (firstTimeTerminal || deferredCommand) { this.#deferredDigest = undefined; this.#deferredAsBlob = undefined; this.#closed = true; }
       }
       this.#windowStart = inFlight.startedSeq;
       this.#sandbox.call(JSON.stringify({ op: 'commit', deferred }), this.#deadlineMs);
@@ -207,6 +217,11 @@ export class CodeRun {
   abandon(): void {
     this.#inFlight = undefined;
     this.#broken = true;
+  }
+
+  /** The held deferral's carrier, for packing an activation that re-emits it. */
+  #pin(): Pin | undefined {
+    return this.#deferredDigest !== undefined && this.#deferredAsBlob !== undefined ? { digest: this.#deferredDigest, asBlob: this.#deferredAsBlob } : undefined;
   }
 
   #ensureUsable(): void {
@@ -373,8 +388,16 @@ function checkNumbering(numbered: WorkflowCommand[], accepted: number): void {
 
 // The bounds of Requirement 044-012 and Non-functional requirement 044-006, on the values as they will be sent; the
 // host decides which values stay inline from the kind and the gated entries, not from the context's flags.
-function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCommand[] {
+/** The values that must stay inline, decided by the host from the kinds and the gated entries, not the context's flags. */
+function inlineFlags(commands: WorkflowCommand[], init: RunInit): WorkflowCommand[] {
   const gated = new Set(init.gatedEntries);
+  return commands.map((command) => ({ ...command, alwaysInline: command.kind === 'approval' || (command.kind === 'activity' && gated.has(command.target)) }));
+}
+
+/** A re-emitted deferral keeps the carrier of the value its deferral holds. */
+interface Pin { digest: Uint8Array; asBlob: boolean }
+
+function prepareChecked(commands: WorkflowCommand[], init: RunInit, pin?: Pin): PreparedCommand[] {
   let functionCommands = 0;
   let functionMetadata = 0;
   let sdkCommands = 0;
@@ -390,13 +413,12 @@ function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCom
       throw new AnswerRefused('a carried state over its maxBytes');
     }
     if (command.kind === 'marker_side_effect' && canonicalSize(command.body['value']) > MAX_SIDE_EFFECT_BYTES) throw new AnswerRefused('a side-effect value over its bound');
-    const alwaysInline = command.kind === 'approval' || (command.kind === 'activity' && gated.has(command.target));
-    return { ...command, alwaysInline };
+    return command;
   });
   if (functionCommands > MAX_FUNCTION_COMMANDS || functionMetadata > MAX_FUNCTION_METADATA_BYTES || sdkCommands > MAX_SDK_COMMANDS) {
     throw new AnswerRefused('more commands than an activation may make');
   }
-  const prepared = prepare(checked);
+  const prepared = prepare(inlineFlags(checked, init), pin);
   let inline = 0;
   let blobs = 0;
   let blobBytes = 0;
@@ -416,16 +438,21 @@ function prepareChecked(commands: WorkflowCommand[], init: RunInit): PreparedCom
  * The body digests, and the values that travel as blobs: whenever the completion's values would not fit its 192 KiB of
  * inline values, the largest value that may travel as a blob is moved first (Non-functional requirement 044-006).
  */
-export function prepare(commands: WorkflowCommand[]): PreparedCommand[] {
+export function prepare(commands: WorkflowCommand[], pin?: Pin): PreparedCommand[] {
   const prepared: PreparedCommand[] = commands.map((command) => ({ ...command, bodyDigest: bodyDigest(command), valueAsBlob: false }));
   let inline = 0;
   const movable: { command: PreparedCommand; size: number }[] = [];
   for (const command of prepared) {
     const field = BLOB_CAPABLE_FIELD[command.kind];
-    for (const key of ['input', 'value', 'result', 'output', 'state', 'subject', 'signals']) {
+    // The deferral being re-emitted travels as its first emission did: a held blob counts nothing inline, an inline
+    // value counts inline and never moves (Decision 044-325).
+    const pinned = pin !== undefined && TERMINAL_KINDS.includes(command.kind) && hexOf(command.bodyDigest) === hexOf(pin.digest);
+    if (pinned && pin.asBlob) command.valueAsBlob = true;
+    for (const key of ['input', 'value', 'result', 'output', 'state', 'subject', 'signals', 'message']) {
       if (!(key in command.body)) continue;
+      if (pinned && pin.asBlob && key === field) continue;
       const size = canonicalSize(command.body[key]);
-      if (key === field && !command.alwaysInline) movable.push({ command, size });
+      if (key === field && !command.alwaysInline && !pinned) movable.push({ command, size });
       else inline += size;
     }
   }

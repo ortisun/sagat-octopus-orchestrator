@@ -86,9 +86,10 @@ function nodeNumber(node: unknown, what: string): number {
  * The blobs the payloads of these events reference (wire form), each once, judged before any is read: a blob named twice
  * with different claims is malformed, and their sizes are bounded one by one and in all (Decision 044-324).
  */
-export function blobRefsOf(events: Iterable<Record<string, any>>): HistoryBlobRef[] {
-  const refs = new Map<string, HistoryBlobRef>();
-  let total = 0;
+export function blobRefsOf(events: Iterable<Record<string, any>>, seen: { refs: Map<string, HistoryBlobRef>; total: number } = { refs: new Map(), total: 0 }): HistoryBlobRef[] {
+  // `seen` carries the blobs of the lease's earlier pages: only the new ones are answered, the bound is over all.
+  const refs = seen.refs;
+  const found: HistoryBlobRef[] = [];
   for (const event of events) {
     for (const payload of payloadsOf(event)) {
       const blob = record(payload?.['blob']);
@@ -101,12 +102,13 @@ export function blobRefsOf(events: Iterable<Record<string, any>>): HistoryBlobRe
         continue;
       }
       if (ref.size > MAX_HISTORY_BLOB_BYTES) throw new HistoryValuesExceeded(`a history blob of ${ref.size} bytes is over ${MAX_HISTORY_BLOB_BYTES}`);
-      total += ref.size;
-      if (total > MAX_HISTORY_BLOBS_BYTES) throw new HistoryValuesExceeded(`the history's blobs are over ${MAX_HISTORY_BLOBS_BYTES} bytes in all`);
+      seen.total += ref.size;
+      if (seen.total > MAX_HISTORY_BLOBS_BYTES) throw new HistoryValuesExceeded(`the history's blobs are over ${MAX_HISTORY_BLOBS_BYTES} bytes in all`);
       refs.set(ref.blobId, ref);
+      found.push(ref);
     }
   }
-  return [...refs.values()];
+  return found;
 }
 
 function payloadsOf(event: Record<string, any>): Array<Record<string, any> | undefined> {

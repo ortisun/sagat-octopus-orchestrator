@@ -215,14 +215,43 @@ export class WorkflowTestEnvironment {
     step.begun = true;
   }
 
-  /** Completes a step that has no stub (or one left open on purpose), as its worker would. */
+  /**
+   * Completes a step that has no stub (or one left open on purpose), with the event of its kind: an activity's or a
+   * script's step outcome (its worker), a child's `child.finished` (its run), a wait's `wait.outcome` (the event).
+   */
   completeStep(commandNumber: number, output: unknown): void {
-    this.#settle(commandNumber, { kind: 'step.outcome', commandNumber, status: 'completed', output: output === undefined ? null : output });
+    const value = output === undefined ? null : output;
+    switch (this.#kindOf(commandNumber, 'completed')) {
+      case 'child': return this.#settle(commandNumber, { kind: 'child.finished', commandNumber, status: 'completed', output: value });
+      case 'wait_event': return this.#settle(commandNumber, { kind: 'wait.outcome', commandNumber, status: 'satisfied', payload: value });
+      default: return this.#settle(commandNumber, { kind: 'step.outcome', commandNumber, status: 'completed', output: value });
+    }
   }
 
-  /** Fails a step that has no stub. */
-  failStep(commandNumber: number, code: string, status: 'failed' | 'timed_out' | 'cancelled' = 'failed'): void {
-    this.#settle(commandNumber, { kind: 'step.outcome', commandNumber, status, errorCode: code });
+  /** Fails a step that has no stub: an activity's or a script's step outcome, a child's `child.finished`, a wait's timeout. */
+  failStep(commandNumber: number, code: string, status: 'failed' | 'timed_out' | 'cancelled' | 'partial' = 'failed'): void {
+    switch (this.#kindOf(commandNumber, 'failed')) {
+      case 'child': return this.#settle(commandNumber, { kind: 'child.finished', commandNumber, status, errorCode: code });
+      case 'wait_event':
+        if (status !== 'timed_out') throw new Error('a wait ends satisfied or timed out');
+        return this.#settle(commandNumber, { kind: 'wait.outcome', commandNumber, status: 'timed_out' });
+      default:
+        if (status === 'partial') throw new Error('only a child ends partial');
+        return this.#settle(commandNumber, { kind: 'step.outcome', commandNumber, status, errorCode: code });
+    }
+  }
+
+  /** Decides an approval that the `approvals` option left open. */
+  decideApproval(commandNumber: number, decision: 'approved' | 'rejected' | 'expired'): void {
+    if (this.#steps.get(commandNumber)?.kind !== 'approval') throw new Error(`the command ${commandNumber} is no approval`);
+    this.#settle(commandNumber, { kind: 'approval.decided', commandNumber, decision });
+  }
+
+  #kindOf(commandNumber: number, how: string): CommandKind | undefined {
+    const kind = this.#steps.get(commandNumber)?.kind;
+    if (kind === 'approval') throw new Error('an approval is decided with decideApproval');
+    if (kind === 'timer_start') throw new Error(`a timer is not ${how}: it fires`);
+    return kind;
   }
 
   cancel(): void {
@@ -314,7 +343,11 @@ export class WorkflowTestEnvironment {
     this.completions.push({ completion: answer, answer: answerKind });
     await run.commit(answerKind);
     if (this.#options.coldReplay) { run.dispose(); this.#run = undefined; }
-    for (const command of accepted) await this.#effect(command);
+    // The completion's own effects come first, as in its transaction (Decision 044-245): its steps exist, and its
+    // cancellations of steps no worker began apply, before any stub (a worker that leases a step after the commit) runs.
+    for (const command of accepted) this.#register(command);
+    for (const command of accepted) if (command.kind === 'timer_cancel' || command.kind === 'step_cancel') await this.#effect(command);
+    for (const command of accepted) if (command.kind !== 'timer_cancel' && command.kind !== 'step_cancel') await this.#effect(command);
   }
 
   async #prepareRun(startedSeq: number): Promise<RunHandle> {
@@ -389,14 +422,20 @@ export class WorkflowTestEnvironment {
     }
   }
 
+  /** The step a work command creates, before any of the completion's effects. */
+  #register(command: PreparedCommand): void {
+    if (!['activity', 'script', 'timer_start', 'wait_event', 'child', 'approval'].includes(command.kind)) return;
+    const number = command.commandNumber!;
+    if (!this.#steps.has(number)) this.#steps.set(number, { kind: command.kind, settled: false });
+  }
+
   async #effect(command: PreparedCommand): Promise<void> {
     const number = command.commandNumber!;
     const body = command.body;
     switch (command.kind) {
       case 'activity': case 'script': {
-        if (!this.#steps.has(number)) this.#steps.set(number, { kind: command.kind, settled: false });
         const stub = command.kind === 'activity' ? this.#options.activities?.[command.target] : this.#options.scripts?.[command.target];
-        if (!stub) return;
+        if (!stub || this.#steps.get(number)?.settled) return;
         try {
           const output = await stub(body['input']);
           this.#settle(number, { kind: 'step.outcome', commandNumber: number, status: 'completed', output: output === undefined ? null : output });
@@ -407,7 +446,7 @@ export class WorkflowTestEnvironment {
         return;
       }
       case 'timer_start':
-        this.#steps.set(number, { kind: command.kind, settled: false });
+        if (this.#steps.get(number)?.settled) return;
         this.#timers.push({ at: this.#nowUs + Number(body['durationMs']) * 1000, commandNumber: number, kind: 'timer' });
         return;
       case 'timer_cancel': case 'step_cancel': {
@@ -426,16 +465,15 @@ export class WorkflowTestEnvironment {
         return;
       }
       case 'wait_event': {
-        this.#steps.set(number, { kind: command.kind, settled: false });
+        if (this.#steps.get(number)?.settled) return;
         const payload = this.#options.events?.(String(body['eventType']), String(body['correlationKey']));
         if (payload !== undefined) this.#settle(number, { kind: 'wait.outcome', commandNumber: number, status: 'satisfied', payload });
         else if (typeof body['timeoutMs'] === 'number') this.#timers.push({ at: this.#nowUs + body['timeoutMs'] * 1000, commandNumber: number, kind: 'wait' });
         return;
       }
       case 'child': {
-        this.#steps.set(number, { kind: command.kind, settled: false });
         const stub = this.#options.children?.[command.target];
-        if (!stub) return;
+        if (!stub || this.#steps.get(number)?.settled) return;
         try {
           const output = await stub(body['input']);
           this.#settle(number, { kind: 'child.finished', commandNumber: number, status: 'completed', output: output === undefined ? null : output });
@@ -445,7 +483,7 @@ export class WorkflowTestEnvironment {
         return;
       }
       case 'approval': {
-        this.#steps.set(number, { kind: command.kind, settled: false });
+        if (this.#steps.get(number)?.settled) return;
         const decision = this.#options.approvals?.(command.target, body['subject']);
         if (decision) this.#settle(number, { kind: 'approval.decided', commandNumber: number, decision });
         return;
@@ -499,7 +537,8 @@ export class WorkflowTestEnvironment {
     const step = this.#steps.get(number);
     if (!step || step.settled) return;
     step.settled = true;
-    this.#append(body, 'external');
+    // The corpus's origins: a wait is satisfied by an event from outside; every other outcome is the engine's.
+    this.#append(body, body.kind === 'wait.outcome' && body.status === 'satisfied' ? 'external' : 'engine');
     if (step.scope) this.#settleScopeIfDone(step.scope);
   }
 

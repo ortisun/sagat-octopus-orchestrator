@@ -1212,7 +1212,7 @@ function scheduleScript<T>(digest: string, input: unknown, options: ScriptOption
   const fragment: Record<string, unknown> = { type: 'script', artifactDigest: digest, input: value };
   if (options?.retry) fragment['retry'] = { ...options.retry };
   // As for a graph script node; the artifact's policy (`wall`) bounds the attempt as well (Decision 044-247).
-  if (options?.timeoutMs !== undefined) fragment['timeoutMs'] = options.timeoutMs;
+  if (options?.timeoutMs !== undefined) fragment['timeoutMs'] = checkedDuration(options.timeoutMs, 'timeoutMs', MAX_CODE_DURATION_MS);
   const values = [{ size, inline: false, what: `the input of the script ${digest}` }];
   const number = r.issue('script', digest, fragment, scope ? { scope: scope.id, values } : { values });
   return commandPromise<T>(number, stepOutcome, scope);
@@ -1300,6 +1300,17 @@ function sagaScopeOf(scope: Scope): SagaScope {
   });
 }
 
+/** The durations of the code profile (Decision 044-247): 1 ms to 366 days; a wait's look-back at most 7 days. */
+const MAX_CODE_DURATION_MS = 366 * 86_400_000;
+const MAX_LOOKBACK_MS = 7 * 86_400_000;
+
+function checkedDuration(value: unknown, what: string, max: number, min = 1): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new RangeError(`${what} is an integer from ${min} to ${max} milliseconds`);
+  }
+  return value;
+}
+
 /** Schedules an activity and resolves with its output, or rejects with `ActivityError`. */
 export function activity<T = unknown>(name: string, input?: unknown, options?: ActivityOptions): CommandPromise<T> {
   return scheduleActivity<T>(name, input, options, undefined);
@@ -1329,8 +1340,8 @@ export function waitForEvent<T = unknown>(eventType: string, correlationKey: str
   const r = run('waitForEvent');
   // The type requires it; a caller in plain JavaScript is told at the call.
   if (options?.timeoutMs === undefined) throw new TypeError('a wait for an event needs timeoutMs: the code profile requires it');
-  const fragment: Record<string, unknown> = { type: 'waitEvent', eventType, correlationKey, timeoutMs: options.timeoutMs };
-  if (options?.lookbackMs !== undefined) fragment['lookbackMs'] = options.lookbackMs;
+  const fragment: Record<string, unknown> = { type: 'waitEvent', eventType, correlationKey, timeoutMs: checkedDuration(options.timeoutMs, 'timeoutMs', MAX_CODE_DURATION_MS) };
+  if (options?.lookbackMs !== undefined) fragment['lookbackMs'] = checkedDuration(options.lookbackMs, 'lookbackMs', MAX_LOOKBACK_MS, 0);
   // The correlation key is a literal of the fragment, which travels inline.
   const number = r.issue('wait_event', eventType, fragment, { values: [{ size: snapshot(correlationKey).size, inline: true, what: 'the correlation key' }] });
   return commandPromise<T | undefined>(number, (resolve, reject) => ({

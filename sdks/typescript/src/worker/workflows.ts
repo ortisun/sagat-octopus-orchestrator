@@ -13,10 +13,11 @@ import type { Logger } from '../config.js';
 import { DEFAULT_CACHE_SIZE, WorkflowRunCache } from '../workflows/cache.js';
 import { hex } from '../workflows/chain.js';
 import type { HistoryEvent, WorkflowTaskFailure } from '../workflows/context.js';
-import { ActivationCutter } from '../workflows/history.js';
+import { ActivationCutter, HistoryOrderError, type ReplayActivation } from '../workflows/history.js';
 import { checkWorkflowRuntime } from '../workflows/preconditions.js';
 import {
-  HistoryValuesExceeded, MAX_HISTORY_EVENTS, MalformedHistory, blobRefsOf, blobValueOf, commandToWire, eventFromWire, failureToWire, type ValueCarrier,
+  HistoryValuesExceeded, MAX_HISTORY_EVENTS, MalformedHistory, blobRefsOf, blobValueOf, commandToWire, eventFromWire, failureToWire,
+  type HistoryBlobRef, type ValueCarrier,
 } from '../workflows/protocol.js';
 import { WorkflowThread, WorkflowThreadError, type LoadedBundle, type RunHandle } from '../workflows/threaded.js';
 import { rfc8785 } from '../workflows/context.js';
@@ -58,6 +59,17 @@ export interface WorkflowTasksOptions {
   retry: RetryPolicy;
   cacheSize?: number;
   activationDeadlineMs?: number;
+}
+
+/** One lease's fence, its channel and the expiry its history pages extend. */
+interface LeaseScope { lease: TaskLease; task: WorkflowTaskLease; rpc: WorkerRpc; expiresAt: number }
+
+/** The blobs of a lease's history: those named so far, their bytes in all, and the values read. */
+interface HistoryBlobs { refs: Map<string, HistoryBlobRef>; total: number; values: Map<string, unknown> }
+
+/** A replayed activation that differs: the lease ends with this failure. */
+class ReplayFailed extends Error {
+  constructor(readonly failure: WorkflowTaskFailure) { super(failure.cause); this.name = 'ReplayFailed'; }
 }
 
 const offerKey = (workflowType: string, codeDigest: string): string => `${workflowType}\n${codeDigest}`;
@@ -154,28 +166,43 @@ export class WorkflowTasks {
       emit('DROPPED');
       return;
     }
+    // One channel for the whole lease: a report still on its way after `stop` never opens another one.
+    const scope: LeaseScope = { lease, task, rpc: this.#options.rpc(), expiresAt: task.expires_at_epoch_ms || lease.expires_at_epoch_ms };
     let run: RunHandle | undefined = this.#cache.take(lease.run_id, task.window_start_seq, contextIdentity(task));
     cacheHit = run !== undefined;
+    const thread = this.#threadNow();
     try {
-      const history = await this.#history(lease, task, cacheHit ? task.window_start_seq + 1 : 1);
+      // A cold worker replays each page's completed activations as the page arrives (Technical Plan 4.2): the lease's
+      // time counts from the last page delivered.
+      const cutter = run ? undefined : new ActivationCutter();
+      if (!run) run = await this.#newRun(task, offer);
+      const replaying = run;
+      const history: HistoryEvent[] = [];
+      const blobs: HistoryBlobs = { refs: new Map(), total: 0, values: new Map() };
+      await this.#readHistory(scope, cacheHit ? task.window_start_seq + 1 : 1, async (page) => {
+        for (const ref of blobRefsOf(page, blobs)) blobs.values.set(ref.blobId, await this.#readBlob(scope, ref));
+        const events = page.map((event) => eventFromWire(event, blobs.values));
+        history.push(...events);
+        if (cutter) for (const activation of cutter.push(events)) await this.#replayOne(replaying, activation);
+      });
+      if (cutter) {
+        for (const activation of cutter.flush().activations) await this.#replayOne(replaying, activation);
+        // The history and the lease disagree on where the last completed activation started.
+        if (replaying.windowStart !== task.window_start_seq) throw new ReplayFailed({ cause: 'NONDETERMINISM_RISK' });
+      }
       const startedEvent = lastStarted(history);
       if (!startedEvent || startedEvent.atUs !== task.started_at_us) {
         throw new MalformedHistory('the history does not end at the workflow_task.started of the lease');
-      }
-      if (!run) {
-        const replayed = await this.#replay(lease, task, offer, history);
-        if (Array.isArray(replayed)) { emit(...replayed); return; }
-        run = replayed;
       }
       const answer = await run.activate(history, startedEvent);
       this.#relayLogs(lease, answer.logs);
       if (answer.kind === 'failure') {
         run.dispose();
         run = undefined;
-        emit(...await this.#fail(lease, task, answer.failure));
+        emit(...await this.#fail(scope, answer.failure));
         return;
       }
-      const reported = await this.#complete(lease, task, answer);
+      const reported = await this.#complete(scope, answer);
       if (reported.outcome === 'ACCEPTED' || reported.outcome === 'ACCEPTED_DEFERRED') {
         // The server's state moved whatever happens here: a context that cannot take the answer is only dropped.
         const accepted = run;
@@ -189,17 +216,22 @@ export class WorkflowTasks {
       }
       emit(reported.outcome, reported.cause);
     } catch (error) {
-      if (error instanceof HistoryValuesExceeded) {
+      if (error instanceof ReplayFailed) {
+        emit(...await this.#fail(scope, error.failure));
+      } else if (error instanceof HistoryValuesExceeded) {
         // Counted: the run goes under review after its fifth failure, never by allocating what it names.
-        emit(...await this.#fail(lease, task, { cause: 'WORKFLOW_TASK_FAILED', exceptionType: 'HistoryValuesExceeded' }));
-      } else if (error instanceof MalformedHistory) {
+        emit(...await this.#fail(scope, { cause: 'WORKFLOW_TASK_FAILED', exceptionType: 'HistoryValuesExceeded' }));
+      } else if (error instanceof MalformedHistory || error instanceof HistoryOrderError) {
         // A history this SDK cannot read cannot be replayed with certainty.
-        emit(...await this.#fail(lease, task, { cause: 'NONDETERMINISM_RISK' }));
+        emit(...await this.#fail(scope, { cause: 'NONDETERMINISM_RISK' }));
       } else if (error instanceof SagatError && error.code === 'STALE_ATTEMPT') {
         emit('STALE');
-      } else if (error instanceof WorkflowThreadError) {
+      } else if (error instanceof WorkflowThreadError && thread.dead) {
         this.#options.log.error('the workflow thread ended; the lease lapses and a new thread serves the next one', { task: lease.task_id });
         emit('LOST');
+      } else if (error instanceof WorkflowThreadError && error.name === 'ActivationDeadlineExceeded') {
+        // A context whose bundle did not evaluate within the activation deadline (the thread is alive).
+        emit(...await this.#fail(scope, { cause: 'ACTIVATION_DEADLINE' }));
       } else {
         this.#options.log.error('a workflow task could not be served; its lease lapses', {
           task: lease.task_id, code: error instanceof SagatError ? error.code : error instanceof Error ? error.name : 'unknown',
@@ -211,78 +243,95 @@ export class WorkflowTasks {
     }
   }
 
-  /** A new context replayed through every completed activation; a failure is reported and named instead. */
-  async #replay(lease: TaskLease, task: WorkflowTaskLease, offer: OfferedCode, history: HistoryEvent[]): Promise<RunHandle | [WorkflowTaskOutcome, string]> {
+  /** A new context of the lease's code, before any activation. */
+  async #newRun(task: WorkflowTaskLease, offer: OfferedCode): Promise<RunHandle> {
     const bundle = await this.#bundle(offer);
     const init = {
       workflowType: task.workflow_type, seed: hex(task.seed), stateMaxBytes: task.state_max_bytes, gatedEntries: [...task.gated_entries],
     };
     const deadline = this.#options.activationDeadlineMs;
-    const run = await this.#threadNow().createRun(bundle, init, deadline === undefined ? {} : { activationDeadlineMs: deadline });
-    try {
-      const cutter = new ActivationCutter();
-      const activations = [...cutter.push(history), ...cutter.flush().activations];
-      for (const activation of activations) {
-        const step = await run.replay(activation);
-        if (step.kind === 'replayed') continue;
-        // A replay that differs after reading a withheld value may differ because of that value (Decision 044-319).
-        const failure: WorkflowTaskFailure = step.kind === 'failure' ? step.failure : { cause: 'NONDETERMINISM_RISK', commandNumber: step.commandNumber };
-        run.dispose();
-        return await this.#fail(lease, task, failure);
-      }
-      if (run.windowStart !== task.window_start_seq) {
-        // The history and the lease disagree on where the last completed activation started.
-        run.dispose();
-        return await this.#fail(lease, task, { cause: 'NONDETERMINISM_RISK' });
-      }
-      return run;
-    } catch (error) {
-      run.dispose();
-      throw error;
-    }
+    return await this.#threadNow().createRun(bundle, init, deadline === undefined ? {} : { activationDeadlineMs: deadline });
   }
 
-  /** The visible history from `from`: the first page, then ReadHistory pages until the last (Technical Plan 4.2). */
-  async #history(lease: TaskLease, task: WorkflowTaskLease, from: number): Promise<HistoryEvent[]> {
+  /** Replays one completed activation; a difference ends the lease with its failure. */
+  async #replayOne(run: RunHandle, activation: ReplayActivation): Promise<void> {
+    const step = await run.replay(activation);
+    if (step.kind === 'replayed') {
+      this.#options.log.debug('replayed an activation', { through: activation.started.seq });
+      return;
+    }
+    // A replay that differs after reading a withheld value may differ because of that value (Decision 044-319).
+    throw new ReplayFailed(step.kind === 'failure' ? step.failure : { cause: 'NONDETERMINISM_RISK', commandNumber: step.commandNumber });
+  }
+
+  /**
+   * The visible history from `from`, page by page (the first page, then ReadHistory until the last page). A retriable
+   * error resumes from the next sequence, at most five times and within the lease's expiry (Decision 044-325).
+   */
+  async #readHistory(scope: LeaseScope, from: number, onPage: (events: WireHistoryEvent[]) => Promise<void>): Promise<void> {
+    const { lease, task } = scope;
     // A history over the largest a function is asked to replay belongs to no valid lease (Decision 044-324).
     if (!Number.isSafeInteger(task.visible_count) || task.visible_count > MAX_HISTORY_EVENTS) {
       throw new MalformedHistory(`a history of ${String(task.visible_count)} events is over ${MAX_HISTORY_EVENTS}`);
     }
-    const wire: WireHistoryEvent[] = [];
     let last = 0;
     let read = 0;
-    const take = (event: WireHistoryEvent): void => {
-      if (!(event.seq > last)) throw new MalformedHistory(`history event ${String(event.seq)} is not after ${last}`);
-      if (++read > MAX_HISTORY_EVENTS) throw new MalformedHistory(`the history is over ${MAX_HISTORY_EVENTS} events`);
-      last = event.seq;
-      if (event.seq >= from) wire.push(event);
-    };
-    for (const event of task.first_page) take(event);
-    if (task.first_page.length < task.visible_count) {
-      const next = Math.max(last, from - 1) + 1;
-      last = next - 1;
-      let complete = false;
-      for await (const page of this.#options.rpc().readHistory({
-        task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
-        read_token: '', from_seq: next,
-      }, task.traceparent || undefined)) {
-        for (const event of page.events) take(event);
-        if (page.last_page) { complete = true; break; }
+    const take = (events: WireHistoryEvent[]): WireHistoryEvent[] => {
+      const page: WireHistoryEvent[] = [];
+      for (const event of events) {
+        if (!(event.seq > last)) throw new MalformedHistory(`history event ${String(event.seq)} is not after ${last}`);
+        if (++read > MAX_HISTORY_EVENTS) throw new MalformedHistory(`the history is over ${MAX_HISTORY_EVENTS} events`);
+        last = event.seq;
+        if (event.seq >= from) page.push(event);
       }
-      // A stream that ended without its last page lost the rest: the lease lapses rather than answer a partial window.
-      if (!complete) throw new SagatError({ code: 'TRANSPORT', message: 'the history stream ended before its last page' });
+      return page;
+    };
+    await onPage(take(task.first_page));
+    if (task.first_page.length >= task.visible_count) return;
+    last = Math.max(last, from - 1);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        for await (const page of scope.rpc.readHistory({
+          task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
+          read_token: '', from_seq: last + 1,
+        }, task.traceparent || undefined)) {
+          if (page.lease_expires_at_epoch_ms > 0) scope.expiresAt = page.lease_expires_at_epoch_ms;
+          await onPage(take(page.events));
+          if (page.last_page) return;
+        }
+        // A stream that ended without its last page lost the rest: it is read again, never answered partial.
+        throw new SagatError({ code: 'TRANSPORT', message: 'the history stream ended before its last page' });
+      } catch (error) {
+        await this.#beforeRetry(scope, error, attempt);
+      }
     }
-    const blobs = new Map<string, unknown>();
-    for (const ref of blobRefsOf(wire)) blobs.set(ref.blobId, await this.#readBlob(lease, ref));
-    return wire.map((event) => eventFromWire(event, blobs));
   }
 
-  async #readBlob(lease: TaskLease, ref: { blobId: string; size: number; sha256: string }): Promise<unknown> {
+  /** Throws the error unless it is retriable, a retry is left and the lease outlives the wait; otherwise waits. */
+  async #beforeRetry(scope: LeaseScope, error: unknown, attempt: number): Promise<void> {
+    if (!(error instanceof SagatError) || error.code === 'STALE_ATTEMPT' || !isRetriable(error) || attempt + 1 >= REPORT_ATTEMPTS) throw error;
+    const delay = Math.max(backoffDelayMs(this.#options.retry, attempt), error.retryAfterMs ?? 0);
+    if (Date.now() + delay >= scope.expiresAt) throw error;
+    await sleep(delay);
+  }
+
+  async #readBlob(scope: LeaseScope, ref: { blobId: string; size: number; sha256: string }): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.#readBlobOnce(scope, ref);
+      } catch (error) {
+        await this.#beforeRetry(scope, error, attempt);
+      }
+    }
+  }
+
+  async #readBlobOnce(scope: LeaseScope, ref: { blobId: string; size: number; sha256: string }): Promise<unknown> {
+    const { lease } = scope;
     const hash = createHash('sha256');
     const chunks: Buffer[] = [];
     let size = 0;
     let header = false;
-    for await (const part of this.#options.rpc().readBlob({
+    for await (const part of scope.rpc.readBlob({
       task_id: lease.task_id, run_id: lease.run_id, step_id: WORKFLOW_STEP, attempt: lease.attempt, generation: lease.generation,
       lease_token: lease.lease_token, blob_id: ref.blobId,
     }, lease.traceparent || undefined)) {
@@ -307,7 +356,8 @@ export class WorkflowTasks {
     }
   }
 
-  async #writeBlob(lease: TaskLease, value: unknown): Promise<string> {
+  async #writeBlob(scope: LeaseScope, value: unknown): Promise<string> {
+    const { lease } = scope;
     const bytes = Buffer.from(rfc8785(value), 'utf8');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     async function* parts(): AsyncIterable<{ header?: Record<string, unknown>; chunk?: Buffer }> {
@@ -317,23 +367,24 @@ export class WorkflowTasks {
       } };
       for (let offset = 0; offset < bytes.length; offset += 256 * 1024) yield { chunk: bytes.subarray(offset, offset + 256 * 1024) };
     }
-    const response = await this.#options.rpc().writeBlob(parts() as AsyncIterable<never>, lease.traceparent || undefined);
+    const response = await scope.rpc.writeBlob(parts() as AsyncIterable<never>, lease.traceparent || undefined);
     if (response.size !== bytes.length || response.sha256 !== sha256 || response.blob_id === '') {
       throw new SagatError({ code: 'PROTOCOL', message: 'the command value blob does not match the bytes uploaded' });
     }
     return response.blob_id;
   }
 
-  async #complete(lease: TaskLease, task: WorkflowTaskLease, completion: Completion): Promise<{ outcome: WorkflowTaskOutcome; cause?: string }> {
+  async #complete(scope: LeaseScope, completion: Completion): Promise<{ outcome: WorkflowTaskOutcome; cause?: string }> {
+    const { lease, task } = scope;
     const commands: WireCommand[] = [];
-    for (const command of completion.commands) commands.push(commandToWire(command, command.commandNumber!, await this.#carrier(lease, command, false)));
+    for (const command of completion.commands) commands.push(commandToWire(command, command.commandNumber!, await this.#carrier(scope, command, false)));
     const request = {
       task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
       idempotency_key: `workflow-complete-${lease.task_id}-${lease.generation}`,
       applied_through_seq: completion.appliedThroughSeq, replayed_chain: Buffer.from(completion.replayedChain), commands, traceparent: task.traceparent,
-      ...(completion.deferredCommand ? { deferred_command: commandToWire(completion.deferredCommand, 0, await this.#carrier(lease, completion.deferredCommand, true)) } : {}),
+      ...(completion.deferredCommand ? { deferred_command: commandToWire(completion.deferredCommand, 0, await this.#carrier(scope, completion.deferredCommand, true)) } : {}),
     };
-    const answer = await this.#report(() => this.#options.rpc().completeWorkflowTask(request, task.traceparent || undefined));
+    const answer = await this.#report(() => scope.rpc.completeWorkflowTask(request, task.traceparent || undefined));
     if (answer === 'stale') return { outcome: 'STALE' };
     const cause = answer.cause && answer.cause !== 'WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED' ? answer.cause : undefined;
     switch (answer.outcome) {
@@ -347,20 +398,22 @@ export class WorkflowTasks {
   }
 
   /** How a command's blob-capable value travels: inline, a blob written now, or a re-emitted deferral's descriptor. */
-  async #carrier(lease: TaskLease, command: PreparedCommand, reEmitted: boolean): Promise<ValueCarrier> {
+  async #carrier(scope: LeaseScope, command: PreparedCommand, reEmitted: boolean): Promise<ValueCarrier> {
     if (!command.valueAsBlob) return undefined;
+    // A re-emission keeps the carrier of its deferral (Decision 044-325): as a blob, the one the deferral holds.
     if (reEmitted) return 'descriptor';
-    return { blobId: await this.#writeBlob(lease, blobValueOf(command)) };
+    return { blobId: await this.#writeBlob(scope, blobValueOf(command)) };
   }
 
-  async #fail(lease: TaskLease, task: WorkflowTaskLease, failure: WorkflowTaskFailure): Promise<[WorkflowTaskOutcome, string]> {
+  async #fail(scope: LeaseScope, failure: WorkflowTaskFailure): Promise<[WorkflowTaskOutcome, string]> {
+    const { lease, task } = scope;
     const request = {
       task_id: lease.task_id, run_id: lease.run_id, attempt: lease.attempt, generation: lease.generation, lease_token: lease.lease_token,
       idempotency_key: `workflow-fail-${lease.task_id}-${lease.generation}`, code_digest: task.code_digest, traceparent: task.traceparent,
       ...failureToWire(failure),
     };
     try {
-      const answer = await this.#report(() => this.#options.rpc().failWorkflowTask(request, task.traceparent || undefined));
+      const answer = await this.#report(() => scope.rpc.failWorkflowTask(request, task.traceparent || undefined));
       return answer === 'stale' ? ['STALE', request.cause] : ['FAILED', request.cause];
     } catch (error) {
       this.#options.log.error('the failure of a workflow task could not be reported', { task: lease.task_id, code: error instanceof SagatError ? error.code : 'unknown' });

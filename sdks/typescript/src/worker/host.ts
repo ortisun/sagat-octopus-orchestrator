@@ -647,6 +647,11 @@ export class WorkerHost {
    */
   #handBack(lease: TaskLease, key: string, why: HandBackReason): void {
     const minor = minorOf(this.accepted);
+    // FailStep accepts no workflow, query or replay-check lease (design 044, Technical Plan 4.1): such a lease lapses.
+    if (lease.task_kind === 'WORKFLOW' || lease.task_kind === 'QUERY' || lease.task_kind === 'REPLAY_CHECK') {
+      this.log.warn('the host leaves a workflow lease it did not start to lapse', { task: lease.task_id, reason: why });
+      return;
+    }
     if (minor < HAND_BACK_MINOR) {
       this.log.warn('the host drops a task it did not start; its lease lapses', { task: lease.task_id, reason: why });
       return;

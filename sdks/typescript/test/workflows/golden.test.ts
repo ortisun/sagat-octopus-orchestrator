@@ -38,7 +38,7 @@ test('every scenario run of the corpus has a reference function', () => {
   assert.deepEqual(REFERENCE_RUNS.map(({ scenario, run }) => `${scenario}/${run}`).sort(), runs);
 });
 
-test('every history line of the corpus maps to the model, and back to the same line', () => {
+test('every history line of the corpus maps to the model, the same from the wire, and the model survives its own export line', () => {
   let events = 0;
   for (const { scenario, run } of REFERENCE_RUNS) {
     const lines = historyLinesOf(scenario, run);

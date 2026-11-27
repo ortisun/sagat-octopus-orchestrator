@@ -147,22 +147,35 @@ for (const reference of served) {
       assert.deepEqual(fake.historyPages.filter((page) => page.k === activation.k).map(({ fromSeq, throughSeq, events: n, lastPage }) => ({ fromSeq, throughSeq, events: n, lastPage })),
         activation.historyPages);
     }
-    // A value written as a blob holds the canonical bytes of the golden's descriptor.
-    for (const bytes of blobs.values()) {
-      const digest = createHash('sha256').update(bytes).digest('hex');
-      const golden = commands.activations.flatMap((activation) => [...(activation.commands ?? []), ...(activation.deferred ? [activation.deferred] : [])])
-        .find((command) => command.valueBlob?.descriptor.sha256 === digest);
-      assert.ok(golden, `the blob ${digest} is a golden value`);
-      assert.equal(bytes.length, golden.valueBlob!.descriptor.size);
+    // Each command that names a blob names the one holding its own value: the bytes of its descriptor.
+    for (const call of fake.received.filter(({ method }) => method === 'CompleteWorkflowTask')) {
+      const sent = [...(call.request['commands'] ?? []), ...(call.request['deferred_command'] ? [call.request['deferred_command']] : [])] as Array<Record<string, any>>;
+      for (const command of sent) {
+        const value = command['value'] ?? command['complete'] ?? command['update_result']?.['result'] ?? command['marker']?.['side_effect_value'];
+        if (!value?.['blob_id']) continue;
+        const bytes = blobs.get(value['blob_id']);
+        assert.ok(bytes, `the blob ${String(value['blob_id'])} was written`);
+        assert.equal(createHash('sha256').update(bytes).digest('hex'), value['descriptor_sha256']);
+        assert.equal(bytes.length, value['descriptor_size']);
+      }
     }
+    assert.equal(blobs.size, reference.scenario === 'code-blob-values' ? 2 : 0);
   });
 }
+
+// The defect each blocked run shows, as the corpus stands: the activation and the failure the SDK reports.
+const DEFECTS: Record<string, { k: number; cause: string; exceptionType: string }> = {
+  'code-declared-state/main': { k: 1, cause: 'CAUSE_WORKFLOW_TASK_FAILED', exceptionType: 'InlineValuesExceeded' },
+  'code-continue-as-new/main': { k: 2, cause: 'CAUSE_WORKFLOW_TASK_FAILED', exceptionType: 'InlineValuesExceeded' },
+};
 
 for (const reference of REFERENCE_RUNS.filter((run) => run.corpusDefect !== undefined)) {
   test(`${reference.scenario}/${reference.run} cannot be served while its corpus defect stands`, async () => {
     // The defect was relayed to the server lane; this test fails once the corpus is fixed, so the run joins the others.
     const { fake } = await serve(reference);
-    assert.ok(fake.underReview || fake.failures.length > 0, `expected the defect to show: ${reference.corpusDefect}`);
+    const expected = DEFECTS[`${reference.scenario}/${reference.run}`]!;
+    const first = fake.failures[0];
+    assert.deepEqual(first && { k: first.k, cause: first.cause, exceptionType: first.exceptionType }, expected, reference.corpusDefect);
   });
 }
 

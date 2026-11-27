@@ -344,17 +344,33 @@ export class WorkerRpc {
     metadata.set('authorization', `Bearer ${await resolveToken(this.#config.token)}`);
     if (traceparent) metadata.set('traceparent', checkTraceparent(traceparent));
     const fn = this.client.readHistory as (request: ReadHistoryRequest, metadata: grpc.Metadata, options: grpc.CallOptions) => grpc.ClientReadableStream<ReadHistoryResponse>;
-    const call = fn.call(this.client, request, metadata, { deadline: new Date(Date.now() + (this.#config.timeoutMs ?? 30_000)) });
+    // Each page has its own deadline, not the whole stream: a history of 57 pages of 3 MiB takes longer than one call's
+    // timeout, while a page that does not come within it ends the stream as a transport failure (Decision 044-325).
+    const call = fn.call(this.client, request, metadata, {});
+    const pageMs = this.#config.timeoutMs ?? 30_000;
+    let late = false;
+    let timer: NodeJS.Timeout | undefined;
+    const arm = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { late = true; call.cancel(); }, pageMs);
+    };
     const cancel = (): void => call.cancel();
     if (signal?.aborted) cancel(); else signal?.addEventListener('abort', cancel, { once: true });
+    arm();
     try {
-      for await (const value of call as unknown as AsyncIterable<ReadHistoryResponse>) yield value;
+      for await (const value of call as unknown as AsyncIterable<ReadHistoryResponse>) {
+        clearTimeout(timer);
+        yield value;
+        arm();
+      }
     } catch (error) {
+      if (late) throw new SagatError({ code: 'TRANSPORT', message: 'no history page came in time' });
       if (error && typeof error === 'object' && typeof (error as { code?: unknown }).code === 'number') {
         throw errorOfStatus('ReadHistory', error as grpc.ServiceError);
       }
       throw new SagatError({ code: 'INTERNAL', message: 'the history stream failed' });
     } finally {
+      clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
       if (!call.destroyed) call.cancel();
     }

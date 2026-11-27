@@ -5,75 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { WorkerHost } from '../../src/index.js';
-import { silentLogger } from '../../src/config.js';
-import { DEFAULT_RETRY } from '../../src/retry.js';
-import { SagatError } from '../../src/errors.js';
-import { WorkflowTasks, type WorkflowTaskEvent } from '../../src/worker/workflows.js';
-import type { TaskLease, WireHistoryEvent, WorkerRpc } from '../../src/worker/grpc.js';
+import type { WorkflowTaskEvent } from '../../src/worker/workflows.js';
+import type { WireHistoryEvent } from '../../src/worker/grpc.js';
 import { MalformedHistory, blobRefsOf, commandToWire, eventFromProto3Json } from '../../src/workflows/protocol.js';
 import { checkActivationAnswer, type PreparedCommand } from '../../src/workflows/run.js';
 import { WorkflowThread } from '../../src/workflows/threaded.js';
-import { loadGoldenRun, type GoldenRun } from '../fake-workflow-server.js';
-import { REFERENCE_RUNS } from './goldens.js';
 import { SEED, bundleOf } from './support.js';
+import { golden, leaseOf, order, stubRpc, tasksOf, type Calls } from './worker-support.js';
 
 // The findings of the security review of the worker side (research Decision 044-324), each held by a test.
-
-const golden: GoldenRun = loadGoldenRun('code-run-lifecycle');
-const order = REFERENCE_RUNS.find((run) => run.scenario === 'code-run-lifecycle')!.versions['v1']!;
-const DIGEST = golden.commands.codeVersions['v1']!;
-
-interface Calls { method: string; request: Record<string, any> }
-
-/** A stub of the worker service: the history pages it is given, recorded calls, and the answers of a fake that accepts. */
-function stubRpc(calls: Calls[], options: { pages?: WireHistoryEvent[][]; lastPage?: boolean; blobs?: Map<string, Buffer>; header?: Record<string, unknown> } = {}): WorkerRpc {
-  const rpc = {
-    async *readHistory(request: Record<string, any>) {
-      calls.push({ method: 'ReadHistory', request });
-      const pages = options.pages ?? [];
-      for (let i = 0; i < pages.length; i++) yield { events: pages[i]!, last_page: (options.lastPage ?? true) && i === pages.length - 1, lease_expires_at_epoch_ms: 0 };
-    },
-    async *readBlob(request: Record<string, any>) {
-      calls.push({ method: 'ReadBlob', request });
-      const bytes = options.blobs?.get(request['blob_id']) ?? Buffer.alloc(0);
-      yield { header: options.header ?? { blob_id: request['blob_id'], size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), content_type: 'application/json' } };
-      yield { chunk: bytes };
-    },
-    async writeBlob() { calls.push({ method: 'WriteBlob', request: {} }); throw new SagatError({ code: 'INTERNAL', message: 'not served' }); },
-    async completeWorkflowTask(request: Record<string, any>) {
-      calls.push({ method: 'CompleteWorkflowTask', request });
-      return { outcome: 'WORKFLOW_TASK_ACCEPTED', cause: 'WORKFLOW_TASK_FAILURE_CAUSE_UNSPECIFIED', already_applied: false };
-    },
-    async failWorkflowTask(request: Record<string, any>) { calls.push({ method: 'FailWorkflowTask', request }); return { already_applied: false }; },
-  };
-  return rpc as unknown as WorkerRpc;
-}
-
-function tasksOf(rpc: WorkerRpc, events: WorkflowTaskEvent[]): WorkflowTasks {
-  return new WorkflowTasks({
-    offers: [{ workflowType: 'order', codeDigest: DIGEST, bundleCode: bundleOf({ order }).code }],
-    rpc: () => rpc, log: silentLogger, emit: (event) => events.push(event), retry: DEFAULT_RETRY,
-  });
-}
-
-/** The lease of activation k of the golden run, as the fake issues it, with fields to change. */
-function leaseOf(k: number, change: Partial<Record<string, unknown>> = {}, history: WireHistoryEvent[] = golden.history as WireHistoryEvent[]): TaskLease {
-  const activation = golden.commands.activations.find((a) => a.k === k)!;
-  const seq = activation.window.throughSeq!;
-  const visible = history.filter((event) => event.seq <= seq);
-  const started = visible.find((event) => event.seq === seq)!;
-  const workflowTask = {
-    run_id: golden.commands.runId, attempt: 1, generation: k, lease_token: `lease-${k}`, expires_at_epoch_ms: Date.now() + 60_000,
-    seed: Buffer.from(golden.commands.seedHex, 'hex'), started_at_us: started['at_us'], window_start_seq: activation.window.afterSeq,
-    gated_entries: [], state_max_bytes: 0, first_page: visible, visible_count: visible.length, continue_as_new_suggested: false,
-    history_limit_reached: false, traceparent: '', workflow_type: 'order', code_digest: DIGEST, ...change,
-  };
-  return {
-    task_id: `wt-${k}-1`, run_id: golden.commands.runId, step_id: '~workflow', attempt: 1, generation: k, lease_token: `lease-${k}`,
-    expires_at_epoch_ms: workflowTask.expires_at_epoch_ms, activity_name: '', input_json: '', input_blob_ref: '', traceparent: '',
-    tenant_alias: '', idempotency_key: '', task_kind: 'WORKFLOW', target_node: '', target_idempotency_key: '', workflow_task: workflowTask as never,
-  };
-}
 
 test('a cached run is not reused when the lease carries other gated entries or another state bound', async () => {
   for (const change of [{ gated_entries: ['inventory.reserve'] }, { state_max_bytes: 4096 }]) {
@@ -168,7 +108,8 @@ test('a lease without its start time is dropped, and a history stream without it
     await tasks.serve(leaseOf(1, { started_at_us: 0 }));
     await tasks.serve(leaseOf(1, { first_page: [] }));
     assert.deepEqual(events.map(({ outcome }) => outcome), ['DROPPED', 'UNREPORTED']);
-    assert.deepEqual(calls.map(({ method }) => method), ['ReadHistory'], 'no report was made');
+    // The stream is read again from the next sequence, at most five times (Decision 044-325), and never answered.
+    assert.deepEqual(calls.map(({ method }) => method), Array(5).fill('ReadHistory'), 'no report was made');
   } finally {
     await tasks.close();
   }

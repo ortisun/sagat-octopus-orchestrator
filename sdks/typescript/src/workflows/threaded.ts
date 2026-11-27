@@ -55,7 +55,10 @@ export const DEFAULT_THREAD_EXTERNAL_MB = 1024;
 
 export class WorkflowThread {
   readonly #worker: Worker;
-  readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void; timer: NodeJS.Timeout }>();
+  readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void; timer: NodeJS.Timeout | undefined }>();
+  // The thread serves one request at a time: the others wait here, so a request's watchdog counts its own time only.
+  #queue: Array<{ id: number; request: ThreadRequest }> = [];
+  #busy = false;
   readonly #requestTimeoutMs: number;
   #nextId = 1;
   #nextRun = 1;
@@ -80,6 +83,8 @@ export class WorkflowThread {
       if (!pending) return;
       this.#pending.delete(message.id);
       clearTimeout(pending.timer);
+      this.#busy = false;
+      this.#next();
       if (this.#pending.size === 0) this.#worker.unref();
       if (message.error) pending.reject(new WorkflowThreadError(message.error.name, message.error.message));
       else pending.resolve(message.ok);
@@ -95,6 +100,24 @@ export class WorkflowThread {
       pending.reject(error);
     }
     this.#pending.clear();
+    this.#queue = [];
+  }
+
+  /** Posts the next queued request, its watchdog starting now. */
+  #next(): void {
+    if (this.#busy || this.#dead) return;
+    const next = this.#queue.shift();
+    if (!next) return;
+    const pending = this.#pending.get(next.id);
+    if (!pending) return this.#next();
+    this.#busy = true;
+    // A request that never answers (code of a context that escaped its deadline) ends the thread rather than hanging.
+    pending.timer = setTimeout(() => {
+      this.#fail(new WorkflowThreadError('WorkflowThreadStuck', 'a request to the workflow thread did not answer in time; the thread is ended'));
+      void this.#worker.terminate();
+    }, this.#requestTimeoutMs);
+    pending.timer.unref();
+    this.#worker.postMessage(next);
   }
 
   /** Whether the thread ended (a failure, a stuck request or `terminate`): its runs are gone. */
@@ -110,15 +133,10 @@ export class WorkflowThread {
     if (this.#dead) return Promise.reject(this.#dead);
     const id = this.#nextId++;
     return new Promise<T>((resolve, reject) => {
-      // A request that never answers (code of a context that escaped its deadline) ends the thread rather than hanging.
-      const timer = setTimeout(() => {
-        this.#fail(new WorkflowThreadError('WorkflowThreadStuck', 'a request to the workflow thread did not answer in time; the thread is ended'));
-        void this.#worker.terminate();
-      }, this.#requestTimeoutMs);
-      timer.unref();
-      this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
+      this.#pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer: undefined });
       this.#worker.ref();
-      this.#worker.postMessage({ id, request });
+      this.#queue.push({ id, request });
+      this.#next();
     });
   }
 

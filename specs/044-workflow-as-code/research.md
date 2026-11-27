@@ -1498,6 +1498,42 @@ server lane takes in sections 2 and 3 while both are open. Every decision below 
     a descriptor for a deferral it holds inline is the server lane's to say, reported to the coordinating session.
     The other two suspicions (the depth of a history value, which the thread's clone bounds, and the server's own
     refusal of a gated input as a blob) are answered by the Majors' fixes.
+- **D044-325** (2026-11-27) The independent correctness review of the worker side (commits up to fb7c1c1f; no Blocker,
+  6 Major, 7 Minor, 2 Nits, 6 test gaps) is answered, each fix first seen failing by a test of
+  `sdks/typescript/test/workflows/worker.test.ts` or of the files it names; delegate (OD-2026-11-24-4) for the two
+  settled otherwise:
+  - Major: a cold worker replayed only after reading the whole history, while the lease's time counts from the last
+    page delivered (Technical Plan 4.2). Each page's blobs are read and its completed activations replayed before the
+    next page is asked for.
+  - Major: in the test environment a stubbed step that its own completion cancels ended completed. The completion's
+    cancellations are applied before any stub runs (a stub is the worker that leases the step after the commit).
+  - Major: in the test environment a child, a wait or an approval settled by `completeStep` or `failStep` received a
+    step outcome and hung. Each kind receives its own event (`child.finished`, `wait.outcome`), an approval is decided
+    by `decideApproval`, and a kind that has none is refused; the events carry the corpus's origins (`engine`, a wait's
+    payload `external`).
+  - Major: a re-emitted deferral chose its carrier afresh, so it could name a blob the deferral never held, or send
+    inline a value held as a blob. The carrier is the deferral's: a run remembers whether the value it deferred was moved
+    to a blob (a cold replay computes the same from the replayed activation's commands), and the re-emission keeps it,
+    counted inline or not accordingly.
+  - Major: the host's packing left a failure message out of the inline total its own check counts, and refused a valid
+    completion. Both count it.
+  - Major: `ReadHistory` and `ReadBlob` were not repeated. A retriable error (`RESOURCE_EXHAUSTED` with
+    `retry-after-ms`, a dropped stream) resumes from the next sequence, at most five times, within the lease's expiry,
+    and each page has its own deadline instead of one for the whole stream.
+  - Minor: an out-of-order history is malformed (`NONDETERMINISM_RISK`), not unreported; a thread that is alive and
+    refused a request is not a lost thread (an activation deadline while a context is made fails `ACTIVATION_DEADLINE`);
+    a lease takes its channel once, so no report opens a channel after `stop`; a workflow lease received while stopping
+    is left to lapse, never handed back with `FailStep`; `waitForEvent` and `script` refuse a `timeoutMs` that is not an
+    integer from 1 ms to 366 days and a `lookbackMs` beyond 7 days, at the call; the workflow thread takes one request at
+    a time from the host, so a request's watchdog counts its own time, not the queue's.
+  - Minor, settled otherwise: the run that crosses the external-memory bound is the one failed while cached runs keep
+    theirs (accepted in Decision 044-323; the cache's size bounds them). The fake server's check of
+    `actual_saga_scope` is the server lane's file: reported to the coordinating session.
+  - Nit, settled otherwise: an older `put` overwriting a newer cached run costs one replay; no eager lease overlaps a
+    commit until Task 044-14.
+  - Test gaps closed: the corpus-defect tests assert the cause and the activation; the round trip of a history line is
+    named for what it proves (the model survives); trailing events after S(k), report retries with the same key and
+    body, the cache after each answer, and the blob each command names are tested.
 - **G044-305** (2026-11-27) A TypeScript host that registers activities and workflow types together would speak minor
   1.10 for its activities too, which carries the host procedures of 1.7 (step logs) and 1.9 (activity timeouts) that
   the TypeScript activity host does not have yet; until it has them, such a host refuses to start and the activities
