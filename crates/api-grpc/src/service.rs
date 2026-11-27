@@ -1181,8 +1181,11 @@ where
             );
         let trace = trace_of(&request);
         observe(&self.core, "AcknowledgeTasks", trace, async {
-            // a call that waited for a place of its connection past its deadline is not begun (Task 006-049)
-            if deadline.passed() {
+            // a call that waited for a place of its connection until less than one statement timeout is left is not begun
+            // (Task 006-049, decision D006-123): its lookups would end at the deadline and be counted as a store not reached
+            if deadline.left(Instant::now()).is_none_or(|left| {
+                left < sagat_application::worker::acknowledgement::ACKNOWLEDGEMENT_STATEMENT_TIMEOUT
+            }) {
                 return Err(crate::acknowledgement::handler_failure(
                     acknowledgement::AcknowledgementFailure::Deadline,
                 ));

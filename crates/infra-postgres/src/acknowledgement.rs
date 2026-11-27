@@ -134,6 +134,9 @@ pub struct PgAcknowledgementTx {
     connection: Option<PoolConnection<Postgres>>,
     tenant: TenantId,
     deadline: CallDeadline,
+    /// A statement was cut short on this side: the connection's state is not known, so it is discarded, never rolled back
+    /// and handed out again.
+    poisoned: bool,
 }
 
 impl Drop for PgAcknowledgementTx {
@@ -141,6 +144,10 @@ impl Drop for PgAcknowledgementTx {
         // A transaction neither committed nor rolled back (the call's future was dropped mid-way): rolled back off the call,
         // under the same bound, or discarded when there is no runtime to do it on.
         if let Some(connection) = self.connection.take() {
+            if self.poisoned {
+                discard(connection);
+                return;
+            }
             match tokio::runtime::Handle::try_current() {
                 Ok(runtime) => {
                     drop(runtime.spawn(roll_back(connection, false)));
@@ -204,21 +211,47 @@ impl PgAcknowledgementTx {
             .ok_or_else(|| corrupt("acknowledgement transaction, already ended"))
     }
 
+    /// How long this side waits for one statement: the call's time left and one statement timeout past it, so that a
+    /// statement the server cannot cut short (a network that drops every packet, a flush of the log stalled on its disk)
+    /// still ends the call at most one statement timeout past its deadline (`stream-completion.md`, step 1).
+    fn statement_bound(&self) -> Duration {
+        self.deadline.left(Instant::now()).unwrap_or_default() + ACKNOWLEDGEMENT_STATEMENT_TIMEOUT
+    }
+
+    /// The result of a statement waited for under [`Self::statement_bound`]: one cut short poisons the transaction (its
+    /// connection is discarded at its end) and is a database not reached.
+    fn settle<T>(
+        &mut self,
+        outcome: Result<Result<T, sqlx::Error>, tokio::time::error::Elapsed>,
+    ) -> Result<T, AcknowledgementStoreError> {
+        match outcome {
+            Ok(result) => result.map_err(acknowledgement_error),
+            Err(_) => {
+                self.poisoned = true;
+                metrics::counter!("worker_task_acknowledgement_statements_cut_total").increment(1);
+                Err(AcknowledgementStoreError::Unreachable)
+            }
+        }
+    }
+
     /// The one settings statement, for the transaction alone: the lock and statement timeouts, and `synchronous_commit`
     /// raised to `local` when it is `off` (never lowering a stronger value), so that a crash the postmaster recovers
     /// without restarting cannot lose a committed acknowledgement (ADR-0099 decision 12).
     async fn settings(&mut self) -> Result<(), AcknowledgementStoreError> {
         let timeout = format!("{}ms", ACKNOWLEDGEMENT_STATEMENT_TIMEOUT.as_millis());
-        let connection = self.connection()?;
-        sqlx::query(
-            "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $1, true), \
-                    CASE WHEN current_setting('synchronous_commit') = 'off' \
-                         THEN set_config('synchronous_commit', 'local', true) END",
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query(
+                "SELECT set_config('lock_timeout', $1, true), set_config('statement_timeout', $1, true), \
+                        CASE WHEN current_setting('synchronous_commit') = 'off' \
+                             THEN set_config('synchronous_commit', 'local', true) END",
+            )
+            .bind(timeout)
+            .execute(self.connection()?),
         )
-        .bind(timeout)
-        .execute(connection)
-        .await
-        .map_err(acknowledgement_error)?;
+        .await;
+        self.settle(outcome)?;
         Ok(())
     }
 
@@ -337,26 +370,30 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         let hashes: Vec<&[u8]> = leases.iter().map(|l| l.token_hash.as_slice()).collect();
         let tenant = self.tenant;
         let ordinals = ordinals(leases.len());
-        let rows = sqlx::query(concat!(
-            decoded_addresses!(),
-            "u.ordinal, u.hash",
-            address_arrays!(),
-            ", $7::bytea[]) AS u(run_id, path_nodes, path_indices, node, ordinal, hash)) \
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query(concat!(
+                decoded_addresses!(),
+                "u.ordinal, u.hash",
+                address_arrays!(),
+                ", $7::bytea[]) AS u(run_id, path_nodes, path_indices, node, ordinal, hash)) \
              SELECT a.ordinal, s.namespace_id, s.activity, s.lease_token_hash = a.hash AS current \
                FROM a JOIN steps s ON ",
-            addressed_steps!(),
-            " WHERE s.lease_token_hash = a.hash OR s.withdrawn_lease_token_hash = a.hash"
-        ))
-        .bind(tenant.as_uuid())
-        .bind(&addresses.runs)
-        .bind(&addresses.path_nodes)
-        .bind(&addresses.path_indices)
-        .bind(&addresses.nodes)
-        .bind(&ordinals)
-        .bind(&hashes)
-        .fetch_all(self.connection()?)
-        .await
-        .map_err(acknowledgement_error)?;
+                addressed_steps!(),
+                " WHERE s.lease_token_hash = a.hash OR s.withdrawn_lease_token_hash = a.hash"
+            ))
+            .bind(tenant.as_uuid())
+            .bind(&addresses.runs)
+            .bind(&addresses.path_nodes)
+            .bind(&addresses.path_indices)
+            .bind(&addresses.nodes)
+            .bind(&ordinals)
+            .bind(&hashes)
+            .fetch_all(self.connection()?),
+        )
+        .await;
+        let rows = self.settle(outcome)?;
         rows.iter()
             .map(|row| {
                 let current: Option<bool> = column(row, "current")?;
@@ -378,23 +415,31 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         // The statements of the run transactions' binding check, each checked against the deadline and classified as the
         // acknowledgement classifies (a read-only server or a lost connection is a database not reached).
         let tenant = self.tenant;
-        sqlx::query(crate::bindings::SHARE_ADVISORY_LOCK)
-            .bind(crate::bindings::worker_binding_lock_key(
-                tenant, namespace, subject,
-            ))
-            .execute(self.connection()?)
-            .await
-            .map_err(acknowledgement_error)?;
-        sqlx::query_scalar(
-            "SELECT pattern FROM worker_bindings \
-             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query(crate::bindings::SHARE_ADVISORY_LOCK)
+                .bind(crate::bindings::worker_binding_lock_key(
+                    tenant, namespace, subject,
+                ))
+                .execute(self.connection()?),
         )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(subject)
-        .fetch_all(self.connection()?)
-        .await
-        .map_err(acknowledgement_error)
+        .await;
+        self.settle(outcome)?;
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query_scalar(
+                "SELECT pattern FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(subject)
+            .fetch_all(self.connection()?),
+        )
+        .await;
+        self.settle(outcome)
     }
 
     async fn current_worker_authorized(
@@ -403,17 +448,25 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         subject: &str,
     ) -> Result<bool, AcknowledgementStoreError> {
         let tenant = self.tenant;
-        sqlx::query(crate::bindings::SHARE_ADVISORY_LOCK)
-            .bind(crate::quotas::secrets_lock_key(tenant, namespace))
-            .execute(self.connection()?)
-            .await
-            .map_err(acknowledgement_error)?;
-        let role: Option<String> = sqlx::query_scalar(crate::execution::LOCK_MEMBERSHIP)
-            .bind(tenant.as_uuid())
-            .bind(subject)
-            .fetch_optional(self.connection()?)
-            .await
-            .map_err(acknowledgement_error)?;
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query(crate::bindings::SHARE_ADVISORY_LOCK)
+                .bind(crate::quotas::secrets_lock_key(tenant, namespace))
+                .execute(self.connection()?),
+        )
+        .await;
+        self.settle(outcome)?;
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(
+            bound,
+            sqlx::query_scalar(crate::execution::LOCK_MEMBERSHIP)
+                .bind(tenant.as_uuid())
+                .bind(subject)
+                .fetch_optional(self.connection()?),
+        )
+        .await;
+        let role: Option<String> = self.settle(outcome)?;
         crate::execution::membership_executes_work(role).map_err(AcknowledgementStoreError::Store)
     }
 
@@ -430,7 +483,8 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         let tenant = self.tenant;
         // The rows are locked in primary-key order and read with what the decision needs; the clock is sampled outside the
         // locking query, so once each row's lock is held (a query with a locking clause is never inlined).
-        let rows = sqlx::query(concat!(
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(bound, sqlx::query(concat!(
             decoded_addresses!(),
             "u.ordinal",
             address_arrays!(),
@@ -455,9 +509,9 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         .bind(&addresses.path_indices)
         .bind(&addresses.nodes)
         .bind(&ordinals)
-        .fetch_all(self.connection()?)
-        .await
-        .map_err(acknowledgement_error)?;
+        .fetch_all(self.connection()?))
+        .await;
+        let rows = self.settle(outcome)?;
         rows.iter().map(locked_lease).collect()
     }
 
@@ -482,7 +536,8 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         let tenant = self.tenant;
         // The rows are held by this transaction; the conditions repeat what the decision found, so a broken caller writes
         // nothing it did not lock and find provisional.
-        let rows = sqlx::query(concat!(
+        let bound = self.statement_bound();
+        let outcome = tokio::time::timeout(bound, sqlx::query(concat!(
             decoded_addresses!(),
             "u.ordinal, u.generation, u.hash",
             address_arrays!(),
@@ -502,9 +557,9 @@ impl AcknowledgementTx for PgAcknowledgementTx {
         .bind(&ordinals)
         .bind(&generations)
         .bind(&hashes)
-        .fetch_all(self.connection()?)
-        .await
-        .map_err(acknowledgement_error)?;
+        .fetch_all(self.connection()?))
+        .await;
+        let rows = self.settle(outcome)?;
         rows.iter()
             .map(|row| {
                 Ok(WrittenAcknowledgement {
@@ -523,11 +578,25 @@ impl AcknowledgementTx for PgAcknowledgementTx {
             self.rollback().await;
             return Err(AcknowledgementStoreError::Deadline);
         }
+        let bound = self.statement_bound();
         let Some(mut connection) = self.connection.take() else {
             return Err(corrupt("acknowledgement transaction, already ended"));
         };
-        // bounded by the transaction's `statement_timeout`, as every statement of it is
-        match sqlx::raw_sql("COMMIT").execute(&mut *connection).await {
+        // bounded by the transaction's `statement_timeout` on the server, and by `bound` here: a commit the server does not
+        // answer (a network that drops every packet, a flush of the log stalled on its disk) is not known to have committed
+        let committed =
+            match tokio::time::timeout(bound, sqlx::raw_sql("COMMIT").execute(&mut *connection))
+                .await
+            {
+                Ok(committed) => committed,
+                Err(_) => {
+                    metrics::counter!("worker_task_acknowledgement_statements_cut_total")
+                        .increment(1);
+                    discard(connection);
+                    return Err(AcknowledgementStoreError::Unreachable);
+                }
+            };
+        match committed {
             Ok(_) => Ok(()),
             // the server answered: the transaction has ended and the connection is idle again
             Err(error @ sqlx::Error::Database(_)) if !store_unreachable(&error) => {
@@ -543,7 +612,11 @@ impl AcknowledgementTx for PgAcknowledgementTx {
 
     async fn rollback(mut self) {
         if let Some(connection) = self.connection.take() {
-            roll_back(connection, false).await;
+            if self.poisoned {
+                discard(connection);
+            } else {
+                roll_back(connection, false).await;
+            }
         }
     }
 }
@@ -560,41 +633,47 @@ impl AcknowledgementStore for PgRunStore {
             return Err(AcknowledgementStoreError::Deadline);
         };
         // The transaction that did not begin before the deadline, its acquisition included, is a database not reached. The
-        // connection is acquired in a task of its own, as `begin_safely` does: a call that stops waiting leaves the task to
-        // hand the connection it gets back to the pool, never strands it.
+        // connection is acquired in a task of its own, as `begin_safely` does, which gives up at the deadline too: a call
+        // that stops waiting leaves the task to hand the connection it gets back to the pool, never strands it, and no
+        // abandoned acquisition waits in the pool's queue past the call.
         let pool = self.pool.clone();
-        let mut connection =
-            match tokio::time::timeout(left, tokio::spawn(async move { pool.acquire().await }))
-                .await
-            {
-                Ok(Ok(Ok(connection))) => connection,
-                Ok(Ok(Err(error))) => {
-                    tracing::warn!(%error, "an acknowledgement could not take a connection");
-                    return Err(AcknowledgementStoreError::Unreachable);
-                }
-                Ok(Err(_)) | Err(_) => return Err(AcknowledgementStoreError::Unreachable),
-            };
-        let Some(left) = deadline.left(Instant::now()) else {
-            return Err(AcknowledgementStoreError::Unreachable);
+        let acquiring =
+            tokio::spawn(async move { tokio::time::timeout(left, pool.acquire()).await });
+        let connection = match tokio::time::timeout(left, acquiring).await {
+            Ok(Ok(Ok(Ok(connection)))) => connection,
+            Ok(Ok(Ok(Err(error)))) => {
+                tracing::warn!(%error, "an acknowledgement could not take a connection");
+                return Err(AcknowledgementStoreError::Unreachable);
+            }
+            Ok(Ok(Err(_)) | Err(_)) | Err(_) => return Err(AcknowledgementStoreError::Unreachable),
         };
-        match tokio::time::timeout(left, sqlx::raw_sql("BEGIN").execute(&mut *connection)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(%error, "an acknowledgement could not begin its transaction");
-                discard(connection);
-                return Err(AcknowledgementStoreError::Unreachable);
-            }
-            // a `BEGIN` cut short leaves the connection in a state not known
-            Err(_) => {
-                discard(connection);
-                return Err(AcknowledgementStoreError::Unreachable);
-            }
-        }
+        // The guard holds the connection before `BEGIN` is sent: a call dropped while it waits for the answer leaves the
+        // connection to the guard's `Drop`, which rolls back (or discards) it, never to the pool inside a transaction.
         let mut tx = PgAcknowledgementTx {
             connection: Some(connection),
             tenant,
             deadline,
+            poisoned: false,
         };
+        let Some(left) = deadline.left(Instant::now()) else {
+            tx.poisoned = true;
+            return Err(AcknowledgementStoreError::Unreachable);
+        };
+        let begun =
+            tokio::time::timeout(left, sqlx::raw_sql("BEGIN").execute(tx.connection()?)).await;
+        match begun {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "an acknowledgement could not begin its transaction");
+                tx.poisoned = true;
+                return Err(AcknowledgementStoreError::Unreachable);
+            }
+            // a `BEGIN` cut short leaves the connection in a state not known
+            Err(_) => {
+                tx.poisoned = true;
+                return Err(AcknowledgementStoreError::Unreachable);
+            }
+        }
         if let Err(error) = tx.settings().await {
             tx.rollback().await;
             return Err(error);

@@ -1194,3 +1194,84 @@ async fn a_deadlock_is_a_retryable_failure_and_the_call_asked_again_is_acknowled
         &lab.verdicts(&[&lease]).await[0]
     ));
 }
+
+/// An acknowledgement dropped while it waits (its host gave up and closed its connection, so the server dropped the call)
+/// leaves no transaction behind: the guard's `Drop` ends it off the call (a `ROLLBACK` within its bound, or the connection
+/// discarded), so the binding's and the secrets' locks it held are free and no session of it stays in a transaction.
+#[tokio::test]
+async fn a_call_dropped_while_it_waits_leaves_no_transaction_behind() {
+    let lab = lab().await;
+    let lease = lab.provisional("ack.dropped", false).await;
+    let (store, _pool) = store_with(&lab, "SELECT 1").await;
+    let workers = workers_over(store);
+    let mut other = lab.p.api.db.pool.begin().await.expect("begin");
+    sqlx::query("SELECT 1 FROM memberships WHERE tenant_id = $1 AND subject = $2 FOR UPDATE")
+        .bind(lab.p.tenant.as_uuid())
+        .bind(SUBJECT)
+        .fetch_one(&mut *other)
+        .await
+        .expect("hold the membership's row");
+    let tasks = [lease.task_ref()];
+    let call = workers.acknowledge_tasks(
+        &lab.principal,
+        &tasks,
+        CallDeadline::of_arrival(Instant::now()),
+    );
+    let waiting = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let pid: Option<i32> = sqlx::query_scalar(
+                    "SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+                       AND query LIKE '%sagat_lock_memberships%'",
+                )
+                .fetch_optional(&lab.p.api.db.pool)
+                .await
+                .expect("activity");
+                if let Some(pid) = pid {
+                    // read while the call still waits, before it is dropped
+                    let held: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM pg_locks WHERE pid = $1 AND locktype = 'advisory'",
+                    )
+                    .bind(pid)
+                    .fetch_one(&lab.p.api.db.pool)
+                    .await
+                    .expect("locks");
+                    break (pid, held);
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the acknowledgement waits for the membership's row")
+    };
+    // the call is dropped once it waits, holding the binding's and the secrets' locks shared
+    let (pid, held) = tokio::select! {
+        biased;
+        waited = waiting => waited,
+        answered = call => panic!("answered while the membership's row was held: {:?}", answered.map(|a| a.verdicts)),
+    };
+    assert!(
+        held >= 2,
+        "the call held the binding's and the secrets' locks: {held}"
+    );
+    other
+        .rollback()
+        .await
+        .expect("release the membership's row");
+    crate::support::eventually("the dropped call's transaction ends", || async {
+        let left: (i64, bool) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM pg_locks WHERE pid = $1 AND locktype = 'advisory'), \
+                    EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND state LIKE 'idle in transaction%')",
+        )
+        .bind(pid)
+        .fetch_one(&lab.p.api.db.pool)
+        .await
+        .expect("activity");
+        (left == (0, false)).then_some(())
+    })
+    .await;
+    assert_eq!(lab.acknowledged_at(&lease).await, None, "nothing committed");
+    assert!(acknowledged(Acknowledged::Written)(
+        &lab.verdicts(&[&lease]).await[0]
+    ));
+}

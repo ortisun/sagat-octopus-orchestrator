@@ -400,7 +400,8 @@ async fn from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_con
 }
 
 /// With the minor at 7, a start with the release-0.2 configuration (`concurrency_per_connection` 64) gives every class,
-/// `Acknowledge` included, every place of a connection: 64 acknowledgements are in flight on one connection at once.
+/// `Acknowledge` included, every place of a connection: 64 heartbeats are in flight on one connection at once (the reserve of
+/// 1.8 would leave them 60), and so are 64 acknowledgements.
 #[tokio::test]
 async fn below_1_8_every_class_has_every_place_of_a_connection() {
     let h = serve_stub(GrpcConfig::default()).await;
@@ -408,9 +409,18 @@ async fn below_1_8_every_class_has_every_place_of_a_connection() {
     let mut calls = tokio::task::JoinSet::new();
     for _ in 0..64 {
         let mut c = connection.clone();
-        calls.spawn(async move { c.acknowledge_tasks(acknowledgement()).await.map(|_| ()) });
+        calls.spawn(async move { c.heartbeat(HeartbeatRequest::default()).await.map(|_| ()) });
     }
     entered(&h, 64).await;
+    h.gate.add_permits(64);
+    while let Some(call) = calls.join_next().await {
+        call.expect("the call's task").expect("served");
+    }
+    for _ in 0..64 {
+        let mut c = connection.clone();
+        calls.spawn(async move { c.acknowledge_tasks(acknowledgement()).await.map(|_| ()) });
+    }
+    entered(&h, 128).await;
     h.gate.add_permits(1000);
     while let Some(call) = calls.join_next().await {
         call.expect("the call's task").expect("served");
