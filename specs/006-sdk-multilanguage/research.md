@@ -2033,8 +2033,10 @@ decision is "delegate (OD-2026-11-24-4)" unless it says otherwise.
   seen failing on the old pattern. The audit of the runtime role's privileges excused a literal by its first word, so a
   `BEGIN; UPDATE ...` would have been excused with the allowances of `BEGIN` and `COMMIT`; transaction control alone (the
   whole literal `BEGIN`, `COMMIT` or `ROLLBACK`) is now a statement that needs no privilege, the two allowances are gone, and
-  a literal that glues anything after it stays unmodelled (`ROLLBACK` joins the unmodelled verbs) and fails the audit
-  (`transaction_control_alone_is_a_statement_and_anything_after_it_is_not`). A dropped call's rollback, which nobody waits
+  a literal that glues anything after it stays unmodelled (`ROLLBACK` joins the unmodelled verbs, and a verb followed by
+  `;` is unmodelled as one followed by white space was, which the first version missed: its test failed until it was) and
+  fails the audit (`transaction_control_alone_is_a_statement_and_anything_after_it_is_not`; the extractor's test of unmodelled
+  kinds now names `COMMIT AND CHAIN`, since a bare `COMMIT` is a statement). A dropped call's rollback, which nobody waits
   for, may take one statement timeout and 100 ms before its connection is discarded, so a host that resets its calls does
   not make the server close the pool's connections. A call that arrives without the places of its connection is counted
   (`grpc_calls_without_connection_places_total`) and said once in the log, so a change of tonic's connection info that
