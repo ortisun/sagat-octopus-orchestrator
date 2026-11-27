@@ -697,7 +697,8 @@ func appendOutcomeOf(ctx context.Context, l *link, request *pb.AppendStepLogsReq
 		return appendOutcome{answered: true, verdict: answer.GetVerdict(), stopReason: answer.GetStopReason(), retryMs: answer.GetRetryAfterMs()}
 	}
 	if ctx.Err() != nil {
-		return appendOutcome{status: "CANCELLED"}
+		// The host abandoned the call (its attempt or its channel ended): not the server's CANCELLED, which is retried.
+		return appendOutcome{status: abandonedStatus}
 	}
 	var se *sagat.Error
 	if !errors.As(err, &se) {

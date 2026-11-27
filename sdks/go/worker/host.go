@@ -629,7 +629,7 @@ func (h *Host) flushStepLogs() <-chan struct{} {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			capture.deliver(batch, true, min(h.timeout, limitShutdownFlush))
+			capture.deliver(batch, min(h.timeout, limitShutdownFlush))
 		}()
 	}
 	go func() {

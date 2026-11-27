@@ -48,3 +48,19 @@ func ResetStepLogSecrets() {
 	processCapture.warned = map[string]bool{}
 	processCapture.mu.Unlock()
 }
+
+// StepLogBatchesStopped reports whether an attempt of h that runs was answered UNIMPLEMENTED: a barrier for a handler
+// that goes on logging only once the answer was read.
+func StepLogBatchesStopped(h *Host) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for capture := range h.captures {
+		capture.mu.Lock()
+		stopped := capture.batchesStopped
+		capture.mu.Unlock()
+		if stopped {
+			return true
+		}
+	}
+	return false
+}

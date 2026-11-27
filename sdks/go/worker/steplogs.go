@@ -1115,10 +1115,14 @@ type heldRecord struct {
 	size   int
 }
 
+// stepLogBatch is a batch on its way. settled says that its fate is decided (answered, or let go and counted), so
+// that its records are counted once and a late answer is ignored.
 type stepLogBatch struct {
 	held      []heldRecord
 	done      chan struct{}
 	firstSent time.Time
+	once      bool // the batch of the shutdown: sent once, as long as the channel lives
+	settled   bool // guarded by the attempt's lock
 }
 
 const (
@@ -1126,6 +1130,17 @@ const (
 	captureFinalOnly
 	captureStopped
 )
+
+// The one local line per process when the platform stops capture, whatever answer stopped it (sdks/SPEC.md section
+// 6.9).
+const stoppedLine = "the platform stopped step-log capture for this session"
+
+// sessionTokenBound is the longest session token: a batch's 192 KiB are counted with it, so that a resend under a new
+// token stays within the bound (sdks/SPEC.md section 6.9, decision D041-165).
+const sessionTokenBound = 128
+
+// abandonedStatus is the outcome of a call the host abandoned itself, told apart from a CANCELLED the server sent.
+const abandonedStatus = "ABANDONED"
 
 // attemptCapture is the capture of one attempt: its sequences, its buffer, its sender and, at its end, its carry.
 type attemptCapture struct {
@@ -1149,7 +1164,7 @@ type attemptCapture struct {
 	ticking        bool
 	tickQuit       chan struct{}
 	tickStop       func()
-	drops          map[string]int
+	drops          map[string]int // counted since the last emission: at close, and after it when a late count comes
 }
 
 func newAttemptCapture(host captureHost, session *captureSession, identity attemptIdentity, level slog.Level) *attemptCapture {
@@ -1164,9 +1179,34 @@ func (c *attemptCapture) accepts(level slog.Level) bool {
 }
 
 func (c *attemptCapture) count(reason string, records int) {
-	if records > 0 && c.drops != nil {
+	if records > 0 {
 		c.drops[reason] += records
 	}
+}
+
+// letGoLocked counts a batch's records once, for the reason it was given up.
+func (c *attemptCapture) letGoLocked(batch *stepLogBatch, reason string) {
+	if !batch.settled {
+		batch.settled = true
+		c.count(reason, len(batch.held))
+	}
+}
+
+func (c *attemptCapture) letGo(batch *stepLogBatch, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.letGoLocked(batch, reason)
+}
+
+// settled marks a batch answered; it reports false when the batch was let go meanwhile (its answer is ignored).
+func (c *attemptCapture) settle(batch *stepLogBatch) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if batch.settled {
+		return false
+	}
+	batch.settled = true
+	return true
 }
 
 func (c *attemptCapture) stoppedLocked() bool {
@@ -1197,6 +1237,7 @@ func (c *attemptCapture) log(level slog.Level, message string, collect func() co
 	}
 	record := buildRecord(sequence, time.Now().UnixMilli(), level, message, collect(), &processCapture.secrets)
 	c.buffered(record, proto.Size(record))
+	c.emitLate()
 }
 
 // take is steps 1 and 2: the sequence and the early drops; false when the call takes none or is dropped.
@@ -1222,12 +1263,19 @@ func (c *attemptCapture) take() (uint64, bool) {
 	return 0, false
 }
 
-// buffered is step 6: the record joins the buffer in the order of its sequence, and the call that buffers the 256th
-// record cuts the batch.
+// buffered is step 7: the record joins the buffer in the order of its sequence, and the call that buffers the 256th
+// record cuts the batch. After UNIMPLEMENTED the buffer keeps only the newest records that fit one carry.
 func (c *attemptCapture) buffered(record *pb.StepLogRecord, size int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.state != captureOn || c.stoppedLocked() {
+		// The state changed while the record was formatted: it is let go as the buffer was.
+		switch {
+		case c.state == captureFinalOnly:
+			c.count(dropAfterCeiling, 1)
+		default:
+			c.count(dropSendFailed, 1)
+		}
 		return
 	}
 	at := len(c.buffer)
@@ -1239,11 +1287,27 @@ func (c *attemptCapture) buffered(record *pb.StepLogRecord, size int) {
 	c.buffer[at] = heldRecord{record: record, size: size}
 	c.bufferBytes += size
 	processCapture.held.Add(int64(size))
+	if c.batchesStopped {
+		c.keepCarryLocked()
+		return
+	}
 	if !c.ticking && !c.ended.Load() {
 		c.startTick()
 	}
-	if len(c.buffer) >= limitFlushRecords && c.inFlight == nil && !c.batchesStopped && !c.setFullLocked() {
+	if len(c.buffer) >= limitFlushRecords && c.inFlight == nil && !c.setFullLocked() {
 		c.send(c.cut(len(c.buffer)))
+	}
+}
+
+// keepCarryLocked drops the oldest buffered records that one carry will not hold (report_deadline).
+func (c *attemptCapture) keepCarryLocked() {
+	if beyond := len(c.buffer) - c.carryFits(); beyond > 0 {
+		c.count(dropReportDeadline, beyond)
+		release(c.buffer[:beyond])
+		for _, one := range c.buffer[:beyond] {
+			c.bufferBytes -= one.size
+		}
+		c.buffer = append([]heldRecord(nil), c.buffer[beyond:]...)
 	}
 }
 
@@ -1291,9 +1355,12 @@ func (c *attemptCapture) request(records []*pb.StepLogRecord, workerID, token st
 }
 
 // cut takes the oldest of the first limit buffered records that one batch holds: at most 500, and at most 192 KiB of
-// encoded AppendStepLogsRequest.
+// encoded AppendStepLogsRequest counted with a session token of 128 bytes.
 func (c *attemptCapture) cut(limit int) []heldRecord {
 	workerID, token := c.host.session()
+	if len(token) < sessionTokenBound {
+		token = strings.Repeat("t", sessionTokenBound)
+	}
 	size := proto.Size(c.request(nil, workerID, token))
 	n := 0
 	for n < min(limit, limitBatchRecords) {
@@ -1327,7 +1394,7 @@ func (c *attemptCapture) send(held []heldRecord) {
 	}
 	batch := &stepLogBatch{held: held, done: make(chan struct{}), firstSent: time.Now()}
 	c.inFlight = batch
-	go c.deliver(batch, false, c.host.timeout)
+	go c.deliver(batch, c.host.timeout)
 }
 
 // finish lets a batch go: its bytes are released, and the answer cuts the next batch when 256 or more are buffered.
@@ -1345,29 +1412,19 @@ func (c *attemptCapture) finish(batch *stepLogBatch) {
 	}
 }
 
-func (c *attemptCapture) isClosed() bool {
+// mayResend reports whether the batch is sent (again): not once it was let go, its attempt closed (a shutdown batch
+// excepted), its attempt or its session stopped capture, or the process's capture stopped (decision D041-165).
+func (c *attemptCapture) mayResend(batch *stepLogBatch) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.closed
-}
-
-func (c *attemptCapture) failed(batch *stepLogBatch) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.count(dropSendFailed, len(batch.held))
-}
-
-// mayStillSend reports whether the batch may still be sent: the attempt is not closed (a shutdown batch, cut when the
-// grace ended, is sent even when its attempt closes meanwhile) and the process's capture has not stopped; a batch the
-// full set stops is dropped as secret_set_full.
-func (c *attemptCapture) mayStillSend(batch *stepLogBatch, once bool) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed && !once {
+	switch {
+	case batch.settled:
 		return false
-	}
-	if processCapture.secrets.full.Load() {
-		c.count(dropSecretSetFull, len(batch.held))
+	case processCapture.secrets.full.Load():
+		c.letGoLocked(batch, dropSecretSetFull)
+		return false
+	case (c.closed && !batch.once) || c.stoppedLocked():
+		c.letGoLocked(batch, dropSendFailed)
 		return false
 	}
 	return true
@@ -1393,11 +1450,16 @@ func jittered(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * (0.8 + rand.Float64()*0.4))
 }
 
-// deliver sends one batch until an answer settles it (contracts.md section 4). once sends it a single time, as the
-// shutdown does: an answer that would send it again drops it instead.
-func (c *attemptCapture) deliver(batch *stepLogBatch, once bool, within time.Duration) {
+// deliver sends one batch until an answer settles it (contracts.md section 4). A shutdown batch is sent a single
+// time: an answer that would send it again drops it instead.
+func (c *attemptCapture) deliver(batch *stepLogBatch, within time.Duration) {
+	defer c.emitLate()
 	defer c.finish(batch)
-	defer func() { _ = recover() }()
+	defer func() {
+		if recover() != nil {
+			c.letGo(batch, dropSendFailed)
+		}
+	}()
 	records := make([]*pb.StepLogRecord, len(batch.held))
 	for i, one := range batch.held {
 		records[i] = one.record
@@ -1406,92 +1468,103 @@ func (c *attemptCapture) deliver(batch *stepLogBatch, once bool, within time.Dur
 	request := c.request(records, workerID, token)
 	retries, sessionResent := 0, false
 	for {
-		if !c.mayStillSend(batch, once) {
+		if !c.mayResend(batch) {
 			return
 		}
 		left := limitBatchAge - time.Since(batch.firstSent)
 		if left <= 0 {
-			c.failed(batch)
+			c.letGo(batch, dropSendFailed)
 			return
 		}
 		sends := c.sends
-		if once {
+		if batch.once {
 			// The shutdown batch lives as long as the channel, not as its attempt, which the shutdown is ending.
 			sends = c.host.life
 		}
 		outcome := c.host.append(sends, request, min(within, left))
-		if once {
+		if batch.once {
 			// Sent once, with no resend: a batch the answer did not take is counted as not sent.
-			if !outcome.answered || outcome.verdict != pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE {
-				c.failed(batch)
+			if outcome.answered && outcome.verdict == pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE {
+				c.settle(batch)
+			} else {
+				c.letGo(batch, dropSendFailed)
 			}
-			return
-		}
-		if c.isClosed() {
 			return
 		}
 		var wait time.Duration
 		if outcome.answered {
 			switch outcome.verdict {
 			case pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE:
+				c.settle(batch)
 				return
 			case pb.StepLogVerdict_STEP_LOG_VERDICT_FINAL_ONLY:
-				c.finalOnly()
+				if c.settle(batch) {
+					c.finalOnly()
+				}
 				return
 			case pb.StepLogVerdict_STEP_LOG_VERDICT_STOP_ATTEMPT:
-				c.stop()
+				if c.settle(batch) {
+					c.stop()
+				}
 				return
 			case pb.StepLogVerdict_STEP_LOG_VERDICT_STOP_CAPTURE:
 				nowID, now := c.host.session()
-				if outcome.stopReason == pb.StepLogStopReason_STEP_LOG_STOP_REASON_SESSION && !sessionResent && !once && now != token {
+				if outcome.stopReason == pb.StepLogStopReason_STEP_LOG_STOP_REASON_SESSION && !sessionResent && now != token {
 					sessionResent, token = true, now
 					request = c.request(records, nowID, now)
 					continue
 				}
-				c.stopSession("the platform stopped step-log capture for this session")
+				if c.settle(batch) {
+					c.stopSession()
+				}
 				return
 			case pb.StepLogVerdict_STEP_LOG_VERDICT_RETRY_LATER:
 				wait = clampRetry(time.Duration(outcome.retryMs) * time.Millisecond)
 			}
 		} else {
 			switch outcome.status {
+			case abandonedStatus:
+				// The host abandoned the call because it is stopping: dropped at once, not retried.
+				c.letGo(batch, dropSendFailed)
+				return
 			case "RESOURCE_EXHAUSTED":
 				wait = 200 * time.Millisecond
 				if outcome.retryAfter != nil {
 					wait = *outcome.retryAfter
 				}
 				wait = clampRetry(wait)
-			case "INVALID_ARGUMENT", "CANCELLED":
-				c.failed(batch)
+			case "INVALID_ARGUMENT":
+				c.letGo(batch, dropSendFailed)
 				return
 			case "UNAUTHENTICATED", "PERMISSION_DENIED":
-				c.stopSession("the platform refused step-log capture for this session")
+				c.letGo(batch, dropSendFailed)
+				c.stopSession()
 				return
 			case "UNIMPLEMENTED":
 				c.mu.Lock()
+				c.letGoLocked(batch, dropSendFailed)
 				c.batchesStopped = true
+				c.keepCarryLocked()
 				c.mu.Unlock()
-				c.failed(batch)
 				return
 			}
-		}
-		if once {
-			c.failed(batch)
-			return
 		}
 		if wait > 0 {
 			// RETRY_LATER and RESOURCE_EXHAUSTED: the same batch again, not counted as a retry.
 			if !c.pause(wait) {
+				c.letGo(batch, dropSendFailed)
 				return
 			}
 			continue
 		}
-		// UNAVAILABLE, DEADLINE_EXCEEDED, a transport failure, any other status or verdict: two retries.
+		// UNAVAILABLE, DEADLINE_EXCEEDED, CANCELLED from the server, a transport failure, any other status or
+		// verdict: two retries.
 		if retries >= len(stepLogRetryDelays) {
-			c.failed(batch)
+			c.letGo(batch, dropSendFailed)
 			return
 		}
 		if !c.pause(jittered(stepLogRetryDelays[retries])) {
+			c.letGo(batch, dropSendFailed)
 			return
 		}
 		retries++
@@ -1521,9 +1594,9 @@ func (c *attemptCapture) stop() {
 	c.dropBufferLocked(dropSendFailed)
 }
 
-func (c *attemptCapture) stopSession(line string) {
+func (c *attemptCapture) stopSession() {
 	c.session.stopped.Store(true)
-	c.host.warnOnce(line)
+	c.host.warnOnce(stoppedLine)
 	c.stop()
 }
 
@@ -1591,22 +1664,21 @@ func (c *attemptCapture) carry() (carried *pb.StepLogCarry) {
 	for {
 		if batch := c.inFlight; batch != nil {
 			left := time.Until(deadline)
-			if left <= 0 {
-				break
+			if left > 0 {
+				c.mu.Unlock()
+				locked = false
+				timer := time.NewTimer(left)
+				select {
+				case <-batch.done:
+				case <-timer.C:
+				}
+				timer.Stop()
+				c.mu.Lock()
+				locked = true
 			}
-			c.mu.Unlock()
-			locked = false
-			timer := time.NewTimer(left)
-			late := false
-			select {
-			case <-batch.done:
-			case <-timer.C:
-				late = true
-			}
-			timer.Stop()
-			c.mu.Lock()
-			locked = true
-			if late {
+			if c.inFlight == batch {
+				// The 2 seconds ended with the batch on its way: it is given up, its answer ignored.
+				c.letGoLocked(batch, dropReportDeadline)
 				break
 			}
 			if c.stoppedLocked() {
@@ -1627,15 +1699,14 @@ func (c *attemptCapture) carry() (carried *pb.StepLogCarry) {
 		}
 		c.send(c.cut(len(c.buffer) - fits))
 	}
-	if beyond := len(c.buffer) - c.carryFits(); beyond > 0 {
-		c.count(dropReportDeadline, beyond)
-		release(c.buffer[:beyond])
-		c.buffer = append([]heldRecord(nil), c.buffer[beyond:]...)
-	}
+	c.keepCarryLocked()
 	records := make([]*pb.StepLogRecord, len(c.buffer))
 	for i, one := range c.buffer {
 		records[i] = one.record
 	}
+	// The carried records leave the buffer: what close finds there is what an attempt without a report let go.
+	release(c.buffer)
+	c.buffer, c.bufferBytes = nil, 0
 	return &pb.StepLogCarry{Records: records, HighestSequence: c.last}
 }
 
@@ -1648,7 +1719,8 @@ func (c *attemptCapture) markOnlyLocked() *pb.StepLogCarry {
 	return &pb.StepLogCarry{HighestSequence: c.last}
 }
 
-// close ends the attempt: nothing more is sent, its records are let go, and its drops are counted once.
+// close ends the attempt: nothing more is sent but a shutdown batch, what it still holds is let go (send_failed: it
+// ends without a report, or after one that carried the rest), and its drops are counted once.
 func (c *attemptCapture) close() {
 	if c == nil {
 		return
@@ -1660,12 +1732,31 @@ func (c *attemptCapture) close() {
 	}
 	c.closed = true
 	c.endLocked()
+	if batch := c.inFlight; batch != nil && !batch.once {
+		c.letGoLocked(batch, dropSendFailed)
+	}
 	c.cancelSends()
-	release(c.buffer)
-	c.buffer, c.bufferBytes = nil, 0
+	c.dropBufferLocked(dropSendFailed)
 	drops := c.drops
-	c.drops = nil
+	c.drops = map[string]int{}
 	c.mu.Unlock()
+	c.emit(drops)
+}
+
+// emitLate emits what was counted after the attempt closed (a shutdown batch's fate, a late let-go).
+func (c *attemptCapture) emitLate() {
+	c.mu.Lock()
+	if !c.closed || len(c.drops) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	drops := c.drops
+	c.drops = map[string]int{}
+	c.mu.Unlock()
+	c.emit(drops)
+}
+
+func (c *attemptCapture) emit(drops map[string]int) {
 	reasons := make([]string, 0, len(drops))
 	for reason := range drops {
 		reasons = append(reasons, reason)
@@ -1676,16 +1767,16 @@ func (c *attemptCapture) close() {
 	}
 }
 
-// shutdownBatch is the one batch an attempt still running sends when the host stops after its grace: its buffered
-// records, cut now; nil when there is none to send.
+// shutdownBatch is the batch an attempt whose handler still runs sends when the host stops after its grace, unless it
+// has one in flight: its oldest buffered records, as its batch in flight, sent once; what does not fit stays buffered
+// for its report. An attempt whose handler ended is left to its report (decision D041-165).
 func (c *attemptCapture) shutdownBatch() *stepLogBatch {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.endLocked()
-	if c.closed || c.stoppedLocked() || c.state != captureOn || c.batchesStopped || c.inFlight != nil || len(c.buffer) == 0 || c.setFullLocked() {
+	if c.closed || c.ended.Load() || c.stoppedLocked() || c.state != captureOn || c.batchesStopped || c.inFlight != nil || len(c.buffer) == 0 || c.setFullLocked() {
 		return nil
 	}
-	batch := &stepLogBatch{held: c.cut(len(c.buffer)), done: make(chan struct{}), firstSent: time.Now()}
+	batch := &stepLogBatch{held: c.cut(len(c.buffer)), done: make(chan struct{}), firstSent: time.Now(), once: true}
 	c.inFlight = batch
 	return batch
 }

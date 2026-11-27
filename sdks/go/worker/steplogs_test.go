@@ -683,3 +683,151 @@ func TestStepLogsStopSendsWhatAnAttemptStillRunningBufferedOnceAsOneBatch(t *tes
 		t.Errorf("%d reports", n)
 	}
 }
+
+func TestStepLogsAfterUnimplementedEveryCallKeepsOnlyTheNewestThatFitOneCarry(t *testing.T) {
+	f := stepLogService(t)
+	f.appendAnswers = []appendAnswer{{code: codes.Unimplemented}}
+	var seen drops
+	h, _ := stepLogHost(t, f, seen.option())
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		for n := 1; n <= 256; n++ {
+			logger.Info(fmt.Sprintf("line %d", n))
+		}
+		reached(func() bool { return worker.StepLogBatchesStopped(h) })
+		// 2,000 calls after UNIMPLEMENTED: the buffer never fills, the oldest go as they come.
+		for n := 257; n <= 2256; n++ {
+			logger.Info(fmt.Sprintf("line %d", n))
+		}
+		return 1, nil
+	}))
+	start(t, h)
+	f.lease(lease())
+	carry := reportOf(t, f)
+	if n := len(f.of("AppendStepLogs")); n != 1 {
+		t.Errorf("%d calls", n)
+	}
+	if !slices.Equal(sequences(carry.GetRecords()), span(2193, 2256)) || carry.GetHighestSequence() != 2256 {
+		t.Errorf("carry %d records from %v", len(carry.GetRecords()), sequences(carry.GetRecords())[:1])
+	}
+	until(t, "the drops", func() bool { return seen.String() == "map[report_deadline:1936 send_failed:256]" })
+}
+
+func TestStepLogsABatchHoldsAtMost500Records(t *testing.T) {
+	f := stepLogService(t)
+	logged := make(chan struct{})
+	f.appendAnswers = []appendAnswer{{verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_CONTINUE, hold: func() bool {
+		select {
+		case <-logged:
+			return true
+		default:
+			return false
+		}
+	}}}
+	h, _ := stepLogHost(t, f)
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		for n := 1; n <= 856; n++ {
+			logger.Info(fmt.Sprintf("line %d", n))
+		}
+		close(logged)
+		reached(func() bool { return len(f.of("AppendStepLogs")) == 2 })
+		return 1, nil
+	}))
+	start(t, h)
+	f.lease(lease())
+	carry := reportOf(t, f)
+	batches := appends(f)
+	if len(batches) != 3 || !slices.Equal(sequences(batches[0].GetRecords()), span(1, 256)) ||
+		!slices.Equal(sequences(batches[1].GetRecords()), span(257, 756)) || !slices.Equal(sequences(batches[2].GetRecords()), span(757, 792)) {
+		t.Fatalf("%d batches", len(batches))
+	}
+	if !slices.Equal(sequences(carry.GetRecords()), span(793, 856)) {
+		t.Errorf("%v", sequences(carry.GetRecords()))
+	}
+}
+
+func TestStepLogsABatchIsNotSentAgainOnceItsSessionStoppedCapture(t *testing.T) {
+	f := stepLogService(t)
+	f.appendAnswers = []appendAnswer{
+		// The first attempt's batch fails once the second attempt's batch stopped the session's capture.
+		{code: codes.Unavailable, hold: func() bool { return len(f.of("CompleteStep")) >= 1 }},
+		{verdict: pb.StepLogVerdict_STEP_LOG_VERDICT_STOP_CAPTURE, stopReason: pb.StepLogStopReason_STEP_LOG_STOP_REASON_CAPTURE_OFF},
+	}
+	var seen drops
+	h, _ := stepLogHost(t, f, worker.WithMaxInflight(2), seen.option())
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		task := worker.TaskFrom(ctx)
+		if task.Attempt == 2 {
+			reached(func() bool { return len(f.of("AppendStepLogs")) == 1 })
+		}
+		for n := 1; n <= 256; n++ {
+			task.Logger.Info(fmt.Sprintf("line %d", n))
+		}
+		if task.Attempt == 1 {
+			reached(func() bool { return len(f.of("CompleteStep")) >= 1 })
+		}
+		return task.Attempt, nil
+	}))
+	start(t, h)
+	f.lease(lease(), lease(func(l *pb.TaskLease) { l.TaskId, l.Attempt = "run-1/charge/2", 2 }))
+	until(t, "both reports", func() bool { return len(f.of("CompleteStep")) == 2 })
+	if n := len(f.of("AppendStepLogs")); n != 2 {
+		t.Errorf("%d calls: the batch of the stopped session was sent again", n)
+	}
+	for _, report := range f.of("CompleteStep") {
+		if carry := report.request.(*pb.CompleteStepRequest).GetStepLogs(); carry != nil {
+			t.Errorf("%v", carry)
+		}
+	}
+	until(t, "the drops", func() bool { return seen.String() == "map[send_failed:256]" })
+}
+
+func TestStepLogsABatchGivenUpAtTheEndOfTheWaitCountsReportDeadlineAndIsNotSentAgain(t *testing.T) {
+	f := stepLogService(t)
+	f.appendAnswers = []appendAnswer{{code: codes.Unavailable, hold: func() bool { return len(f.of("CompleteStep")) > 0 }}}
+	var seen drops
+	carry := runOne(t, f, 260, seen.option())
+	if !slices.Equal(sequences(carry.GetRecords()), span(257, 260)) {
+		t.Errorf("%v", sequences(carry.GetRecords()))
+	}
+	until(t, "the drops", func() bool { return seen.String() == "map[report_deadline:256]" })
+	if n := len(f.of("AppendStepLogs")); n != 1 {
+		t.Errorf("%d calls", n)
+	}
+}
+
+func TestStepLogsStopSendsOneBatchAndTheReportCarriesWhatDidNotFit(t *testing.T) {
+	f := stepLogService(t)
+	h, _ := stepLogHost(t, f)
+	logged := make(chan struct{})
+	big := strings.Repeat("m", 8000)
+	must(t, h.RegisterActivity("charge", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		logger := worker.TaskFrom(ctx).Logger
+		// 30 lines of 8 KB: one batch of 192 KiB holds 24 of them, and none is cut before the stop.
+		for n := 1; n <= 30; n++ {
+			logger.Info(fmt.Sprintf("%d %s", n, big))
+		}
+		close(logged)
+		<-ctx.Done()
+		return 1, nil // the handler still reports after the shutdown
+	}))
+	start(t, h)
+	f.lease(lease())
+	<-logged
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_ = h.Stop(ctx)
+	batches := appends(f)
+	if len(batches) != 2 || !slices.Equal(sequences(batches[0].GetRecords()), span(1, 24)) ||
+		!slices.Equal(sequences(batches[1].GetRecords()), span(25, 28)) {
+		t.Fatalf("%d batches", len(batches))
+	}
+	reports := f.of("CompleteStep")
+	if len(reports) != 1 {
+		t.Fatalf("%d reports", len(reports))
+	}
+	if carry := reports[0].request.(*pb.CompleteStepRequest).GetStepLogs(); !slices.Equal(sequences(carry.GetRecords()), span(29, 30)) || carry.GetHighestSequence() != 30 {
+		t.Errorf("%v", carry)
+	}
+}
