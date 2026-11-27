@@ -72,7 +72,7 @@ paths:
     parameters:
       - {$ref: '#/components/parameters/NamespaceId'}
       - {name: serverName, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9-]{2,63}$'}}
-    get: {operationId: getMcpServer, responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}, x-standard-errors: true}
+    get: {operationId: getMcpServer, description: Requires namespace:read. Optional ?revision selects an immutable revision; status is always current., responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpServer'}}}}}, x-standard-errors: true}
     put:
       operationId: putMcpServer
       description: >-
@@ -119,23 +119,27 @@ paths:
     parameters:
       - {$ref: '#/components/parameters/NamespaceId'}
       - {name: toolName, in: path, required: true, schema: {type: string, pattern: '^[a-zA-Z0-9_-]{1,64}$'}}
-    get: {operationId: getMcpExposure, responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}, x-standard-errors: true}
+    get: {operationId: getMcpExposure, description: Requires namespace:read., responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}, x-standard-errors: true}
     put:
       operationId: putMcpExposure
       description: >-
         Requires mcp:expose, run:start on the target and the rights of maxResultClassification
         (payload:read-internal for internal; the reveal grant for pii). The projection is compiled and its
         result validated against the closed resultSchema; every field's level must be <= maxResultClassification
-        and none secret (422 MCP_RESULT_CLASSIFICATION_EXCEEDED). SCRIPT and OPERATION targets return
-        422 UNSUPPORTED_NODE with details.dependency=STANDALONE_STEPS until feature 022 exists. A target version
-        whose agent nodes contain a write tool acknowledged approval "none" is refused (422 UNATTENDED_WRITE_TOOL),
-        including when an ACTIVE-policy exposure later resolves to such a version at call time. A target version
+        and none secret (422 MCP_RESULT_CLASSIFICATION_EXCEEDED), where a field's level is the effective level
+        the target version recorded at publication (the stricter of its outputSchema annotation and the level it
+        inherits from agent and child outputs, Requirement 025-019). SCRIPT and OPERATION targets return
+        422 UNSUPPORTED_NODE with details.dependency=STANDALONE_STEPS until feature 022 exists. An unattended
+        target version (an agent write tool acknowledged approval "none" in it or in any child workflow it can
+        start, at any depth) is refused (422 UNATTENDED_WRITE_TOOL), including when an ACTIVE-policy exposure,
+        or an active-version child, later resolves to such a version at call time. A target version
         whose inputSchema is outside the design 043 subset is refused (422 RUN_INPUT_SCHEMA_UNUSABLE).
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PutMcpExposureRequest'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}
       x-standard-errors: true
     delete:
       operationId: deleteMcpExposure
+      description: Requires mcp:expose and expectedRevision. Tombstone; audit mcp.exposure_deleted; scoped tokens keep the deleted exposure's identifier, so a new exposure of the same name is outside their scope.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ExpectedRevision'}}}}
       responses: {'200': {content: {application/json: {schema: {$ref: '#/components/schemas/McpExposure'}}}}}
       x-standard-errors: true
@@ -149,11 +153,16 @@ paths:
     post:
       operationId: mintMcpToken
       description: >-
-        Requires mcp:token:manage; every listed exposure must be callable by the minter now. The token value is
+        Requires mcp:token:manage; every listed exposure must be callable by the minter now. The exposure names
+        are resolved to exposure identifiers at mint and the token stores the identifiers. The token value is
         returned once with Cache-Control private, no-store, stored only as SHA-256; audit mcp.token_minted.
+        A replay with the same Idempotency-Key and content returns 200 with the token's metadata and no token
+        (no receipt keeps the plaintext); changed content under the same key is 409 IDEMPOTENCY_KEY_REUSED.
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/MintMcpTokenRequest'}}}}
-      responses: {'201': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/MintedMcpToken'}}}}}
+      responses:
+        '201': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/MintedMcpToken'}}}}
+        '200': {description: 'Replay of an earlier mint; metadata only, never the token.', content: {application/json: {schema: {$ref: '#/components/schemas/McpTokenMetadata'}}}}
       x-standard-errors: true
   /namespaces/{namespaceId}/mcp-tokens/{tokenId}:
     delete:
@@ -173,6 +182,9 @@ paths:
         never collapsed; denials payload.reveal_denied) in the transaction that selects
         the entries, before any byte is returned; an audit failure returns no bytes. Bounded to 16 MiB and
         30 s; paginated by entry. Opaque provider blocks are returned as {type: opaque, blockType} without bytes.
+        This is the only route that returns a transcript entry or an agent derived-step payload: the run
+        routes payload-disclosures and payload-inspections (feature 016) refuse them as payloads that do not
+        exist.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/RunId'}
@@ -187,7 +199,10 @@ paths:
       description: >-
         Requires approval:read and current eligibility for the request. Returns tool name, kind, effect and the
         input disclosed per ADR-0033 with the tool's inputSchema as carrier, every field at least the agent's
-        transcript level (withheld nodes for fields above the caller's level; secret fields never shown).
+        transcript level (withheld nodes for fields above the caller's level; no field is secret, publication
+        refuses SECRET_TOOL_INPUT) and decidable, false when any field was withheld from the caller. A decision
+        through POST /approvals/{approvalId}/decisions by a caller to whom any field would be withheld is
+        refused with 403 APPROVAL_INPUT_WITHHELD, nothing applied, audited ai.approval_input_withheld.
         Audited as payload.disclosed or payload.pii_revealed.
       parameters: [{name: approvalId, in: path, required: true, schema: {type: string, format: uuid}}]
       responses: {'200': {headers: {Cache-Control: {schema: {const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '#/components/schemas/AgentToolCallView'}}}}}
@@ -250,8 +265,9 @@ components:
           additionalProperties: false
           required: [mode, secrets]
           properties:
-            mode: {enum: [api-key, bearer, aws-access-key, azure-entra-client-credentials]}
+            mode: {enum: [api-key, bearer, aws-access-key, azure-entra-client-credentials], description: 'api-key and bearer deliver a static API key or bearer token (aws-bedrock uses bearer with an Amazon Bedrock API key). aws-access-key (a signing key) and azure-entra-client-credentials (a client secret) are refused with 422 AI_CREDENTIAL_MODE_UNAVAILABLE until design 047''s broker issues access tokens (Gap 025-001).'}
             secrets: {type: object, maxProperties: 4, additionalProperties: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}, description: Slot name -> logical secret name (OpenBao-backed, feature 017). Never a value.}
+            entraAuthority: {type: string, format: uri, maxLength: 256, description: 'HTTPS Entra authority host, required for azure-entra-client-credentials once that mode is enabled; confirmed by the saving administrator, never discovered; the only host a token request goes to.'}
         models: {type: array, minItems: 1, maxItems: 64, items: {$ref: '#/components/schemas/AiModelEntry'}}
         maxPromptClassification: {enum: [public, internal, pii]}
         limits: {type: object, additionalProperties: false, properties: {maxConcurrentCalls: {type: integer, minimum: 1, maximum: 256}, attemptTimeoutMs: {type: integer, minimum: 1000, maximum: 900000}}}
@@ -328,7 +344,8 @@ components:
         maxResultClassification: {enum: [public, internal, pii]}
         disclosure: {const: declared-mcp-result-v1}
         waitMs: {type: integer, minimum: 0, maximum: 30000, default: 10000}
-    McpExposure: {type: object, properties: {toolName: {type: string}, revision: {type: integer}, status: {type: string}, target: {type: object}, inputSchema: {type: object, description: Derived from the target's inputSchema.}, resultSchema: {type: object}, maxResultClassification: {type: string}}}
+        maxDailyTokens: {type: integer, minimum: 1, description: 'Optional per-UTC-day token budget of every run this exposure admits and of its descendants, charged beside the namespace budget; at most the namespace daily token limit.'}
+    McpExposure: {type: object, properties: {exposureId: {type: string, format: uuid}, toolName: {type: string}, revision: {type: integer}, status: {type: string}, target: {type: object}, inputSchema: {type: object, description: Derived from the target's inputSchema.}, resultSchema: {type: object}, maxResultClassification: {type: string}, maxDailyTokens: {type: [integer, 'null']}}}
     McpExposureList: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/McpExposure'}}}}
     MintMcpTokenRequest:
       type: object
@@ -336,10 +353,11 @@ components:
       required: [label, exposures, expiresInDays]
       properties:
         label: {type: string, minLength: 1, maxLength: 64}
-        exposures: {type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: {type: string}}
+        exposures: {type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: {type: string, pattern: '^[a-zA-Z0-9_-]{1,64}$'}, description: Exposure tool names; resolved to exposure identifiers at mint.}
         expiresInDays: {type: integer, minimum: 1, maximum: 90}
     MintedMcpToken: {type: object, required: [tokenId, token, expiresAt], properties: {tokenId: {type: string, format: uuid}, token: {type: string, description: Shown once. Send only in the Authorization header.}, expiresAt: {type: string, format: date-time}}}
-    McpTokenList: {type: object, properties: {items: {type: array, items: {type: object, properties: {tokenId: {type: string}, label: {type: string}, minter: {type: string}, exposures: {type: array, items: {type: string}}, expiresAt: {type: string}, revokedAt: {type: [string, 'null']}}}}}}
+    McpTokenMetadata: {type: object, required: [tokenId, expiresAt, replayed], properties: {tokenId: {type: string, format: uuid}, expiresAt: {type: string, format: date-time}, replayed: {const: true}}}
+    McpTokenList: {type: object, properties: {items: {type: array, items: {type: object, properties: {tokenId: {type: string}, label: {type: string}, minter: {type: string}, exposures: {type: array, items: {type: object, properties: {exposureId: {type: string, format: uuid}, toolName: {type: [string, 'null'], description: Null when that exposure was deleted.}}}}, expiresAt: {type: string}, revokedAt: {type: [string, 'null']}}}}}}
     AgentTranscriptPage:
       type: object
       required: [runId, nodeId, entries]
@@ -359,13 +377,19 @@ components:
         kind: {type: string}
         effect: {enum: [read, write]}
         input: {description: Classified disclosure result (feature-016 shape with disclosed and withheld nodes).}
+        decidable: {type: boolean, description: False when any field was withheld from the caller; a decision by that caller is refused with APPROVAL_INPUT_WITHHELD.}
     AgentProgress:
-      description: Additive, payload-free field of runtime-graph agent nodes (merged into the existing graph node schema).
+      description: >-
+        Additive, payload-free field of runtime-graph agent nodes (merged into the existing graph node schema),
+        readable with run:read. It carries no string a model or a provider wrote: tool names are declared names
+        or the fixed marker UNKNOWN_TOOL, the provider's tool-use id is absent, and the reported model appears
+        only as modelSubstituted (Decision 025-016).
       type: object
       properties:
         status: {enum: [RUNNING, WAITING_TOOLS, SUCCEEDED, FAILED, CANCELLED]}
         turns: {type: integer}
-        toolCalls: {type: array, maxItems: 256, items: {type: object, properties: {turn: {type: integer}, call: {type: integer}, name: {type: string}, kind: {type: string}, status: {type: string}, approvalId: {type: [string, 'null']}}}}
+        modelSubstituted: {type: boolean, description: True when a turn's provider-reported model differs from the pinned model id and its aliases.}
+        toolCalls: {type: array, maxItems: 256, items: {type: object, properties: {turn: {type: integer}, call: {type: integer}, name: {type: string, pattern: '^[a-zA-Z0-9_-]{1,64}$', description: 'A tool name the node declares, or UNKNOWN_TOOL.'}, kind: {type: [string, 'null']}, status: {type: string}, approvalId: {type: [string, 'null']}}}}
         usage: {type: object, properties: {inputTokens: {type: integer}, outputTokens: {type: integer}, cacheReadTokens: {type: integer}, cacheWriteTokens: {type: integer}, estimatedCostMicros: {type: [string, 'null']}, currency: {type: [string, 'null']}, reservedInputTokens: {type: integer}, reservedOutputTokens: {type: integer}}}
         failureCode: {type: [string, 'null']}
     AuthoringRequest: {type: object, additionalProperties: false, required: [description], properties: {description: {type: string, minLength: 1, maxLength: 8192}, workflowId: {type: string, format: uuid, description: Draft to improve; optional.}}}

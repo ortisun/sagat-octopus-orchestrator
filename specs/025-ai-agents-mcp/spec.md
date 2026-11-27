@@ -8,6 +8,8 @@
 
 **Revised**: 2026-11-26, against `develop` at `3f22b612`, after an independent audit (3 Blockers, 19 Majors, 14 Nits), with the decisions the coordinating author took under the owner's delegation (Owner decision 2026-11-24-4): Owner decisions 2026-11-26-120 to 2026-11-26-125
 
+**Revised again**: 2026-11-27, after the security review of that date (`reviews/2026-11-27-security.md`: 9 Majors, 11 Nits, every one fixed in this set; Decision 025-016)
+
 **Input**: LLM provider resources (Anthropic, OpenAI-compatible, AWS Bedrock, Azure); a durable AI
 agent step whose model calls and tool calls are durable attempts run by a managed executor, with
 tools (published scripts, activities, managed operations, child workflows, MCP tools), structured
@@ -45,9 +47,16 @@ This feature adds no second engine, approval mechanism, secret authority or stre
   (ordinary task execution), not as a new exception: the immutable task definition of such a derived
   step is the agent node of the published version together with the provider revision and the
   MCP-server revision that version pins, so the secrets those pinned revisions name are the declared
-  secrets of that task definition (Requirement 025-003). OAuth-authenticated MCP servers are the one
-  exception: they reach tokens only through design 047's token broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token);
-  until 5.1.0 merges and the broker is built, the `oauth-client-credentials` mode is refused (Gap 025-001).
+  secrets of that task definition (Requirement 025-003). Only credential modes that hand the runner a
+  static API key or bearer token are offered under that set. A mode that would hand it a client secret
+  or a signing key, which constitution 5.1.0's third declared set excludes for a declared resource
+  ("never a refresh token, client secret or signing key"), is refused: OAuth-authenticated MCP servers,
+  the `azure-entra-client-credentials` mode and the `aws-access-key` mode reach a provider only through
+  design 047's token broker, under the third declared set of Principle V that the owner approved for
+  constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and
+  its current access token); until 5.1.0 merges and the broker issues access tokens, those modes are
+  refused at save (Gap 025-001). Whether the first set instead covers a declared resource's client
+  secret or signing key is Owner question 025-001, not decided here.
 - Effects stay at-least-once (ADR-0004). A model call has no provider idempotency key: a lost
   response is asked again and paid twice. A tool call carries a stable key.
 - Approvals use feature 014 (FR-014-007, FR-014-008); values follow ADR-0033; the transcript has its
@@ -118,9 +127,14 @@ attempts and a validated result.
    again, only the first committed result is kept and both requests are charged.
 4. **Given** an invalid answer, **when** repair turns remain, **then** a bounded validation summary
    is sent back; otherwise the step fails with `AI_OUTPUT_INVALID`.
-5. **Given** a provider edited, paused or with a model removed after admission, **when** a retry
-   runs, **then** it keeps the pinned revision; a paused provider refuses new resolution; a run is
-   never redirected.
+5. **Given** a provider edited, paused or with a model removed after publication, **when** a retry
+   runs, **then** it keeps the endpoint, settings and credentials of the revision the published version
+   pins; a paused provider, a model no longer in the current revision's allowlist or a current ceiling
+   below the agent's transcript level refuses the next resolution before dispatch; a run is never
+   redirected.
+6. **Given** a provider whose endpoint answers the probe with a `302` to another host, **when** the
+   probe runs, **then** the redirect is not followed, no credential reaches the other host and the
+   probe fails with `AI_DESTINATION_DENIED`.
 
 ### US02 — Give the agent tools whose effects are durable (Priority: P1)
 
@@ -139,7 +153,9 @@ three results committed.
    request becomes `<node>~t<turn>.<call>` executed by its kind's executor with key
    `agent:{runId}:{node}:{turn}:{call}`, and results return in request order in one message.
 2. **Given** an undeclared tool or input failing its schema, **when** planned, **then** nothing runs
-   and the model receives a bounded error result counted toward `maxToolCalls`.
+   and the model receives a bounded error result counted toward `maxToolCalls`; an undeclared request
+   is recorded on every run-read surface as the fixed marker `UNKNOWN_TOOL` with its call index, never
+   under the name the model wrote.
 3. **Given** a `write` tool with an unknown outcome, **when** it declares `reconcileWith`, **then** it
    is looked up before any retry; otherwise it waits in manual review and the agent does not
    continue until an operator resolves it. A `read` tool is retried.
@@ -170,7 +186,10 @@ authorized decision, and race a decision against expiry; exactly one outcome win
    nothing is applied and the denial is audited without disclosure.
 4. **Given** an approver without `payload:read-internal` or the reveal grant, **when** they open the
    tool-call view, **then** fields above their level are withheld, every field being at least the
-   agent's transcript level; a `secret` field is shown to nobody.
+   agent's transcript level; a tool input field annotated `secret` is refused at publication.
+5. **Given** an eligible approver to whom any field of the tool input would be withheld, **when** they
+   decide, **then** the decision is refused with `APPROVAL_INPUT_WITHHELD`, nothing is applied and the
+   denial is audited: nobody approves arguments they cannot see.
 
 ### US04 — Keep spend inside declared budgets and quotas (Priority: P1)
 
@@ -216,12 +235,20 @@ or response, and the transcript is readable only through its audited endpoint.
    worker-origin code of `sdks/error-catalog.json`); a value with no carrier counts as `pii`.
 3. **Given** a tool output containing a secret its attempt received, **when** it completes, **then**
    the tool call fails with `SECRET_IN_OUTPUT` and nothing is appended to the transcript.
-4. **Given** a user with `run:read` only, **when** they inspect the run, **then** they see turns, tool
-   names, statuses and usage, never values; a holder of `payload:read-internal` and the namespace
-   reveal grant reads the transcript through an audited `no-store` endpoint.
+4. **Given** a user with `run:read` only, **when** they inspect the run, **then** they see turns,
+   declared tool names, statuses and usage, never values nor a string the model or the provider wrote;
+   a holder of `payload:read-internal` and the namespace reveal grant reads the transcript through an
+   audited `no-store` endpoint, and the run's payload-disclosure and payload-inspection endpoints refuse
+   agent payloads.
 5. **Given** an agent whose transcript level is `pii` (a context field or a tool result is `pii`),
    **when** its `outputSchema` annotates `result.summary` as `public`, **then** publication fails with
    `CLASSIFICATION_LOOSENED`; a model cannot relabel what entered its transcript.
+6. **Given** the same agent, **when** the workflow's `end.outputExpr` is
+   `steps.triage.output.result.summary` and the workflow `outputSchema` annotates `summary` as
+   `public`, or a parent's `child` tool or child node annotates the output of a child workflow that
+   wraps such an agent as `public`, **then** publication (or, for a child under an active-version
+   policy, the child's admission) fails with `CLASSIFICATION_LOOSENED`: the level a value inherits from
+   an agent's output follows it into every output carrier it reaches.
 
 ### US06 — Expose declared workflows to MCP clients (Priority: P2)
 
@@ -246,6 +273,17 @@ key; there is one run, one audited call and only the declared projection in the 
    **then** the call is refused before admission; no value is partially returned.
 5. **Given** another tenant's identity or a foreign exposure, **when** called, **then** the answer is
    indistinguishable from an unknown tool and the attempt is audited.
+6. **Given** scoped token A, scoped to exposure Y, that called with idempotency key `order-42`, **when**
+   token B, scoped only to exposure Z, calls Z with the same key and arguments, **then** B gets its own
+   run (a receipt belongs to one credential and one exposure) and never Y's run or result; when A
+   reuses `order-42` on another exposure, the call is refused with `IDEMPOTENCY_KEY_REUSED`.
+7. **Given** an exposed workflow that starts a child workflow (a child node or a `child` tool) whose
+   version contains an agent `write` tool acknowledged `approval: "none"`, **when** the exposure is
+   saved or the child is admitted under a run that MCP admitted, **then** the save or the child's
+   admission is refused with `UNATTENDED_WRITE_TOOL`.
+8. **Given** a caller whose token is revoked while their call waits, **when** the run finishes inside
+   the bounded wait, **then** no result is returned: the credential and the rights are checked again
+   before any result leaves.
 
 ### US07 — Use tools of an external MCP server (Priority: P2)
 
@@ -271,6 +309,11 @@ that call with `AI_TOOL_CHANGED` without sending it.
 5. **Given** an MCP server declaring `maxArgumentClassification: internal` and an agent whose
    transcript level is `pii`, **when** the agent allows one of its tools, **then** publication fails
    with `MCP_ARGUMENT_CLASSIFICATION_EXCEEDED`; argument canaries never reach the test server.
+6. **Given** a published agent whose provider or MCP server an administrator later lowers (a new
+   revision with `maxPromptClassification` or `maxArgumentClassification` below the agent's transcript
+   level), **when** a run is started or an already running agent reaches its next model or MCP call,
+   **then** admission is refused (`AI_DESTINATION_RESTRICTED`) or the call fails with
+   `CLASSIFICATION_EGRESS_REFUSED` before dispatch, without republication.
 
 ### US08 — Follow an agent while it works (Priority: P2)
 
@@ -320,7 +363,14 @@ may apply.
 - A runner holding three model-call leases is killed: when the leases expire the namespace's
   concurrency is free again, without any counter repair.
 - A workflow with a `write` tool acknowledged `approval: "none"` is published, then someone tries to
-  expose it through MCP or a 026 public link: both refuse with `UNATTENDED_WRITE_TOOL`.
+  expose it through MCP or a 026 public link: both refuse with `UNATTENDED_WRITE_TOOL`. The same holds
+  when the unattended tool is in a child workflow the exposed one can start, at any depth; for a child
+  under an active-version policy the refusal comes at the child's admission.
+- A model requests 256 undeclared tools whose names spell out a customer's tax number: each is refused,
+  and the run graph, journal, stream and spans show 256 `UNKNOWN_TOOL` markers with call indexes, never
+  the names.
+- A JSON-RPC batch (an array body) reaches the MCP endpoint: it is refused with `-32600` before any
+  member is read.
 - An external MCP server starts advertising another token endpoint (OAuth servers, once constitution 5.1.0
   merges and design 047's broker is built): the next call is refused before any
   credential is used, and the change is audited.
@@ -366,13 +416,28 @@ fails before work.
 - **FR-025-002 — Allowed models and pinning**: A revision MUST list allowed models with the
   provider's id, optional alias, maximum output and context tokens, capability flags (native
   structured output, parallel tool calls, streaming) and optional declared prices. Publication
-  rejects other models. Admission pins the revision per agent node in the admission transaction;
-  every attempt uses it. Pause and deletion block new admission and resolution; current revocation
-  stays authoritative for pinned runs.
+  rejects other models. Publication records in the published version, per agent node, the provider
+  revision it checked (the author's explicit `revision`, otherwise the current one) and, per `mcp` tool,
+  the MCP-server revision and the snapshot identifier; admission copies those records into the run's
+  pins in the admission transaction, and every attempt uses them for endpoint, settings, credentials
+  and prices. Restrictions saved later still apply at once: at admission and at every resolution the
+  transcript level is checked against the stricter of the pinned revision's ceiling and the current
+  revision's ceiling, and the pinned model must be in the current revision's allowlist as well as the
+  pinned one; a failure refuses admission (`AI_DESTINATION_RESTRICTED`) or the call before dispatch
+  (`CLASSIFICATION_EGRESS_REFUSED` for a ceiling, `AI_CAPABILITY_UNAVAILABLE` for a model). A later
+  revision never widens what a published version may send. Pause and deletion block new admission and
+  resolution; current revocation stays authoritative for pinned runs (Decision 025-016).
 - **FR-025-003 — Credentials**: Credential values MUST live only in OpenBao behind the feature-017
-  facade and be resolved per attempt: API-key header or bearer (`anthropic`, `openai-compatible`),
-  access key pair with optional role (`aws-bedrock`), API key or Entra client credentials
-  (`azure-openai`). Their disclosure fits Principle V's first declared set (ordinary task execution):
+  facade and be resolved per attempt. The modes offered are those that hand the runner a static API key
+  or bearer token: API-key header or bearer (`anthropic`, `openai-compatible`), an Amazon Bedrock API
+  key sent as a bearer token (`aws-bedrock`, mode `bearer`; its use by the adapter is verified in Task
+  025-011, Gap 1291) and an API key (`azure-openai`, mode `api-key`). The modes `aws-access-key` (an
+  access key pair, whose secret access key is a long-lived signing key, with or without a role) and
+  `azure-entra-client-credentials` (an Entra client secret) are refused at save with
+  `AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker issues access tokens to the runner (Gap
+  025-001): no client secret or signing key ever reaches the agent runner. When the Entra mode is
+  enabled, the revision records the Entra authority host (HTTPS, confirmed by the saving administrator,
+  never discovered) and the token request goes only there. Their disclosure fits Principle V's first declared set (ordinary task execution):
   the immutable task definition of a model-call or MCP-call derived step is the agent node of the
   published version plus the provider revision and the MCP-server revision that version pins, so the
   logical secrets those pinned revisions name are the declared secrets of that task definition (a probe
@@ -382,7 +447,11 @@ fails before work.
   of every secret and the publisher's permission `secret:use` on every one of them authorize it; the
   publisher's `secret:use` is checked at publication and again at delivery. No fallback; a deployment's
   own cloud identity is never used for a tenant account; adapters use explicit static credentials only,
-  never SDK default credential chains or instance-metadata lookups (D1299). MCP servers authenticated by
+  never SDK default credential chains or instance-metadata lookups (D1299). These secrets are disclosed
+  only by `ResolveModelCall` and `ResolveMcpCall`: the node the agent declaration materializes for every
+  `sagat.ai.*` managed kind has an empty `secrets` list, and the ordinary `ResolveSecrets` call, and
+  every other secret-bearing worker call except the resolve call of the lease's own managed kind,
+  refuses a lease whose node has a managed kind. MCP servers authenticated by
   OAuth are outside this rule: they reach tokens only through design 047's token broker, under
   the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token) (Gap 025-001).
 - **FR-025-004 — Provider probe**: Test provider MUST admit a fixed durable probe (origin
@@ -398,8 +467,10 @@ fails before work.
   `EgressCeiling::admits` decides what may leave. The rule for `pii` is the uniform `pii`-egress rule of
   Owner question 1081 (decided on 2026-11-24 for feature 020, Decision 1617), applied to provider
   revisions and MCP-server revisions by Owner decision 2026-11-26-120: a ceiling of `pii` is set only by
-  an administrator holding the namespace reveal grant; the grant is rechecked at every resolution whose
-  transcript level is `pii`; its revocation pauses the provider; each such attempt is audited
+  an administrator holding the namespace reveal grant; that administrator's grant (the actor recorded on
+  the revision that set `pii`, the reading of Decision 1617) is rechecked at every resolution whose
+  transcript level is `pii`; its revocation, or that administrator leaving the namespace, pauses the
+  provider until an administrator who holds the grant saves a new revision; each such attempt is audited
   `ai.pii_egress`; a secret never leaves; and the default is `internal` (the type's default, which the
   Studio preselects; the API still requires the field to be sent) (D1637).
 
@@ -435,9 +506,14 @@ fails before work.
   the publisher's `secret:use` on every declared secret) plus the initiator's `ai:use`. Phase 2
   re-checks all of them and that the selected secret revisions still match, then commits the
   value-free `secret.resolved` audit and a metadata-only credential pin per secret slot before any value
-  is returned; a failed check or audit refuses disclosure. No lock is held during OpenBao or provider
+  is returned; a failed check or audit refuses disclosure. Both phases also recheck the restrictions of
+  Requirement 025-002 (current ceiling and allowlist). No lock is held during OpenBao or provider
   I/O. Provider failures map to the closed vocabulary of `contracts/errors.md`; retries honour
-  `retry-after` within the attempt deadline.
+  `retry-after` within the attempt deadline. The claim path offers a `sagat.ai.*` lease only for a node
+  whose `managed_kind` is that AI kind, never by the activity name alone; the `sagat.ai.` prefix is
+  reserved (an ordinary activity, worker or version naming it is refused at publication and
+  registration), and recording `ai-agents-v1` is refused while any existing version has an ordinary
+  activity under that prefix (Task 025-095).
 - **FR-025-010 — Tool declarations**: Each tool MUST declare a name matching `^[a-zA-Z0-9_-]{1,64}$`
   unique within the node, a literal description, a kind (`activity`, `script`, `database`,
   `operation`, `child`, `mcp`) with its reference, a closed bounded input schema (from the target
@@ -445,8 +521,15 @@ fails before work.
   projection, an optional closed `outputSchema` (the result's carrier when the target has none),
   bounded retry and timeout, and an approval policy. A `write` tool MUST declare either an approval
   policy or the explicit acknowledgement `approval: "none"`; `operation` tools always need a policy
-  (G1293). A `database` tool is a parameterized `query` bound only from tool arguments; `execute`
-  requires approval. An `mcp` tool names a server resource and a tool of its pinned snapshot.
+  (G1293). A `database` tool is a parameterized `query` bound only from tool arguments; `execute` is
+  always `write` and always needs an approval policy (`approval: "none"` and `effect: "read"` are
+  refused with `WRITE_TOOL_APPROVAL_REQUIRED`). A `child` tool declared `effect: "read"` needs an
+  approval policy (the child workflow can write; `WRITE_TOOL_APPROVAL_REQUIRED`). An `mcp` tool names a
+  server resource and a tool of its pinned snapshot, and may be declared `effect: "read"` without an
+  approval policy only when that snapshot's annotations state `readOnlyHint: true` and do not state
+  `destructiveHint: true`; annotations, being untrusted, can only make this rule stricter, never turn a
+  `write` into a `read` nor remove an approval requirement. A tool input field annotated `secret` is
+  refused at publication (`SECRET_TOOL_INPUT`): the model never holds a secret to write.
 - **FR-025-011 — Tool call validation**: An undeclared tool or input failing its schema MUST NOT
   execute; the model gets a bounded error result. Tool inputs are validated by the platform's run-input
   validator of design 043 (`RunInputValidator`, `crates/infra-schema/src/run_input/`), not by a second
@@ -455,7 +538,9 @@ fails before work.
   array), so every agent schema compiles there. The error result is built only from the validator's
   value-free rule and field, never from the value. Requests beyond the per-turn limit
   (`maxParallelToolCalls`) or the remaining `maxToolCalls` get refusal results. A turn's results return
-  in request order in one message.
+  in request order in one message. An undeclared request is recorded as the fixed marker `UNKNOWN_TOOL`
+  and its call index: the name the model wrote exists only in the transcript (`pii`), never in
+  `agent_tool_calls`, the run graph, the journal, the stream, spans, metrics, logs or audit.
 - **FR-025-012 — Tool execution**: Each valid call MUST be a derived step run by its kind's executor
   (SDK worker, sandbox runner, database runner, 021 executor, child run, agent runner for MCP) with
   key `agent:{runId}:{node}:{turn}:{call}` (D1296). `read` tools retry; a `write` tool with an unknown
@@ -464,7 +549,11 @@ fails before work.
   (its child row), and a refused input creates no child: the tool-call step fails with
   `CHILD_INPUT_INVALID` (or `RUN_INPUT_SCHEMA_UNUSABLE`), as FR-043-008 says of a parent step, and the
   model receives `TOOL_FAILED` with that code and the value-free rule and field; the agent continues and
-  the call counts toward `maxToolCalls` (Decision 025-007). Results are bounded, scanned for resolved
+  the call counts toward `maxToolCalls` (Decision 025-007). A child's admission is also refused, with
+  no child created and `TOOL_FAILED` to the model, when the child version's recorded output levels are
+  stricter than the tool's result carrier (`CLASSIFICATION_LOOSENED`, Requirement 025-019) or when the
+  run's root was admitted through MCP or a 026 public link and the child version is unattended
+  (`UNATTENDED_WRITE_TOOL`, Requirement 025-026). Results are bounded, scanned for resolved
   secrets, projected and checked against the provider's level before they are appended.
 - **FR-025-013 — Structured output**: With `outputSchema`, the platform MUST validate the final
   answer against the closed bounded schema, use the adapter's native constraint where the model entry
@@ -492,7 +581,9 @@ fails before work.
   attempts (`ai_runner_concurrency` and `tenant_ai_runner_concurrency`: the count of live leases of
   every `sagat.ai.*` activity, model calls, MCP calls, probes and refreshes alike, read in the claim
   transaction, so completion and expiry release capacity), namespace tokens and estimated cost per UTC
-  day (settled plus reserved, through the leases of Requirement 025-015), and
+  day (settled plus reserved, through the leases of Requirement 025-015), an exposure's optional daily
+  tokens (`maxDailyTokens`, charged through the same leases under the exposure's own budget scope),
+  live agent runs per MCP caller (`mcp_agent_runs_per_caller`, Requirement 025-033), and
   counts of providers, MCP servers, exposures and scoped tokens, through ADR-0027 resolution. Over a
   limit, claim or admission waits or fails before any provider request; a lowered limit does not
   cancel dispatched work.
@@ -502,7 +593,11 @@ fails before work.
   resolution against expiry and cancellation (D1297). `onReject`/`onExpire` are `refuse` or `fail`.
   The approver's view applies ADR-0033 with the tool's input schema as carrier, every field at least
   the transcript level (a looser annotation is refused at publication, D1292); the deadline is
-  clamped to the remaining agent wall time.
+  clamped to the remaining agent wall time. A tool-call approval is decidable only by a decider whose
+  current rights disclose every field of the input (no tool input field is `secret`, Requirement
+  025-010): at decision time, a decider to whom any field would be withheld is refused with `FORBIDDEN`
+  reason `APPROVAL_INPUT_WITHHELD`, nothing is applied, and the denial is audited; so an agent whose
+  transcript level is `pii` has its tool calls approved only by holders of the namespace reveal grant.
 - **FR-025-018 — Cancellation and deadlines**: Cancellation and the agent deadline MUST stop new turns
   and tool calls, ask in-flight model calls to stop through heartbeats, cancel pending approvals and
   apply each tool kind's cancellation semantics. Deadline, decision, expiry, cancellation and
@@ -522,11 +617,36 @@ fails before work.
   whose child input schema declares a field below it. The levels are compared with the domain's
   `Level::stricter` and `EgressCeiling::admits`, not a second implementation. At run time a value that
   does not validate against its carrier is not sent: the call fails with `CLASSIFICATION_EGRESS_REFUSED`
-  before dispatch (a tool result in that state returns `TOOL_FAILED` to the model).
+  before dispatch (a tool result in that state returns `TOOL_FAILED` to the model). The ceiling checks
+  are repeated at admission and at every resolution against the current restrictions (Requirement
+  025-002).
+
+  **Inherited output levels.** A value drawn from an agent's output keeps at least that agent's
+  transcript level in every output carrier it reaches. Publication computes the effective level of each
+  field of the workflow `outputSchema`, of each child node `outputSchema` and of each `child` tool's
+  result carrier with the existing domain rule `written_level` (`crates/domain/src/classification.rs`):
+  the stricter of the field's annotation and the level it inherits. A workflow output field inherits from
+  the paths `end.outputExpr` references (when the expression is one path, field `x` inherits from that
+  path's `x`; otherwise every field inherits the strictest referenced path); a path into
+  `steps.<agent>.output.result` inherits the agent's transcript level; a path into a child's output
+  inherits the child version's recorded output levels. Publication refuses an annotation below the
+  inherited level with `CLASSIFICATION_LOOSENED` and the pointer, and records the version's effective
+  output levels. A child under an active-version policy, whose version is unknown at publication, is
+  checked at its admission against the levels recorded in the version it starts, and refused there. The
+  transcript level of a parent agent uses the effective level of each `child` tool's result carrier.
+  The MCP exposure checks (Requirement 025-032) use these effective levels at save and at call time. A
+  value an activity or script computes is a new value under that step's declared carrier (feature 016)
+  and inherits nothing (Decision 025-016).
 - **FR-025-020 — Secrets never in prompts**: Secret values MUST NOT reach a rendered request,
   transcript, journal, log, span, audit record, stream event or response. Rendering has no secret
-  capability; provider and MCP credentials exist only in the runner's transport; tool outputs are
-  scanned for the values their attempt received (`SECRET_IN_OUTPUT`); canaries cover every surface.
+  capability; provider and MCP credentials exist only in the runner's transport; tool outputs and
+  model-call outputs are scanned for the values their attempt received (`SECRET_IN_OUTPUT`); canaries
+  cover every surface. The existing scan matches a value of at least 8 bytes verbatim and JSON-escaped
+  (`crates/application/src/worker.rs`); for agent tool results and agent-runner outputs it is extended to
+  the base64 (standard and URL-safe, all three byte alignments) and hexadecimal (both cases) forms of
+  each value. A secret shorter than 8 bytes, or transformed any other way (compressed, encrypted,
+  split, re-encoded twice), is not detected: that is a stated bound of the guarantee, not a claim
+  (Gap 025-004).
 - **FR-025-021 — Retention**: Transcripts, tool inputs and results, agent outputs and request staging
   blobs MUST be retained content under the tenant content quota and the storage classification
   manifest, registered as content stores in 020's registry and purged with the run's content under
@@ -537,13 +657,27 @@ fails before work.
   returns the bounded transcript only to the feature-016 `pii` audience (`run:read`,
   `payload:read-internal` and the namespace reveal grant), audits every read as `payload.pii_revealed`
   (never collapsed) before any byte is returned, and answers `Cache-Control: private, no-store`. No
-  bulk export.
+  bulk export. The existing run endpoints `payload-disclosures` and `payload-inspections` (feature 016)
+  refuse every agent derived-step payload (model-call requests and responses, tool inputs, MCP results)
+  and every transcript entry, answering as for a payload that does not exist; the agent node's retained
+  output stays disclosable there under its generated carrier (Requirement 025-014). Run-read surfaces
+  (the run graph's `AgentProgress`, the journal, the stream's `internal` fields, spans, metrics, logs and
+  audit) carry no string the model or the provider wrote: a tool name is a declared name or the marker
+  `UNKNOWN_TOOL`; the provider's tool-use id (`providerCallId`) is transcript content only; the model the
+  provider reports is shown only as `substituted: true|false` against the pinned model, its value kept
+  in the transcript; the provider request id is kept on spans only when it matches the closed pattern
+  `^[A-Za-z0-9._:-]{1,128}$`, otherwise dropped.
 
 #### Execution boundary
 
 - **FR-025-023 — Egress**: Provider and MCP destinations MUST use the guarded egress client and the
-  namespace egress policy, with no redirects for non-GET, no environment proxy, bounded time and bytes
-  and a bounded incremental reader for event streams. Private destinations need the operator-approved
+  namespace egress policy, with no redirect followed for any method (`max_redirects = 0`, the guard's
+  default, for every provider and MCP request, the probe and the refresh included: a `3xx` answer is a
+  failure, `AI_DESTINATION_DENIED` audited `egress.denied`), no environment proxy, bounded time and
+  bytes and a bounded incremental reader for event streams. The namespace egress policy is
+  operator-owned runner configuration, per namespace, reread before every attempt (the precedent of
+  `apps/database-runner/src/config.rs`); a namespace absent from it is denied, and nothing the server
+  sends can widen it. Private destinations need the operator-approved
   runner policy (ADR-0035 decision 4); metadata, link-local, loopback and platform endpoints stay denied.
 - **FR-025-024 — Managed executor isolation**: The agent runner MUST be a separate process with the
   new machine role `agent-runner` (`worker:execute`, `ai:execute`; never `database:execute` and never a
@@ -569,9 +703,16 @@ fails before work.
   exposures naming a tool name, a target (a published workflow with an active- or pinned-version
   policy; script and operation targets only with feature 022 standalone steps, D1315), the input
   schema from the target, a closed result projection with `disclosure: "declared-mcp-result-v1"` and a
-  `maxResultClassification`. Nothing is exposed by default. An exposure, and a call at run time, MUST
-  refuse a target version that contains a `write` tool acknowledged with `approval: "none"`
-  (`UNATTENDED_WRITE_TOOL`); feature 026 public links must apply the same refusal (T025-076).
+  `maxResultClassification`, and an optional daily token budget (`maxDailyTokens`). Nothing is exposed
+  by default. An exposure, and a call at run time, MUST refuse an unattended target version
+  (`UNATTENDED_WRITE_TOOL`). A version is unattended when it contains an agent `write` tool
+  acknowledged with `approval: "none"`, or when any child workflow it can start (child nodes and `child`
+  tools, at any depth, under their version policy) is unattended; publication records the flag for
+  pinned children, and for a child under an active-version policy the flag of the version it resolves
+  to is checked at save and call time and again at the child's admission. Every run whose root was
+  admitted through MCP or a 026 public link carries that origin to all its descendants, and a child
+  admission under it refuses an unattended child version (`UNATTENDED_WRITE_TOOL`). Feature 026 public
+  links must apply the same refusals (T025-076).
 - **FR-025-027 — Protocol surface**: The server MUST implement MCP 2026-07-28 over Streamable HTTP and
   serve 2025-11-25 clients statelessly, with `server/discover`, `tools/list`, `tools/call` and the
   tasks extension, and without sampling, roots, logging, resources or prompts (D1302). A call admits
@@ -584,7 +725,11 @@ fails before work.
   audience contains an MCP URI (D1303, G1296).
 - **FR-025-029 — Scoped MCP tokens**: `mcp:token:manage` holders MUST be able to mint, list and revoke
   tokens bound to one namespace, a list of exposures and an expiry, shown once and stored as a hash;
-  effective permission is the minter's current permissions ∩ scope at every call. Lifecycle and
+  effective permission is the minter's current permissions ∩ scope at every call. The request names
+  exposures by tool name and the mint resolves them to exposure identifiers, which is what the token
+  stores: a deleted exposure recreated under the same name is not in an old token's scope. A mint
+  replayed with the same `Idempotency-Key` and content returns the token's metadata without the token
+  (no plaintext is kept in any receipt); changed content is `IDEMPOTENCY_KEY_REUSED`. Lifecycle and
   denials are audited.
 - **FR-025-030 — Tool authorization**: A call MUST require `mcp:call`, the exposure in the token
   scope, the target's own permission (`run:start`) and the rights of the declared result level at
@@ -595,8 +740,13 @@ fails before work.
   attempt is audited (D1316).
 - **FR-025-031 — Call admission and waiting**: A call MUST admit the target through the existing
   durable admission transaction, deduplicated by the optional `_meta` key
-  `sagat-octopus-orchestrator.io/idempotencyKey` (same key and arguments return the same run; changed
-  arguments conflict). The arguments are the run input and pass the run-input gate of design 043 as a
+  `sagat-octopus-orchestrator.io/idempotencyKey`. A receipt belongs to one caller, defined as the
+  credential identity (the scoped token's identifier, or the OAuth issuer and subject), and to one
+  exposure: the same caller, exposure, key and argument digest return the same run; changed arguments,
+  or the same key on another exposure, are refused with `IDEMPOTENCY_KEY_REUSED`; another caller never
+  sees the receipt. Authorization runs before the receipt is read, and a replayed result is disclosed
+  only through the replaying call's own exposure and its current revision's projection, after that
+  call's authorization. The arguments are the run input and pass the run-input gate of design 043 as a
   new row of its table: the call builds a `CheckedRunInput` and admits through the existing `create`,
   so no second validation path exists. `RUN_INPUT_INVALID` is answered as JSON-RPC `-32602` with the
   value-free rule and field (never a value), `RUN_INPUT_SCHEMA_UNUSABLE` as a tool error, and the
@@ -606,17 +756,28 @@ fails before work.
   (`specs/043-run-input-validation/contracts/input-schema-subset.md`); a target outside it cannot be
   exposed. After a bounded wait a non-terminal run is a task for clients with the tasks
   extension or a run handle otherwise; the wait reuses feature 026 `executeRun` semantics
-  (FR-026-007, FR-026-009) when available. `tasks/get` and `tasks/cancel` (which also needs
-  `run:operate`) re-check `mcp:call`, token scope, exposure state and result-level rights on every
-  call; a task handle is a name, not a capability.
+  (FR-026-007, FR-026-009) when available. Before a result leaves at the end of the bounded wait, the
+  call re-checks the credential (not revoked, not expired, the minter's or subject's current membership),
+  `mcp:call`, the token scope, the exposure's state and the result-level rights; a failed check returns
+  no result and is answered as an unknown tool. `tasks/get` and `tasks/cancel` (which also needs
+  `run:operate`) re-check the same on every call; a task handle is a name, not a capability, bound to the
+  caller as defined above.
 - **FR-025-032 — Result disclosure**: A result MUST contain only the exposure's validated closed
-  projection of the run result, with no field above `maxResultClassification` and none `secret`; a
-  caller without the rights for the declared level is refused before admission (answered as an
-  unknown tool). Every returned result is audited; arguments and results never enter logs, spans,
+  projection of the run result, with no field whose effective level (the inherited output levels of
+  Requirement 025-019, recorded in the target version) is above `maxResultClassification` and none
+  `secret`, checked when the exposure is saved and again at call time against the version the call
+  resolves; a caller without the rights for the declared level is refused before admission (answered
+  as an unknown tool). Every returned result is audited; arguments and results never enter logs, spans,
   metrics or audit reasons.
 - **FR-025-033 — MCP limits and errors**: The server MUST bound request bytes, wait time, concurrent
   calls and rate per namespace and per token, and map platform errors to MCP protocol or tool
-  execution errors as in `contracts/mcp-server.md`, without internal diagnostics.
+  execution errors as in `contracts/mcp-server.md`, without internal diagnostics. A JSON-RPC batch
+  (an array body) is refused with `-32600` before any member is read, so the per-call rate limit counts
+  every call. Remote callers cannot exhaust the namespace's AI budget: the live runs admitted by one
+  caller whose target version can contain agents are bounded (`mcp_agent_runs_per_caller`, default 4,
+  ceiling 64, counted in the admission transaction; beyond it the call is refused with `QUOTA_EXCEEDED`),
+  and an exposure's optional `maxDailyTokens` is charged by every model-call reservation of a run it
+  admitted and of that run's descendants, through the usage leases of Requirement 025-015.
 
 #### MCP client
 
@@ -632,8 +793,11 @@ fails before work.
   (D1306). User-delegated authorization is not supported (G1288).
 - **FR-025-035 — Tool snapshots**: Refresh MUST be a durable runner job (origin `MCP_TOOL_REFRESH`)
   storing an immutable, bounded snapshot of tool names and description, input- and output-schema
-  digests. Publication pins the snapshot; at call time a changed definition fails with
-  `AI_TOOL_CHANGED` without calling. Descriptions and annotations are untrusted content.
+  digests. Publication pins the snapshot: the published version records the snapshot identifier and the
+  MCP-server revision, and admission copies them into `run_mcp_snapshot_pins` (Requirement 025-002), so
+  a later refresh changes nothing a published version reads or compares against; at call time a
+  changed definition fails with `AI_TOOL_CHANGED` without calling. Descriptions and annotations are
+  untrusted content.
 - **FR-025-036 — MCP call execution**: An MCP tool call MUST be the reserved activity `sagat.ai.mcp`
   (a managed step of `ManagedKind::AiMcp`) run by the agent runner with `ResolveMcpCall` under the same
   two phases and Principle V authorities as Requirement 025-009, at-least-once, bounded in time and
@@ -651,7 +815,8 @@ fails before work.
 - **FR-025-037 — Token streaming**: With `stream.tokens: true` and feature 026, the runner MUST append
   coalesced text-delta, tool-request and turn-end events to the reserved channel `sagat.agent.tokens`
   through 026's `AppendStreamEvents` under its lease (FR-026-013, FR-026-014), with the channel schema
-  of `contracts/agent-stream-events.md` (text `pii`). The run's reserved-channel budget is the
+  of `contracts/agent-stream-events.md` (text `pii`; a `tool_requested` event names a declared tool or
+  the marker `UNKNOWN_TOOL`, never the name the model wrote). The run's reserved-channel budget is the
   effective `maxTurns` × the per-call event and byte caps, clamped to 026's per-run hard ceiling for
   reserved channels and counted apart from author channels (D1307); 026 marks superseded attempts and
   projects events per reader (FR-026-016, FR-026-018, G1295). Deltas are not authoritative and never
@@ -736,15 +901,19 @@ implemented opens the one consolidated amendment of FR-016-002 (coordinator C6);
 
 - **NFR-025-001 (security)**: zero tested cross-tenant access, zero canary leakage of secrets or
   credentials into prompts, transcripts, journal, logs, spans, audit, streams or responses, and no
-  token accepted from a query string or for another audience. Release-blocking.
+  token accepted from a query string or for another audience. Release-blocking. The canaries are
+  verbatim, JSON-escaped, base64 and hexadecimal forms of values of at least 8 bytes, the forms the scan
+  detects (Requirement 025-020); other transformations are outside the claim (Gap 025-004).
 - **NFR-025-002 (durability)**: committed turns, tool calls, approval decisions and MCP admissions
   survive process and broker restart; duplicates create no second transition; effects are
   at-least-once with stable keys; no exactly-once claim.
 - **NFR-025-003 (cost honesty)**: every cost is labelled estimated and comes from declared prices;
   reservations never fall below the documented bound; unknown usage is charged its reservation.
 - **NFR-025-004 (privacy)**: no value above the declared level of its destination leaves toward a
-  model provider or an external MCP server; model-written values are never classified below the
-  transcript level; the transcript is disclosed only through its audited endpoint.
+  model provider or an external MCP server, under the destination's current ceiling; model-written
+  values are never classified below the transcript level in any output carrier they reach, through
+  workflow outputs and child outputs included; the transcript is disclosed only through its audited
+  endpoint, and no run-read surface carries a string the model or the provider wrote.
 - **NFR-025-005 (compatibility)**: existing definitions, runs, workers and protocol minors keep their
   semantics; the agent capability is advertised only after six-SDK conformance passes.
 - **NFR-025-006 (observability)**: every accepted model, tool and MCP call has persisted correlation
@@ -757,19 +926,22 @@ implemented opens the one consolidated amendment of FR-016-002 (coordinator C6);
 
 - **Provider resource / revision**: identity, name, status; immutable kind, endpoint settings,
   credential references, allowed models with prices and capabilities, `maxPromptClassification`, limits.
-- **Run provider binding**: the provider revision pinned per agent node at admission.
+- **Run provider binding**: the provider revision recorded per agent node in the published version and
+  copied into the run at admission.
 - **Agent step**: run, node, status, effective budgets, reserved and settled usage, turn counter,
   transcript head, deadline.
 - **Turn / attempt reservation**: model-call derived step, request digest, response reference, usage,
   stop reason, reported model; one reservation per attempt.
-- **Tool call**: turn, index, name, kind, provider tool-use id, input, status, approval, derived step,
-  result, effect outcome.
+- **Tool call**: turn, index, declared name (or the marker `UNKNOWN_TOOL`), kind, input, status,
+  approval, derived step, result, effect outcome; the provider's tool-use id is transcript content.
 - **External MCP server / revision / tool snapshot**: URL, `maxArgumentClassification`,
   authentication with recorded issuer and token endpoint, credential references; immutable tool
   digests.
-- **Exposure / revision**: tool name, target, version policy, projection, disclosure, level.
-- **Scoped MCP token**: hash, minter, namespace, scope, expiry, revocation.
-- **MCP call receipt**: idempotency key, argument digest, caller, admitted run.
+- **Exposure / revision**: tool name, target, version policy, projection, disclosure, level, optional
+  daily token budget.
+- **Scoped MCP token**: hash, minter, namespace, scope (exposure identifiers), expiry, revocation.
+- **MCP call receipt**: caller (the credential identity), exposure, idempotency key, argument digest,
+  admitted run.
 
 ## Success Criteria *(mandatory)*
 
@@ -783,14 +955,14 @@ All criteria are future evidence; none is met by this document.
 | SC-025-002 | Real PostgreSQL, agent runner and dev provider: an agent run returns a validated structured result; a crash after the provider answered and before acknowledgement yields one committed turn and two charged attempts | FR-025-006..009, 013..015 |
 | SC-025-003 | Crash at every commit point of activation, model completion, tool completion, approval decision and deadline leaves no orphan step, no duplicate turn and no lost acknowledged transition | FR-025-008, 012, 017, 018 |
 | SC-025-004 | Tool calls of every kind run through their own executor with the stable key; duplicate delivery and lost broker hints change nothing; unknown write outcomes reach reconciliation or manual review | FR-025-010..012, 025 |
-| SC-025-005 | Tool-call approval: unauthorized, revoked, cross-tenant and initiator decisions denied and audited; decision versus expiry and versus cancellation pick exactly one outcome over 50 rounds each | FR-025-017, 018 |
+| SC-025-005 | Tool-call approval: unauthorized, revoked, cross-tenant and initiator decisions denied and audited; a decider to whom any input field would be withheld is refused `APPROVAL_INPUT_WITHHELD` and nothing is applied; decision versus expiry and versus cancellation pick exactly one outcome over 50 rounds each | FR-025-017, 018 |
 | SC-025-006 | Budget, quota and ceiling exhaustion refuse before dispatch; every retry reserves in its claim (lost response then retry keeps settled + reserved ≤ limit for the agent and the daily row); parallel completions schedule exactly one next turn; killing a runner releases concurrency when its leases expire | FR-025-015, 016 |
-| SC-025-007 | `pii`, `secret`, unmarked and non-validating values are refused at publication or before dispatch per the provider's and MCP servers' levels; looser `result`, approval-view and child-input annotations are refused; secret and MCP-argument canaries appear in no prompt, MCP request, transcript, journal, log, span, audit, stream or response; `write` tools without approval or acknowledgement are refused | FR-025-010, 014, 017, 019..021, 026 |
-| SC-025-008 | Transcript endpoint: each combination of the three rights, revocation of the reveal grant between requests, no-store headers and per-read audit; audit failure returns no bytes | FR-025-022, 041 |
-| SC-025-009 | Metadata, loopback, link-local, private and redirect destinations refused for providers and MCP servers; the event-stream reader enforces bytes and deadlines | FR-025-023, 036 |
-| SC-025-010 | Ordinary workers, sandbox, database and lake runners cannot claim or resolve agent-runner activities; the agent runner cannot claim ordinary tasks, is refused by the step-log ingest and never receives a database credential; stale leases, expired sessions and a publisher who lost `secret:use` are refused | FR-025-003, 009, 024 |
-| SC-025-011 | MCP server tested with an MCP client library at 2026-07-28 and 2025-11-25: empty default list, single-audience tokens and REST refusal of MCP tokens, uniform metadata answers, insufficient scope, scoped tokens and revocation, idempotent retry, tasks re-authorized on every `tasks/get`, foreign and uncallable exposures answered as unknown tools | FR-025-026..033 |
-| SC-025-012 | MCP client against the test server: snapshot pinning, drift refusal, egress denial, unknown outcome to manual review, unsupported results and `MCP_TOOL_ERROR` as tool errors (text forwarded only at transcript level `pii`), the `oauth-client-credentials` mode refused while Gap 025-001 is open (and, once enabled, refusal on a changed token endpoint) | FR-025-034..036 |
+| SC-025-007 | `pii`, `secret`, unmarked and non-validating values are refused at publication or before dispatch per the provider's and MCP servers' levels, and again after a ceiling is lowered without republication; looser `result`, approval-view, child-input, workflow-output and child-output annotations below an inherited level are refused (a child under an active-version policy at its admission); a `secret` tool input field is refused; secret (verbatim, JSON-escaped, base64 and hexadecimal) and MCP-argument canaries appear in no prompt, MCP request, transcript, journal, log, span, audit, stream or response; `write` tools without approval or acknowledgement, `child` tools declared `read` without approval, `mcp` tools declared `read` without a read-only snapshot annotation, and database `execute` tools without a policy are refused | FR-025-010, 014, 017, 019..021, 026 |
+| SC-025-008 | Transcript endpoint: each combination of the three rights, revocation of the reveal grant between requests, no-store headers and per-read audit; audit failure returns no bytes; the `payload-disclosures` and `payload-inspections` endpoints refuse agent payloads; 256 undeclared tool requests leave only `UNKNOWN_TOOL` markers on run-read surfaces | FR-025-022, 041 |
+| SC-025-009 | Metadata, loopback, link-local, private and redirect destinations refused for providers and MCP servers, a `302` on the probe and on the refresh included (no credential reaches the redirect target); the event-stream reader enforces bytes and deadlines; a namespace absent from the runner's configuration is denied | FR-025-023, 036 |
+| SC-025-010 | Ordinary workers, sandbox, database and lake runners cannot claim or resolve agent-runner activities; the agent runner cannot claim ordinary tasks, is refused by the step-log ingest, by `ResolveSecrets` for every managed lease and never receives a database credential, a client secret or a signing key; an ordinary activity named `sagat.ai.*` is refused at publication, blocks the recording of `ai-agents-v1` when it predates it, and is never leased to the agent runner; stale leases, expired sessions and a publisher who lost `secret:use` are refused | FR-025-003, 009, 024 |
+| SC-025-011 | MCP server tested with an MCP client library at 2026-07-28 and 2025-11-25: empty default list, single-audience tokens and REST refusal of MCP tokens, uniform metadata answers, insufficient scope, scoped tokens and revocation (also during a bounded wait), idempotent retry per credential and exposure (another token's key never replays), tasks re-authorized on every `tasks/get`, foreign and uncallable exposures answered as unknown tools, batches refused, unattended child versions refused at exposure and at child admission, the per-caller agent-run limit and an exposure's daily token budget | FR-025-026..033 |
+| SC-025-012 | MCP client against the test server: snapshot pinning at publication (a later refresh changes nothing a published version compares against), drift refusal, egress denial, unknown outcome to manual review, unsupported results and `MCP_TOOL_ERROR` as tool errors (text forwarded only at transcript level `pii`), the `oauth-client-credentials`, `azure-entra-client-credentials` and `aws-access-key` modes refused while Gap 025-001 is open (and, once enabled, refusal on a changed token endpoint) | FR-025-003, 034..036 |
 | SC-025-013 | With feature 026, a 16-turn streaming agent stays within its reserved-channel budget, a resumed stream matches the committed transcript and superseded attempts are marked; without 026, publication refuses streaming | FR-025-037 |
 | SC-025-014 | All six SDKs (Rust included) build byte-identical agent definitions and pass the shared runtime scenarios | FR-025-040, 043 |
 | SC-025-015 | Telemetry carries only closed label values; spans and logs carry no prompt, response, argument, credential or provider message; every audit action is written with its decision | FR-025-041, 042 |
@@ -845,3 +1017,9 @@ decision 2026-11-26-121 and Owner question 1282 (resource model) by Owner decisi
 [research.md](research.md#5-owner-questions), with decisions D1280–D1319, D1635–D1638 and
 D025-001 onward, and gaps G1280–G1297, G1635 and G025-001 onward. See the
 [requirements checklist](checklists/requirements.md).
+
+One question is open and is the owner's, not a delegate's: Owner question 025-001 (raised 2026-11-27 by
+the security review's Major 9) asks whether Principle V's first declared set may cover the client
+secret or signing key of a declared feature-021 resource (an Entra client secret, an AWS secret access
+key), which constitution 5.1.0's third declared set excludes for resources. Until the owner answers,
+the modes that need them are refused (Gap 025-001); the set does not depend on the answer.

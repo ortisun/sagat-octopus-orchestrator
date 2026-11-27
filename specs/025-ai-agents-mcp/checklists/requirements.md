@@ -13,6 +13,12 @@ ticked where the corrected set meets it, or left unticked with "Accepted as it s
 decision 2026-11-26-125)" and its reason. No security item is accepted this way; every security item
 below is ticked on the corrected text.
 
+Revised on 2026-11-27 after the security review of that date (`reviews/2026-11-27-security.md`, 9
+Majors and 11 Nits): every finding is fixed in the set, none accepted (Decision 025-016); the items
+below that the fixes touch were re-checked against the revised text and keep their ticks, with the new
+evidence named in them. One owner question is open (Owner question 025-001); it blocks nothing in
+scope, because the modes it concerns are refused until it or Gap 025-001 is closed.
+
 ## Content Quality
 
 - [ ] No implementation details (languages, frameworks, APIs) — **not met, deliberately**: in this
@@ -33,7 +39,9 @@ below is ticked on the corrected text.
 
 - [x] No [NEEDS CLARIFICATION] markers remain — the three owner questions (Owner questions 1280 to
   1282) are decided (Owner decisions 2026-11-26-120 to 2026-11-26-122); the one open dependency, OAuth
-  MCP servers, is a recorded gap (Gap 025-001) with its parts marked as waiting.
+  MCP servers and the provider modes that need a client secret or a signing key, is a recorded gap (Gap
+  025-001) with its parts marked as waiting and refused, and the owner question it raises (Owner
+  question 025-001) is recorded as the owner's, with the set complete without its answer.
 - [x] Requirements are testable and unambiguous — every requirement names its observable outcome or
   error code and is traced to a task and a success criterion (tasks.md, Traceability).
 - [x] Success criteria are measurable — each names the automated proof and the rounds or counts.
@@ -43,7 +51,8 @@ below is ticked on the corrected text.
   the real stack, so the criteria name it.
 - [x] All acceptance scenarios are defined — happy and failure scenarios per story.
 - [x] Edge cases are identified — parallel completion, races, rate limits, model substitution, drift,
-  lost MCP responses, deletion under a pinned run.
+  lost MCP responses, deletion under a pinned run, unattended writes in child workflows, undeclared
+  tool names as a covert channel, batches, a ceiling lowered after publication, a redirected probe.
 - [x] Scope is clearly bounded — Out of scope section; root-only, graph-model-only agents; text
   modality; OAuth MCP servers waiting for Gap 025-001.
 - [x] Dependencies and assumptions identified — features 001–018, 035, 038, 041 and 043 (merged or
@@ -68,8 +77,12 @@ below is ticked on the corrected text.
 - [x] No exactly-once claim; idempotency or reconciliation for every effect; model calls re-billed and
   said so.
 - [x] Untrusted work and third-party credentials outside control plane and scheduler (agent runner), and
-  the credential disclosure fits Principle V's first declared set (Decision 025-001); OAuth MCP
-  servers, which would need a third set, are refused until the owner amends Principle V (Gap 025-001).
+  the credential disclosure fits Principle V's first declared set (Decision 025-001) for static API keys
+  and bearer tokens only; the materialized node of every AI kind has no `secrets` and `ResolveSecrets`
+  refuses managed leases; no redirect is followed; OAuth MCP servers and the provider modes that need a
+  client secret or a signing key are refused until constitution 5.1.0, whose third declared set the
+  owner approved (Owner decision 2026-11-25-3), merges and design 047's broker issues access tokens
+  (Gap 025-001; Owner question 025-001).
 - [x] Tenant boundary, typed errors without new `Error.code`, managed-step codes in the SDK error
   catalog, OTel with fixed labels, audit with the decision and its OCSF mapping (Gap 025-003).
 - [x] Finite defaults and hard ceilings for every new resource (plan.md); zero is not unlimited.
@@ -78,11 +91,21 @@ below is ticked on the corrected text.
   compensation, restart, quota exhaustion, tenant isolation.
 - [x] Unproven items marked pending: protocol minor (G1280), token bound (G1284), provider retention
   (G1285), prompt injection (G1286), cost estimates (G1287), unbilled error responses (G1294),
-  registries owned by other drafts (G1635), OAuth MCP servers (G025-001), the procedural envelope
-  (G025-002), the OCSF mapping (G025-003).
-- [x] Model-written values never classified below the transcript level; destination ceilings for
-  providers and MCP servers (`EgressCeiling`); `write` tools need approval or an explicit
-  acknowledgement.
+  registries owned by other drafts (G1635), OAuth MCP servers and the client-secret and signing-key
+  provider modes (G025-001), the procedural envelope (G025-002), the OCSF mapping (G025-003), the bound
+  of the output secret scan (G025-004).
+- [x] Model-written values never classified below the transcript level, in the agent's result and in
+  every workflow or child output carrier they reach (inherited output levels, Task 025-093);
+  destination ceilings for providers and MCP servers (`EgressCeiling`) applied at publication and again
+  at admission and every resolution against the current revision (Task 025-097); `write` tools need
+  approval or an explicit acknowledgement, the unattended refusal is transitive over child workflows
+  (Task 025-094), and a tool-call approval is decided only by someone who can see every input field
+  (Task 025-096).
+- [x] MCP server: receipts and task handles belong to the credential identity and the exposure;
+  credential and rights are rechecked before a result leaves; batches are refused; remote callers are
+  bounded per caller and per exposure (Tasks 025-048, 025-099).
+- [x] Run-read surfaces carry no string a model or a provider wrote (Task 025-098), and the transcript
+  and agent payloads are readable only through the audited transcript endpoint (Task 025-041).
 
 ## Notes
 

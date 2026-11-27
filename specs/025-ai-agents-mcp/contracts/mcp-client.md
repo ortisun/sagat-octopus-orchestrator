@@ -13,7 +13,7 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
 - Refresh is a durable private run (origin `MCP_TOOL_REFRESH`): the runner calls `server/discover`
   (2026-07-28) or `initialize` (2025-11-25, then discards any session id after the refresh), then
   `tools/list` with pagination, bounded to 1,024 tools, 16 KiB per description and 64 KiB per input
-  schema. The server stores an immutable snapshot with SHA-256 digests of each canonicalized
+  schema, with no redirect followed. The server stores an immutable snapshot with SHA-256 digests of each canonicalized
   description, input schema and output schema, and moves the resource's current snapshot pointer. The
   refresh is a private run created by `start_private`, so it passes row 13 of the design 043 run-input
   gate. For OAuth servers (once enabled, Gap 025-001) the refresh also reads Protected Resource Metadata and authorization server metadata
@@ -28,9 +28,17 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
 ## Use in an agent
 
 - An `mcp` tool names the server resource and one snapshot tool. Publication pins the server's
-  current revision and snapshot for that node (`run_resource_bindings` and `run_mcp_snapshot_pins` at admission), copies the tool's
+  current revision and snapshot for that node by recording both in the published version
+  (`version_agent_pins`); admission copies that record into `run_resource_bindings` and
+  `run_mcp_snapshot_pins`, so a refresh after publication changes neither the descriptions and schemas
+  the author reviewed nor the digests the drift check compares against. Publication copies the tool's
   input schema into the declaration it validates against, and requires `effect` (default `write`;
-  a `write` tool needs `approval` or `approval: "none"`). Publication refuses the tool when the server
+  a `write` tool needs `approval` or `approval: "none"`; `effect: "read"` without an approval policy is
+  accepted only when the pinned snapshot's annotations state `readOnlyHint: true` and not
+  `destructiveHint: true`, and the untrusted annotations never loosen the rule further). At admission
+  and at every resolution the transcript level is checked again against the stricter of the pinned and
+  the current server revision's `maxArgumentClassification`, so a ceiling lowered after publication
+  applies before the next call. Publication refuses the tool when the server
   revision's `maxArgumentClassification` is below the agent's transcript level
   (`MCP_ARGUMENT_CLASSIFICATION_EXCEEDED`): everything that can enter the transcript can be copied
   into arguments by the model. MCP-argument canaries (T025-042) prove nothing above the ceiling is sent.
@@ -65,7 +73,7 @@ Documents are not used by the client in this feature (G1288).
 | `401`/`403` | `AI_MCP_AUTH` (non-retryable) |
 | Connection refused, DNS failure, TLS failure before the request was sent | retryable `AI_MCP_UNAVAILABLE` |
 | Timeout or broken stream after the request was sent | `OUTCOME_UNKNOWN` for `write` tools (manual review); retryable for `read` tools |
-| Egress denied | `AI_DESTINATION_DENIED`, audited `egress.denied` |
+| Egress denied, or any `3xx` answer (no redirect is followed, `max_redirects = 0`, the refresh included) | `AI_DESTINATION_DENIED`, audited `egress.denied`; the bearer header never reaches the redirect target |
 
 ## Untrusted content
 

@@ -118,14 +118,14 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 2147483647,
-          "description": "Optional explicit revision; otherwise the current revision is pinned at admission."
+          "description": "Optional explicit revision; otherwise the current revision when the version is published. Either way publication records it in the published version (version_agent_pins) and admission copies it into the run; at admission and at every resolution the transcript level is also checked against the current revision's ceiling and the model against its allowlist, so a later restriction applies at once and a later revision never widens what the version may send (Decision 025-016)."
         },
         "id": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9._:/@-]+$",
-          "description": "Model id or alias from the provider revision's allowlist, e.g. claude-sonnet-5-5."
+          "description": "Model id or alias from the provider revision's allowlist, for example claude-sonnet-5-5."
         }
       }
     },
@@ -241,11 +241,11 @@
             "write"
           ],
           "default": "write",
-          "description": "write (the default) requires approval or approval: \"none\"."
+          "description": "write (the default) requires approval or approval: \"none\". read without an approval policy is refused for child tools (the child workflow can write), for database execute tools, and for mcp tools whose pinned snapshot does not state readOnlyHint true (or states destructiveHint true); snapshot annotations only ever tighten this rule (WRITE_TOOL_APPROVAL_REQUIRED)."
         },
         "inputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused). For child tools the child version's inputSchema is checked the same way. Validated by the design 043 validator; an INVALID_INPUT result carries only its value-free rule and field."
+          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused) and no field may be annotated secret (SECRET_TOOL_INPUT). A tool-call approval is decidable only by a decider whose rights disclose every field (APPROVAL_INPUT_WITHHELD otherwise). For child tools the child version's inputSchema is checked the same way. Validated by the design 043 validator; an INVALID_INPUT result carries only its value-free rule and field."
         },
         "result": {
           "$ref": "#/$defs/expression",
@@ -258,7 +258,7 @@
             },
             {
               "const": "none",
-              "description": "Explicit acknowledgement that this write tool runs without a person's approval. Refused for operation tools; a version containing it cannot be exposed through MCP or a feature-026 public link (UNATTENDED_WRITE_TOOL)."
+              "description": "Explicit acknowledgement that this write tool runs without a person's approval. Refused for operation tools and database execute tools; a version containing it, or able to start a child workflow that contains it at any depth, cannot be exposed through MCP or a feature-026 public link, and such a child is refused at admission under a run those surfaces admitted (UNATTENDED_WRITE_TOOL)."
             }
           ],
           "description": "Required for effect: write (a policy or the string \"none\"); optional for read tools."
@@ -273,7 +273,7 @@
         },
         "outputSchema": {
           "$ref": "#/$defs/agentClosedSchema",
-          "description": "Closed carrier of the tool's result when the target declares none (MCP, database, operation tools); unannotated means pii. A result that does not validate is not sent to the model (TOOL_FAILED)."
+          "description": "Closed carrier of the tool's result when the target declares none (MCP, database, operation tools), and for a child tool the parent's carrier of the child's output; unannotated means pii. For a child tool each field's effective level is the stricter of its annotation and the child version's recorded output level (the written_level rule), refused at publication for a pinned child and at the child's admission for an active-version child (CLASSIFICATION_LOOSENED). A result that does not validate is not sent to the model (TOOL_FAILED)."
         }
       },
       "oneOf": [
@@ -367,7 +367,34 @@
             "statement",
             "inputSchema"
           ],
-          "description": "Feature-017 operation; parameters bind only from tool arguments (expression context `args`). execute requires approval."
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "execute"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "required": [
+                  "approval"
+                ],
+                "properties": {
+                  "approval": {
+                    "$ref": "#/$defs/agentToolApproval"
+                  },
+                  "effect": {
+                    "const": "write"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Feature-017 operation; parameters bind only from tool arguments (expression context `args`). execute is always effect write and requires an approval policy: approval \"none\" and effect read are refused (WRITE_TOOL_APPROVAL_REQUIRED)."
         },
         {
           "properties": {
@@ -396,7 +423,7 @@
             "operation": {
               "type": "string",
               "maxLength": 64,
-              "description": "A feature-021 operation name, e.g. http.request."
+              "description": "A feature-021 operation name, for example http.request."
             },
             "request": {
               "type": "object",
@@ -434,7 +461,31 @@
           "required": [
             "workflow"
           ],
-          "description": "Starts a child run of a graph workflow. The arguments are the child's run input and pass the child row of the design 043 run-input gate: a refused input creates no child, the tool-call step fails with CHILD_INPUT_INVALID (or RUN_INPUT_SCHEMA_UNUSABLE) and the model receives TOOL_FAILED with that code and the value-free rule and field; the agent continues. A procedural workflow reaches an agent through such a child (Decision 025-012)."
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "effect": {
+                    "const": "read"
+                  }
+                },
+                "required": [
+                  "effect"
+                ]
+              },
+              "then": {
+                "required": [
+                  "approval"
+                ],
+                "properties": {
+                  "approval": {
+                    "$ref": "#/$defs/agentToolApproval"
+                  }
+                }
+              }
+            }
+          ],
+          "description": "Starts a child run of a graph workflow. The arguments are the child's run input and pass the child row of the design 043 run-input gate: a refused input creates no child, the tool-call step fails with CHILD_INPUT_INVALID (or RUN_INPUT_SCHEMA_UNUSABLE) and the model receives TOOL_FAILED with that code and the value-free rule and field; the agent continues. effect read needs an approval policy. The child's unattended flag counts toward the parent's (a parent is unattended when a child it can start is), and under a run whose root MCP or a feature-026 public link admitted, an unattended child version is refused at its admission (UNATTENDED_WRITE_TOOL). A procedural workflow reaches an agent through such a child (Decision 025-012)."
         },
         {
           "properties": {
@@ -454,7 +505,7 @@
             "server",
             "tool"
           ],
-          "description": "Allow-listed tool of the server's snapshot pinned at publication; inputSchema comes from the snapshot and must be closed. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED). An isError result reaches the model as MCP_TOOL_ERROR; its text is forwarded only when the node's transcript level is pii (Decision 025-008)."
+          "description": "Allow-listed tool of the server's snapshot pinned at publication (the snapshot identifier and server revision are recorded in the published version); inputSchema comes from the snapshot and must be closed. effect read without an approval policy needs the snapshot's readOnlyHint true and no destructiveHint true. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED). An isError result reaches the model as MCP_TOOL_ERROR; its text is forwarded only when the node's transcript level is pii (Decision 025-008)."
         }
       ],
       "allOf": [

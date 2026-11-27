@@ -4,7 +4,9 @@
 **Decided by:** agent proposal (2026-10-26, revised 2026-10-27 after the independent architecture and
 security reviews); accepted on 2026-11-26 by the agent preparing feature 025 for build, under the owner's
 delegation (Owner decision 2026-11-24-4), recorded as Owner decision 2026-11-26-124; revised the same day
-against `develop` (`3f22b612`) after an independent audit of the feature 025 set.
+against `develop` (`3f22b612`) after an independent audit of the feature 025 set; revised on 2026-11-27
+after the security review of that date (`specs/025-ai-agents-mcp/reviews/2026-11-27-security.md`,
+Decision 025-016), which tightened decisions 1, 2, 4, 6 and 7 and left their direction unchanged.
 **Refines / supersedes:** Applies the ADR-0031 declared-disclosure pattern, ADR-0033 levels, the
 `EgressCeiling` of Architecture decision 0071 decision 8 and the `pii`-egress rule decided for Owner
 question 1081 to a new surface; adds a row to the run-input gate of design 043 (Architecture decisions
@@ -43,13 +45,19 @@ to change once clients depend on it:
    workflow; script and managed-operation targets only through feature 022 standalone steps), its input
    schema, a closed result projection with `disclosure: "declared-mcp-result-v1"` and a
    `maxResultClassification` (`public`, `internal` or `pii`). Saving an exposure requires `mcp:expose`,
-   the right to start the target and the rights of the declared level. An exposure MUST NOT target a
-   version containing an agent `write` tool acknowledged `approval: "none"`, checked when the exposure
-   is saved and again when a call resolves the version (feature 026 public links apply the same rule).
+   the right to start the target and the rights of the declared level. An exposure MUST NOT target an
+   unattended version: one containing an agent `write` tool acknowledged `approval: "none"`, or able to
+   start a child workflow (child node or `child` tool, at any depth, under its version policy) that is
+   unattended; checked when the exposure is saved, again when a call resolves the version, and at every
+   child admission under a run the MCP server admitted (feature 026 public links apply the same rule).
 2. **A result leaves only through its projection.** The projection MUST be evaluated over the committed
-   run result without secret capability, validated against the closed schema, contain no field above
-   the declared level and no `secret` field, and be returned only to a caller holding the rights of
-   that level; otherwise the call is refused before admission. Every disclosed result is audited.
+   run result without secret capability, validated against the closed schema, contain no field whose
+   effective level is above the declared level and no `secret` field, and be returned only to a caller
+   holding the rights of that level; otherwise the call is refused before admission. A field's
+   effective level is the one the target version recorded at publication: the stricter of its
+   annotation and the level it inherits from the agent and child outputs it is drawn from (ADR-0059
+   decision 7), so an annotation cannot relabel a model-written value. Every disclosed result is
+   audited.
 3. **Tokens are audience-bound and travel in the header.** The server MUST accept only bearer tokens in
    `Authorization` that are either OAuth access tokens whose only audience is the operator-configured
    canonical MCP URI of the namespace, or platform-minted scoped MCP tokens (SHA-256 of 256 random
@@ -64,9 +72,15 @@ to change once clients depend on it:
    that gate (`CheckedRunInput`, the existing `create`): a refused input is JSON-RPC `-32602` with the
    value-free rule and field, an unusable schema a tool error, a transient refusal a retryable `-32603`,
    and `report` mode admits as it does everywhere else. The MCP server has no validator of its own. An optional `_meta` key `sagat-octopus-orchestrator.io/idempotencyKey` deduplicates;
-   without it every call is a new run, and the documentation says so. A run that outlives the bounded
+   without it every call is a new run, and the documentation says so. A receipt belongs to the caller,
+   defined as the credential identity (the scoped token's identifier, or the OAuth issuer and subject),
+   and to the exposure; it is read only after the call is authorized, the same key on another exposure
+   is refused, and a replayed result is disclosed only through the replaying call's exposure. Before a
+   result leaves the bounded wait, the credential and rights are checked again. A JSON-RPC batch is
+   refused. A run that outlives the bounded
    wait is returned as a task (tasks extension) or a run handle; `tasks/get` and `tasks/cancel` MUST
    re-check the token, `mcp:call`, token scope, exposure state and result-level rights on every call.
+   Remote callers are bounded per caller (live agent runs) and per exposure (optional daily tokens).
 5. **The surface is minimal and stateless.** Revision 2026-07-28 is served, and 2025-11-25 clients are
    served without sessions. Only `server/discover`, `tools/list`, `tools/call` and the tasks extension
    are offered; `tools/list` returns only what the caller may call (decided additionally by the 029
@@ -74,8 +88,12 @@ to change once clients depend on it:
    unknown, out-of-scope or uncallable tool is answered exactly like a missing one.
 6. **The client calls only what was reviewed, and sends only what the server may receive.** An agent
    MUST use an external MCP tool only through a registered server resource and an immutable tool
-   snapshot pinned at publication; before each call the runner compares the server's current definition
-   with the pinned digests and refuses a changed tool (`AI_TOOL_CHANGED`). A server revision MUST
+   snapshot pinned at publication, whose identifier and server revision the published version records
+   and admission copies; before each call the runner compares the server's current definition
+   with the pinned digests and refuses a changed tool (`AI_TOOL_CHANGED`). A ceiling lowered after
+   publication applies at the next admission and resolution. An `mcp` tool may be declared `read`
+   without approval only when its pinned snapshot states it read-only; untrusted annotations only ever
+   tighten that rule. A server revision MUST
    declare `maxArgumentClassification`; publication MUST refuse an `mcp` tool whose server ceiling is
    below the agent's transcript level (ADR-0059 decision 7), because the model can copy anything in its
    transcript into arguments. The ceiling is the domain's `EgressCeiling`. A `pii` ceiling follows the
@@ -86,8 +104,9 @@ to change once clients depend on it:
    resolved secrets. A server's error result reaches the model as `MCP_TOOL_ERROR`; its text has no
    carrier, counts as `pii` and is forwarded only when the transcript level is already `pii`.
 7. **The client runs only in the agent runner, through the egress guard, with declared secrets only.**
-   Connections use the guarded egress client and the namespace egress policy (private destinations only
-   through the operator-approved runner policy). A static bearer credential is a declared secret of the
+   Connections use the guarded egress client with no redirect followed and the namespace egress policy
+   held in operator-owned runner configuration (private destinations only through the operator-approved
+   runner policy). A static bearer credential is a declared secret of the
    task definition, because the MCP-server revision that holds it is pinned by the published version;
    it is disclosed under Principle V's first declared set, all or nothing, to the lease-owning agent
    runner, under the caller's current membership, its binding (`BindingProfile::Agent`), the
@@ -134,5 +153,5 @@ declared done: the MCP conformance and security tests listed in
 [tasks.md](../../specs/025-ai-agents-mcp/tasks.md), the contracts
 [mcp-server.md](../../specs/025-ai-agents-mcp/contracts/mcp-server.md) and
 [mcp-client.md](../../specs/025-ai-agents-mcp/contracts/mcp-client.md), and decisions D1289,
-D1296, D1301–D1306, D1316, D1317, D1637, D1638, D025-001, D025-006 and D025-008 and gap G025-001 in
+D1296, D1301–D1306, D1316, D1317, D1637, D1638, D025-001, D025-006, D025-008 and D025-016 and gap G025-001 in
 [research.md](../../specs/025-ai-agents-mcp/research.md).

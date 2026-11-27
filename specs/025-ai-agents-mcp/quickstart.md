@@ -55,7 +55,9 @@ curl -s -X POST "$SAGAT/v1/namespaces/$NS/ai-providers/anthropic-dev/probe" -H "
 
 Expected: revision 1, `ACTIVE`, no credential value in the response; the probe is a run with origin
 `AI_PROVIDER_PROBE` that succeeds with the model list and the tested revision. The prices are demo
-values, not real prices.
+values, not real prices. Saving the same provider with `"credential": {"mode":
+"azure-entra-client-credentials", ...}` or `aws-access-key` is refused with
+`AI_CREDENTIAL_MODE_UNAVAILABLE` (Gap 025-001).
 
 ## 2. Publish and run an agent (US01–US04)
 
@@ -91,10 +93,14 @@ endpoint returns it only to a holder of `payload:read-internal` and the reveal g
 | Lost broker hint | stop NATS during turn 2, restart it | runner polls; the outbox re-emits; one turn 2 |
 | Approval expiry | approval `timeoutMs: 5000`, no decision | `onExpire: fail` → `AI_TOOL_DENIED`; the losing late decision is `409 ALREADY_DECIDED` |
 | Classification refusal | change the provider to `maxPromptClassification: public` and republish | publication `422` with `PROMPT_CLASSIFICATION_EXCEEDED` and the pointer of `context.ticket` |
+| Ceiling lowered after publication | keep the published version; save a new provider revision with `maxPromptClassification: public` (no republication); start a run, and separately let a run already waiting on approval reach turn 3 | the new run is refused at admission (`409 AI_DESTINATION_RESTRICTED`); the waiting run's next model call fails `CLASSIFICATION_EGRESS_REFUSED` before dispatch and the dev provider receives nothing |
+| Blind approval | decide the `issue_refund` approval as a member without `payload:read-internal` | the tool-call view shows `decidable: false`; the decision is `403 APPROVAL_INPUT_WITHHELD`, nothing is applied, `ai.approval_input_withheld` is audited |
+| Redirected probe | dev provider scenario `redirect-probe` (`302` to another allowed host) | the probe fails `AI_DESTINATION_DENIED`, `egress.denied` is audited, and the other host receives no request and no credential |
+| Undeclared tools | scenario `undeclared-tools` (256 requests named after a canary string) | 256 refusal results; the run graph, journal and spans show `UNKNOWN_TOOL` and call indexes only; the canary appears only in the transcript |
 | Publisher loses the secret | revoke the publisher's `secret:use` on `anthropic-dev-key`, start a run | the model call is refused at resolution (`AI_CAPABILITY_UNAVAILABLE`), no credential leaves OpenBao, the denial is audited |
 | Secret canary | an activity tool echoing a secret it was given | `SECRET_IN_OUTPUT`; the canary appears in no prompt, transcript, log, span, audit or response |
 | Data ceilings | annotate `result.priority` as `public`; then lower the MCP server to `public` | publication `422` with `CLASSIFICATION_LOOSENED`, then `MCP_ARGUMENT_CLASSIFICATION_EXCEEDED` |
-| Unattended write | mark `issue_refund` `approval: "none"` and try to expose the workflow | exposure `422` `UNATTENDED_WRITE_TOOL` |
+| Unattended write | mark `issue_refund` `approval: "none"` and try to expose the workflow; then expose a parent workflow that starts it as a pinned child, and one that starts it under an active-version policy and call it over MCP | exposure `422` `UNATTENDED_WRITE_TOOL` for the workflow and for the pinned parent; for the active-version parent the call is admitted and the child's admission is refused `UNATTENDED_WRITE_TOOL`, so no refund runs |
 | Provider rate limit | scenario `rate-limited` (`429` with `retry-after: 1`, then success) | two attempts, backoff honoured, success |
 
 ## 4. MCP server (US06)
@@ -113,9 +119,16 @@ MCP_TOKEN=$(curl -s -X POST "$SAGAT/v1/namespaces/$NS/mcp-tokens" -H "Authorizat
 Then, with the pinned official MCP TypeScript client in `tests/contract/ai-agents-mcp/mcp_server/`:
 `server/discover`, `tools/list` (one tool), `tools/call lookup_order {"orderId": "o-1"}` with
 `_meta["sagat-octopus-orchestrator.io/idempotencyKey"] = "k-1"` twice (one run, same result),
-a call with `?access_token=` in the URL (`401`), and a call with a REST token (`401`, wrong audience).
+a call with `?access_token=` in the URL (`401`), a call with a REST token (`401`, wrong audience),
+a second scoped token with the same key `k-1` (its own run, never the first token's), the first token
+reusing `k-1` on another exposure (`IDEMPOTENCY_KEY_REUSED`), a JSON-RPC batch (`-32600`) and a call
+whose token is revoked during the bounded wait (no result, answered as an unknown tool).
 The projection selects an existing object (`result.summary`, declared `internal` in the workflow's
-`outputSchema`); the bounded evaluator has no object literal (feature 014).
+`outputSchema`); the bounded evaluator has no object literal (feature 014). Annotating `summary`
+`public` while it is drawn from an agent's `internal` result is refused at publication
+(`CLASSIFICATION_LOOSENED`), so the exposure can never be saved with `maxResultClassification: public`
+over a model-written value. The mint is replayed with `Idempotency-Key: t-1`: the replay returns the
+token's metadata without the token.
 
 ## 5. MCP client (US07)
 
@@ -126,6 +139,10 @@ Register the dev provider's test MCP server (`https://dev-model-provider:9443/mc
 refuses the agent), publish, and run: the call is leased by the agent
 runner and its result returns to the model. Then switch the test server to `weather-v2` (changed input
 schema) and run again: the call fails with `AI_TOOL_CHANGED` and the server log shows no `tools/call`.
+Refreshing the server after that changes nothing for the published version, whose snapshot identifier
+is recorded in it; only a republication picks up the new snapshot. Lowering the server's
+`maxArgumentClassification` to `public` in a new revision refuses the next call before it is sent
+(`CLASSIFICATION_EGRESS_REFUSED`).
 
 ## 6. Evidence to record (T025-072)
 

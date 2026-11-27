@@ -5,7 +5,7 @@
 Status: Approved for implementation (Owner decision 2026-11-11-1), in release 0.3.0 (Owner decision
 2026-11-24-1); Architecture decisions 0059 and 0060 accepted (delegate, Owner decisions 2026-11-26-123
 and 2026-11-26-124); not started. Revised 2026-11-26 against `develop` at `3f22b612` after an
-independent audit.
+independent audit, and on 2026-11-27 after the security review of that date (Decision 025-016).
 
 ## Summary
 
@@ -29,7 +29,9 @@ Python, .NET, Java and Rust SDK toolchains; React Studio.
 **Primary Dependencies**: existing Tokio, Axum, tonic, SQLx, `reqwest` behind `crates/infra-egress`,
 OpenBao KV v2 adapter, JSON Schema adapter. New, to pin and review in T025-011: an MCP JSON-RPC
 implementation or a minimal in-repo codec (prefer in-repo over a broad SDK, decided by a spike with
-a written comparison), an SSE parser, and an AWS SigV4 signer for Bedrock (G1291). No provider SDK
+a written comparison), and an SSE parser; the spike also verifies that `aws-bedrock` accepts an Amazon
+Bedrock API key as a bearer token (G1291). An AWS SigV4 signer enters only when Gap 025-001 closes,
+because SigV4 needs a signing key in the runner. No provider SDK
 enters the domain or application crates.
 
 **Storage**: PostgreSQL authority for catalogs, pins, agent steps, turns, tool calls, receipts and
@@ -64,8 +66,8 @@ These are design checks, not implementation approvals or test results.
 | I — durable atomic transitions | Pass | Pass | Transaction table below; turns and tool calls are derived steps; fault tests T025-021, T025-033. |
 | II — pure domain, inward dependencies | Justified | Justified | Planner and budgets in `crates/domain`; providers and MCP in new adapter crates, checked by extending the restricted-dependent rules that `scripts/check-architecture.py` already has (Task 025-073). Managed kinds, egress ceilings and the run-input validator are reused, not duplicated. Two new processes (`apps/agent-runner`, `apps/dev-model-provider`) are justified under principle V in Complexity Tracking, with 017's `database-runner` as precedent (coordinator C21). |
 | III — at-least-once effects, honest compensation | Pass | Pass | Stable tool keys, unknown outcome to reconciliation or manual review, reverse-order tool compensation, model calls re-billed and said so; T025-027, T025-029. |
-| IV — pinned versions, six SDKs | Pass | Pass | Provider revision and MCP snapshot pinned at admission; additive IR and the next free protocol minor; agents are graph-model only (Decision 025-012); Tasks 025-065, 025-066 and 025-088 (Rust). |
-| V — isolated code, tenant and secrets | Pass with conditions | Pass with conditions | `agent-runner` separate process without DB/OpenBao/signing keys or container engine, enforced by the architecture check; its credential disclosure fits Principle V's first declared set (Complexity Tracking, Decision 025-001); transcript level against provider and MCP ceilings; canaries; Tasks 025-016, 025-017, 025-040, 025-042, 025-073. Conditions: the publication-time and delivery-time `secret:use` checks and the binding-profile check are proven by Tasks 025-009, 025-017 and 025-083 before any provider credential is delivered; OAuth MCP servers stay refused until the owner amends Principle V as design 047 requests (Gap 025-001). |
+| IV — pinned versions, six SDKs | Pass | Pass | Provider revision, MCP-server revision and MCP snapshot recorded in the published version and copied into the run at admission (Decision 025-016); additive IR and the next free protocol minor; agents are graph-model only (Decision 025-012); Tasks 025-065, 025-066 and 025-088 (Rust). |
+| V — isolated code, tenant and secrets | Pass with conditions | Pass with conditions | `agent-runner` separate process without DB/OpenBao/signing keys or container engine, enforced by the architecture check; its credential disclosure fits Principle V's first declared set (Complexity Tracking, Decision 025-001); transcript level against provider and MCP ceilings; canaries; Tasks 025-016, 025-017, 025-040, 025-042, 025-073. Conditions: the publication-time and delivery-time `secret:use` checks and the binding-profile check are proven by Tasks 025-009, 025-017 and 025-083 before any provider credential is delivered; only modes that deliver a static API key or bearer token are offered, the materialized node of every AI kind has no `secrets` and `ResolveSecrets` refuses managed leases (Tasks 025-017, 025-091); OAuth MCP servers and the provider modes that need a client secret or a signing key (`azure-entra-client-credentials`, `aws-access-key`) stay refused until constitution 5.1.0, whose third declared set the owner approved (Owner decision 2026-11-25-3), merges and design 047's broker issues access tokens (Gap 025-001; the alternative is Owner question 025-001). |
 | VI — OTel, audit, typed errors | Pass | Pass | Spans, fixed-label metrics, audit actions and error table below; T025-064. |
 | VII — inbox/outbox, redelivery | Pass | Pass | Every schedule writes outbox in its transaction; NATS hints only; MCP calls deduplicated by receipt; T025-021, T025-050. |
 | VIII — failure tested, contracts verified | Pass | Pass | Failure matrix and verification plan; contract lint/compat tests; nothing ticked without evidence. |
@@ -177,16 +179,18 @@ All new transactions use `BeginSafely::begin_safely` (ADR-0014).
 
 | Transition | Commits together | Why |
 |---|---|---|
-| Run admission | run, provider-revision and MCP-snapshot pins per agent node, request receipt, initial journal, tasks, outbox, audit | A run never starts without its pins. |
+| Publication of a version with agents | version, its recorded provider revision per agent node and MCP-server revision and snapshot per `mcp` tool, its effective output levels and its unattended flag (Decision 025-016), audit | What publication checked is what every run uses. |
+| Run admission | run, provider-revision and MCP-snapshot pins per agent node copied from the version, the recheck of the current ceilings and allowlists against the transcript level (`AI_DESTINATION_RESTRICTED` otherwise), the remote-root origin for an MCP or public-link root, request receipt, initial journal, tasks, outbox, audit | A run never starts without its pins, nor past a ceiling an administrator lowered. |
+| Child admission (child node or `child` tool) | existing child admission plus, for a child under an active-version policy, the check of the child version's recorded output levels against the parent's carrier, and, when the run carries the remote-root origin, the refusal of an unattended child version; the origin copied to the child | An inherited level and the unattended rule hold at every depth. |
 | Agent activation | `agent_steps` row with effective budgets and deadline timer, turn 1 after a reservation pre-check, derived step `~m1` READY, journal `agent.started`, outbox hint | A step that could not afford one call fails before anything is queued. |
 | Model-call claim (every attempt, first or retry) | existing claim transaction; only for a `sagat.ai.*` claim: runner concurrency = count of live `sagat.ai.*` leases under the namespace and tenant locks; for `sagat.ai.model` the attempt's reservation row, the reserved counters of `agent_steps` and a charge to the claiming backend's own `ai_usage_leases` row (a refill from `ai_usage_daily` only when that lease is short, Decision 025-010); or, when the reservation does not fit, the derived step and agent failed with `AI_BUDGET_EXHAUSTED` and no lease (the `RUN_DATA_LIMIT` preflight precedent). Ordinary claims add no statement (design 038 budget, Decision 025-009) | Retries and in-flight calls can never overshoot a budget or the daily quota; expiry frees concurrency without a counter; no shared row is written at every claim. |
-| `ResolveModelCall` | phase 1: lease, session, binding, pins, current status and rights read in a run transaction, closed before OpenBao I/O; phase 2: same fences, credential pin and `secret.resolved` audit | No provider I/O under a lock; revocation between phases discards the value. |
+| `ResolveModelCall` | phase 1: lease, session, binding, pins, current status, current ceiling and allowlist against the transcript level, and rights read in a run transaction, closed before OpenBao I/O; phase 2: same fences and rechecks, credential pin and `secret.resolved` audit | No provider I/O under a lock; revocation or a lowered ceiling between phases discards the value. |
 | Model-call completion | step SUCCEEDED (fenced), response stored, the attempt's reservation settled with reported usage (the agent row and the writer's own usage lease), journal `agent.turn_completed`, then exactly one of: tool calls (derived steps READY + outbox, approvals + timers, refusal results); final output validated and the node completed with its successors READY + outbox; a repair turn after a reservation pre-check; a failure routed to `onError` | The decision about what follows is in the transaction that records the answer. |
 | Tool-call completion | derived step terminal, result stored, journal; if last of its turn: reservation pre-check + `~m(n+1)` READY + outbox, or `AI_BUDGET_EXHAUSTED` | Parallel completions serialize on the run row; exactly one schedules. |
 | Model-call attempt failure or lease expiry | existing failure or expiry transaction plus the attempt reservation: released for a provider error response (G1294), converted to charged-unknown for a lost response, timeout or expiry; retry scheduled under the retry policy (its own reservation comes at its claim) | Unknown usage is never refunded. |
-| Tool approval outcome | feature-014 decision or expiry transaction plus tool step READY + outbox, or a refusal result (and the next turn if it was the last), or agent failure | First commit wins against expiry and cancellation. |
+| Tool approval outcome | feature-014 decision or expiry transaction plus tool step READY + outbox, or a refusal result (and the next turn if it was the last), or agent failure; a decision whose decider's current rights would withhold any input field is refused (`APPROVAL_INPUT_WITHHELD`) with its denial audit and no other write | First commit wins against expiry and cancellation; nobody approves arguments they cannot see. |
 | Cancellation / deadline | existing cancellation transaction or timer firing, agent step terminal, approvals cancelled, in-flight reservations kept | Losing races are audited no-ops. |
-| MCP call | the design 043 run-input gate (a `CheckedRunInput` of the arguments against the target version's `inputSchema`; a new row of the gate's table, Decision 025-006), receipt (if keyed), exposure revision pin, run admission through the existing `create`, audit `mcp.tool_called` | A retried call with the same key returns the same run; no second validation path. |
+| MCP call | authorization first; the per-caller agent-run count under the caller's lock; the design 043 run-input gate (a `CheckedRunInput` of the arguments against the target version's `inputSchema`; a new row of the gate's table, Decision 025-006), receipt (if keyed; keyed by tenant, namespace, caller as the credential identity, exposure and key), exposure revision pin, remote-root origin, run admission through the existing `create`, audit `mcp.tool_called`; before a result is returned, a read-only recheck of the credential and rights | A retried call with the same key, credential and exposure returns the same run; no second validation path; a revoked credential receives nothing. |
 | Catalog writes | revision, head, audit (namespace AI catalog lock) | Optimistic concurrency, no lost edits. |
 | Transcript read | audit `payload.pii_revealed` (reason `agent-transcript-v1:<node>`, never collapsed) before any byte is returned | Disclosure is evidenced. |
 | Snapshot refresh completion | snapshot rows, resource head pointer, audit `mcp.tools_refreshed` | Authors never see half a snapshot. |
@@ -213,15 +217,17 @@ position. No transaction holds a lock across network I/O.
 | Create or revise providers and external MCP servers | `ai:manage` and `secret:use` with the access list of every referenced secret (the secrets become declared secrets of every task definition that pins the revision); inline secret creation also `secret:manage` |
 | Pause or delete providers and external MCP servers | `ai:manage` |
 | Probe a provider or refresh an MCP server's tools | `ai:manage` and `run:start` (it admits a private run through `start_private`) |
-| Publish a workflow with an agent node | the platform requirement `ai-agents-v1` recorded; `definition:publish`, `ai:use`, `secret:use` and the access list of every credential secret of every provider and MCP-server revision the version will pin (checked again at every delivery, Requirement 025-003), model in allowlist, transcript-level checks against provider and MCP ceilings and output/approval/child floors, `write` tools with approval or `approval: "none"` |
+| Publish a workflow with an agent node | the platform requirement `ai-agents-v1` recorded; `definition:publish`, `ai:use`, `secret:use` and the access list of every credential secret of every provider and MCP-server revision the version pins (recorded in the version; checked again at every delivery, Requirement 025-003), model in allowlist, transcript-level checks against provider and MCP ceilings and output/approval/child floors, inherited output levels of workflow and child outputs, no `secret` tool input field, `write` tools with approval or `approval: "none"`, `child` tools and database `execute` tools never `read` or `"none"` without a policy, `mcp` tools `read` without a policy only on a read-only snapshot annotation |
 | Start a run with an agent | `run:start`; publisher and initiator hold `ai:use`. Initiator: the human starter; for MCP-admitted runs the OAuth subject or the scoped token's minter; for 026 public-link runs the link's creating principal, re-checked at admission; system triggers use the publisher (017); no determinable initiator fails admission (D1312) |
-| Set a provider's `maxPromptClassification` or an MCP server's `maxArgumentClassification` to `pii` | `ai:manage` and the namespace reveal grant, rechecked at each `pii` resolution; revocation pauses the resource (D1637) |
+| Set a provider's `maxPromptClassification` or an MCP server's `maxArgumentClassification` to `pii` | `ai:manage` and the namespace reveal grant; the grant of that administrator (the actor of the revision that set `pii`) is rechecked at each `pii` resolution; its revocation, or that administrator leaving the namespace, pauses the resource until a grant holder saves a new revision (D1637) |
 | List or call MCP tools when 029 is enabled | the 029 access evaluator decides visibility of exposures and targets in addition to the rows below |
 | Read a transcript or the `sagat.agent.tokens` stream text | `run:read`, `payload:read-internal`, namespace reveal grant (the feature-016 `pii` audience) |
 | View a tool-call input for approval | `approval:read`, eligibility, ADR-0033 level rights per field |
-| Decide a tool-call approval | `approval:decide` and the request's eligibility policy |
-| Manage exposures | `mcp:expose`, plus `run:start` on the target and the rights of the declared result level; the target version has no `approval: "none"` write tool |
-| Mint or list scoped MCP tokens | `mcp:token:manage`; scope ⊆ exposures the minter may call; an `ai:manage` holder lists every token of the namespace, others their own |
+| Decide a tool-call approval | `approval:decide`, the request's eligibility policy, and current rights that disclose every field of the tool input (`APPROVAL_INPUT_WITHHELD` otherwise) |
+| Read a provider, an external MCP server or an exposure (`getAiProvider`, `getMcpServer`, `getMcpExposure` and their lists) | `namespace:read` |
+| Create or revise an exposure | `mcp:expose`, plus `run:start` on the target and the rights of the declared result level; the target version is not unattended (at any child depth) |
+| Disable or delete an exposure | `mcp:expose` |
+| Mint or list scoped MCP tokens | `mcp:token:manage`; scope ⊆ exposures the minter may call, resolved to exposure identifiers at mint; an `ai:manage` holder lists every token of the namespace, others their own |
 | Revoke a scoped MCP token | its minter with `mcp:token:manage`, or any `ai:manage` holder |
 | Call an MCP tool | `mcp:call`, exposure in token scope, `run:start`, rights of the declared result level |
 | Poll or cancel an MCP task | `mcp:call`, token scope, exposure state and result-level rights re-checked on every `tasks/get` and `tasks/cancel`; cancel also `run:operate` |
@@ -270,6 +276,8 @@ Defaults are provisional until the owner ratifies them with the single default t
 | MCP bounded wait | 10 s | 30 s |
 | MCP calls per token | 10/s, burst 20 | operator-set, existing API rate quota also applies |
 | Concurrent waiting MCP calls per namespace | 16 | 64 (beyond it a call returns a task or run handle at once) |
+| Live agent runs per MCP caller (`mcp_agent_runs_per_caller`; runs whose target version can contain agents, counted per credential identity) | 4 | 64 |
+| Daily tokens per exposure (`maxDailyTokens`, optional) | unset = only the namespace's daily tokens apply | the namespace's daily token limit |
 | MCP idempotency receipt window | 24 h | 24 h |
 | Stream events / bytes per model call (with 026; deltas coalesced to at most one event per 100 ms or 1 KiB) | 1,024 / 1 MiB | 4,096 / 4 MiB |
 | Reserved-channel (`sagat.agent.tokens`) events / bytes per run | effective `maxTurns` × per-call caps, summed over the version's streaming agent nodes (16,384 / 16 MiB for one agent at defaults) | the sum is clamped to 026's reserved pool: 65,536 events / 32 MiB by default, 131,072 / 64 MiB hard, under 026's per-run ceiling of 262,144 / 128 MiB over both pools (`specs/026-invocation-human-surfaces/plan.md`, Finite ceilings) |
@@ -304,11 +312,18 @@ because prices are optional; token budgets and the daily token quota are always 
 | Step-log report or carry from the agent runner | refused or ignored | design 041 checks P1, T7 and C0 (Task 025-084) |
 | External MCP server advertises another token endpoint (OAuth servers, once Gap 025-001 closes) | call refused before any credential is used | `AI_MCP_AUTH`, audit `mcp.oauth_metadata_changed` (T025-058) |
 | Saga compensation of a tool fails | manual review | `COMPENSATION_FAILED` path of feature 003 |
+| Provider or MCP endpoint answers `3xx` (the probe included) | attempt failed, no hop | `AI_DESTINATION_DENIED`, audited `egress.denied`; no credential reaches the target (T025-012, T025-016) |
+| Administrator lowers a ceiling or removes a model after publication | next admission or resolution refused | `AI_DESTINATION_RESTRICTED` at admission, `CLASSIFICATION_EGRESS_REFUSED` or `AI_CAPABILITY_UNAVAILABLE` before dispatch (T025-097) |
+| Scoped token revoked while a call waits | no result returned | answered as an unknown tool after the recheck (T025-048) |
 
 ## Observability
 
 **Spans** (attributes use existing `sagat.*` names plus `sagat.agent.turn`, `sagat.agent.call`,
-`sagat.ai.provider_kind`; model id and provider request id appear on spans, never on metrics; OTel
+`sagat.ai.provider_kind`; the pinned model id and the provider request id appear on spans, never on
+metrics; a tool name on a span is a declared name or `UNKNOWN_TOOL`; the model the provider reports
+appears only as `sagat.ai.model_substituted` (`true`/`false`); the provider request id only when it
+matches `^[A-Za-z0-9._:-]{1,128}$`; no string the model wrote, the provider's tool-use id included,
+reaches a span (Decision 025-016); OTel
 GenAI conventions only where stable, with content capture off): journal-derived
 `workflow.agent.step`, `workflow.agent.turn`, `workflow.agent.tool_call`; live `ai.resolve`
 (gRPC), `ai.model_call` and child `ai.provider.request` (runner), `ai.provider.probe`,
@@ -330,7 +345,8 @@ tools_call|tasks_get|tasks_cancel|other`), `mcp_server_request_duration_seconds{
 `mcp.oauth_metadata_changed`,
 `ai.prompt_refused`, `ai.budget_exhausted`, `ai.tool_denied`, `mcp.exposure_created|changed|deleted`,
 `mcp.token_minted|revoked`, `ai.pii_egress` (one per attempt whose transcript level is `pii`, D1637),
-`mcp.tool_called`, `mcp.result_disclosed`, `mcp.call_denied`; reused
+`mcp.tool_called`, `mcp.result_disclosed`, `mcp.call_denied`, `ai.approval_input_withheld` (a refused
+tool-call decision, Decision 025-016); reused
 `secret.resolved`, `egress.denied`, `payload.pii_revealed`, `payload.reveal_denied`, `approval.*`,
 `run.*` and `access.denied.*`. Audit records carry ids, names, outcomes, reason codes and digests,
 never prompt, response, argument or credential content. Each new action needs its row in design 040's
@@ -376,7 +392,7 @@ through the 029 evaluator when 029 is enabled; audit actions in design 040's OCS
 |---|---|---|
 | `apps/agent-runner` | Principle V: model prompts and tool calls are tenant-authored requests that carry third-party credentials and return untrusted content, so they are sent only by an isolated executor holding one attempt's capability; precedent: 017's `apps/database-runner` (ADR-0035), split out for the same reason. It does not rest on Architecture decision 0055 decision 11, which is still proposed (Owner question 1123) | running calls in the engine or control plane violates principle V; reusing `database-runner` or 021's `integration-runner` would hand model-provider credentials to a process whose capability and egress policy serve other destinations |
 | New machine role `agent-runner` (with `BindingProfile::Agent` and the AI `ManagedKind` variants) | The agent runner parses untrusted model and MCP output and reaches the public internet; it must never hold `database:execute` nor a database credential, which the `database-runner` role holds (Decision 025-003) | a new profile under `Role::DatabaseRunner`, as the lake runner did (Architecture decision 0071 decision 1), would leave one role, and one stolen token, able to ask for both database and provider credentials |
-| Credential disclosure under Principle V's first declared set | The first set covers "the secrets declared by its immutable task definition"; the task definition of a model or MCP call is the agent node plus the provider and MCP-server revisions the published version pins, so their secrets are declared by the publisher exactly as an activity's are, checked with `secret:use` at publication and at delivery, all or nothing, under membership, binding (`BindingProfile::Agent`) and pool-delivery policy (Decision 025-001). OAuth MCP servers, which reach tokens through design 047's broker, are excluded until the owner amends Principle V as design 047 requests (Gap 025-001) | proposing a third declared set would widen Principle V for a case the first set already holds; treating the runner as the managed database set would require `database:execute`, which it must never hold |
+| Credential disclosure under Principle V's first declared set | The first set covers "the secrets declared by its immutable task definition"; the task definition of a model or MCP call is the agent node plus the provider and MCP-server revisions the published version pins, so their secrets are declared by the publisher exactly as an activity's are, checked with `secret:use` at publication and at delivery, all or nothing, under membership, binding (`BindingProfile::Agent`) and pool-delivery policy (Decision 025-001). Only static API keys and bearer tokens are delivered this way. OAuth MCP servers and the provider modes that need a client secret or a signing key, which constitution 5.1.0's third declared set (approved by the owner, Owner decision 2026-11-25-3, not yet merged) excludes for declared resources, wait for that set to merge and for design 047's broker to issue access tokens (Gap 025-001; Owner question 025-001 asks whether the first set may cover them instead) | proposing a further declared set would widen Principle V beyond what the owner approved; treating the runner as the managed database set would require `database:execute`, which it must never hold |
 | `ai_usage_leases` | the daily usage row is shared by every claim, completion and expiry of a namespace (Decision 025-010) | writing `ai_usage_daily` at every commit queues them; Architecture decision 0097 removed the same queue for step logs |
 | `crates/infra-ai` | provider wire adapters and MCP client hold clients and sockets | putting them in `infra-egress` would make the guard crate provider-aware |
 | `crates/api-mcp` | separate wire protocol (JSON-RPC over Streamable HTTP) with its own versioning, like `api-grpc` | folding it into `api-http` mixes two protocol lifecycles in one adapter |
@@ -397,6 +413,8 @@ the story order below is the order inside those lanes.
 6. US08 Studio timeline and streaming, US09 assistant (T025-059..063).
 7. Gates: six SDKs, telemetry, security battery, performance, runbooks, demo, cross-feature
    amendments and registrations (T025-064..072, T025-075..081, T025-084..090).
+8. The rules added by the security review of 2026-11-27 (T025-093..099) land in the slices that own
+   their code (tasks.md, "Build slices") and block the gates of their stories.
 
 A story ships only with its own gates; unchecked tasks are not promises.
 
@@ -409,8 +427,12 @@ completion; lost broker hint; timeout-versus-signal, approval-versus-expiry and
 deadline-versus-completion races; failed compensation of a tool; restart of engine, control plane
 and runner; tenant isolation over every new route, gRPC call and MCP method; quota and ceiling
 exhaustion including a lost response followed by a retry and a killed runner; secret,
-classification and MCP-argument canaries; loosened-annotation and unattended-write publication
-fixtures; a 16-turn streaming scenario within the reserved-channel budget; reset points inside and
+classification and MCP-argument canaries (encoded forms included); loosened-annotation fixtures,
+inherited output levels through `end.outputExpr` and child outputs, and transitive unattended-write
+fixtures at publication, exposure and child admission; blind tool-call approval refused; ceilings
+lowered after publication; redirects refused on the probe; `ResolveSecrets` refused for managed leases;
+undeclared tool names absent from run-read surfaces; MCP receipts per credential and exposure, the
+recheck before a result and batch refusal; a 16-turn streaming scenario within the reserved-channel budget; reset points inside and
 after an agent loop; encoded-field fixtures with 031's codes; reveal-grant revocation pausing a `pii`
 provider; egress battery; MCP conformance with an independent
 client library at both protocol revisions; six-SDK parity; the claim and transition budget of design

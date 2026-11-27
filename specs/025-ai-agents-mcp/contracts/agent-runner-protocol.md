@@ -35,7 +35,12 @@ of a model or MCP call (Decision 025-005).
 | `sagat.ai.mcp-refresh` | `AiMcpRefresh` | external MCP `tools/list` snapshot | root node of the private refresh definition |
 
 - An ordinary activity or worker that names a `sagat.ai.*` activity is rejected at publication and
-  registration (017 reserved-prefix precedent). For a `sagat.ai.*` claim only, the claim transaction
+  registration (017 reserved-prefix precedent; today `check_node` in `crates/domain/src/workflow.rs`
+  reserves only `sagat.database.`, so this feature adds the AI prefix there and in
+  `managed_capabilities_allowed`). Recording `ai-agents-v1` is refused while any existing version has an
+  ordinary activity under the prefix (Task 025-095). The claim selects an agent-runner lease by the
+  node's managed kind as well as by activity name: a node whose `managed_kind` is not the AI kind of the
+  activity is never offered to an agent runner, whatever its name. For a `sagat.ai.*` claim only, the claim transaction
   counts the live leases of every `sagat.ai.*` task of the namespace and tenant under their locks
   against `ai_runner_concurrency` and `tenant_ai_runner_concurrency` (no counter, so completion and
   expiry release capacity), and for a `sagat.ai.model` attempt inserts its reservation
@@ -47,6 +52,11 @@ of a model or MCP call (Decision 025-005).
 - Managed tasks carry `input_json = {}`; the request is obtained only through the resolve call.
   Generic `ReadBlob` is refused for these leases except the request and response blobs the resolve
   call names.
+- The node the agent declaration materializes for every `sagat.ai.*` kind has an empty `secrets` list.
+  The ordinary `ResolveSecrets` call refuses a lease whose node has any managed kind (the managed
+  database kinds use `ResolveDatabase` only), `ResolveDatabase` refuses the AI kinds, and
+  `ResolveModelCall` and `ResolveMcpCall` each refuse every kind but their own, so the checks below
+  cannot be bypassed through another call.
 
 ## Credential delivery (Principle V, first declared set)
 
@@ -56,6 +66,9 @@ its private definition, which pins its revision. The logical secrets those pinne
 the declared secrets of that task definition, so the resolve calls below disclose them under Principle
 V's first declared set, ordinary task execution (Decision 025-001):
 
+- only a static API key or bearer token: the provider modes `aws-access-key` and
+  `azure-entra-client-credentials`, which would hand the runner a signing key or a client secret, are
+  refused at save until design 047's broker issues access tokens (Gap 025-001);
 - all or nothing: every slot of the pinned revision, or none;
 - only while the caller's current membership, its binding (`BindingProfile::Agent` for the task's
   reserved activity), the pool-delivery policy of every secret and the publisher's `secret:use` on
@@ -68,11 +81,17 @@ V's first declared set, ordinary task execution (Decision 025-001):
   `step_resource_credentials`, keyed by slot, Decision 025-014) before any value is returned. A failed
   check or audit refuses disclosure.
 
-This grants no general secret read and no `database:execute`. MCP servers authenticated by OAuth are
-outside it: they reach access tokens only through design 047's token broker, which needs a third
-declared set that the owner has not yet added to Principle V; `auth_mode` `oauth-client-credentials`
-is refused at save until then (Gap 025-001), and the OAuth fields of `McpEndpoint` below are reserved
-for that case.
+Both phases also recheck the current revision's restrictions: the transcript level against the
+stricter of the pinned and the current ceiling, and the pinned model against the current allowlist
+(spec Requirement 025-002); a failure refuses disclosure with `CLASSIFICATION_EGRESS_REFUSED` or
+`AI_CAPABILITY_UNAVAILABLE`.
+
+This grants no general secret read and no `database:execute`. MCP servers authenticated by OAuth, and
+the two provider modes above, are outside it: they reach access tokens only through design 047's token
+broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0
+(Owner decision 2026-11-25-3), not yet merged; `auth_mode` `oauth-client-credentials` is refused at save
+until 5.1.0 merges and the broker is built (Gap 025-001), and the OAuth fields of `McpEndpoint` below
+are reserved for that case.
 
 ## New calls
 
@@ -105,6 +124,9 @@ message AiEndpoint {
   string api_version = 4;       // azure-openai
   string deployment = 5;        // azure-openai deployment of model_id
   bool prompt_caching = 6;
+  // Reserved for azure-entra-client-credentials once Gap 025-001 closes: the Entra authority host
+  // recorded in the revision; the token request goes only there.
+  string entra_authority = 7;
 }
 message AiLimits {
   uint32 attempt_timeout_ms = 1;     // the runner also stops at lease_expires_at
@@ -137,8 +159,9 @@ message McpEndpoint {
   string url = 1;
   string protocol_version = 2;       // "2026-07-28" or "2025-11-25"
   string auth_mode = 3;              // none | bearer (oauth-client-credentials reserved, Gap 025-001)
-  // Fields 4 to 8 are reserved for OAuth servers and stay empty until the owner's Principle V
-  // amendment requested by design 047; tokens will then come from design 047's broker.
+  // Fields 4 to 8 are reserved for OAuth servers and stay empty until constitution 5.1.0 (its third
+  // declared set, approved by the owner, not yet merged) merges and design 047's broker is built;
+  // tokens will then come from that broker.
   string client_id = 4;
   string token_endpoint = 5;         // recorded in the server revision; never discovered at call time
   string resource = 6;               // RFC 8707 resource indicator
@@ -169,9 +192,11 @@ Field numbers are draft and fixed only when merged.
 ## Results
 
 - `sagat.ai.model`: `CompleteStep.output_json` is a `model-turn.schema.json` document (or
-  `output_blob_ref` above 256 KiB). The server rejects a result whose tool names are not declared,
-  whose turn differs, or that contains a value the attempt resolved; it never trusts the runner's
-  view of budgets or classification.
+  `output_blob_ref` above 256 KiB). The server rejects a result whose turn differs or that contains a
+  value the attempt resolved (verbatim, JSON-escaped, base64 or hexadecimal, spec Requirement 025-020);
+  a tool request whose name is not declared is kept in the transcript as the model wrote it and is
+  recorded everywhere else as the marker `UNKNOWN_TOOL` with its call index; the server never trusts the
+  runner's view of budgets or classification.
 - `sagat.ai.probe`: `{"models": ["claude-opus-5-5", ...], "outcome": "OK"}` limited to 256 ids.
 - `sagat.ai.mcp`: `{"content": [...], "isError": bool, "truncated": bool}` with text and structured
   content only (D1317). The server turns `isError: true` into the reason `MCP_TOOL_ERROR` and forwards
@@ -202,8 +227,18 @@ Field numbers are draft and fixed only when merged.
   resolved values; SDK default credential chains (environment, profile, instance metadata, workload
   identity) are disabled, and a test proves link-local and metadata addresses are unreachable from
   the runner (T025-016).
+- No redirect is followed: the runner's egress client has `max_redirects = 0` for every provider and
+  MCP request, the probe and the refresh included, and a `3xx` answer fails the attempt with
+  `AI_DESTINATION_DENIED` (audited `egress.denied`), so no credential header reaches a redirect target.
+  A test builds the runner's client and asserts the setting, and a probe answered `302` fails (Task
+  025-016).
+- The namespace egress policy is operator-owned runner configuration, per namespace, reread before
+  every attempt (the `apps/database-runner/src/config.rs` precedent); the resolve response's
+  `namespace_id` selects the entry, a namespace absent from it is denied, and the server cannot widen it.
 - No prompt, response, arguments, credentials, provider messages or tokens in logs, spans or
-  metrics. Spans carry `sagat.*` ids, provider kind, model id and provider request id.
+  metrics. Spans carry `sagat.*` ids, provider kind, the pinned model id, `sagat.ai.model_substituted`
+  and the provider request id when it matches `^[A-Za-z0-9._:-]{1,128}$`; a tool name only when it is
+  declared, otherwise `UNKNOWN_TOOL`; never the provider's tool-use id or the reported model.
 - The process has no platform database URL, OpenBao token, script signing key, database credential
   or container engine (`scripts/check-architecture.py` refuses a container-engine dependency, Task
   025-073);

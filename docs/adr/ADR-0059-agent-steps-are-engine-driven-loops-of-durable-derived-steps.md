@@ -4,7 +4,9 @@
 **Decided by:** agent proposal (2026-10-26, revised 2026-10-27 after the independent architecture and
 security reviews); accepted on 2026-11-26 by the agent preparing feature 025 for build, under the owner's
 delegation (Owner decision 2026-11-24-4), recorded as Owner decision 2026-11-26-123; revised the same day
-against `develop` (`3f22b612`) after an independent audit of the feature 025 set.
+against `develop` (`3f22b612`) after an independent audit of the feature 025 set; revised on 2026-11-27
+after the security review of that date (`specs/025-ai-agents-mcp/reviews/2026-11-27-security.md`,
+Decision 025-016), which tightened decisions 5, 7 and 8 and left their direction unchanged.
 **Refines / supersedes:** Refines ADR-0010 (derived steps gain model-call and tool-call kinds),
 Architecture decision 0071 (its derived-id grammar of decision 5, its egress ceiling of decision 8 and
 its managed kinds and runner profiles of decision 1 gain the agent forms, provider and MCP-server
@@ -83,9 +85,17 @@ and eventually answers. Four forces make the execution model hard to reverse:
    revisions name are the declared secrets of that task definition, delivered all or nothing to the
    lease-owning agent runner under the caller's current membership, its worker/activity binding
    (`BindingProfile::Agent`), the pool-delivery policy, and the publisher's `secret:use` on every one of
-   them, checked at publication and again at delivery. MCP servers authenticated by OAuth reach tokens
-   only through design 047's token broker, which needs a third declared set the owner has not added;
-   they are refused until then. The agent runner sends no step logs (design 041) and the transcript is
+   them, checked at publication and again at delivery. Only a static API key or bearer token is
+   delivered this way. These secrets are disclosed only by the agent resolve calls: the node of every
+   AI kind is materialized with no `secrets`, and the ordinary `ResolveSecrets` refuses every managed
+   lease. MCP servers authenticated by OAuth, and the provider modes that need a client secret or a
+   signing key (`azure-entra-client-credentials`, `aws-access-key`), reach tokens only through design
+   047's token broker, under the third declared set of Principle V that the owner approved for
+   constitution 5.1.0 (Owner decision 2026-11-25-3), not yet merged, which excludes a resource's client
+   secret and signing key; they are refused until it merges and the broker issues access tokens. The
+   runner follows no redirect (`max_redirects = 0` for every provider and MCP request, the probe
+   included) and reads its namespace egress policy from operator-owned configuration before every
+   attempt. The agent runner sends no step logs (design 041) and the transcript is
    the authoritative record. Other tool kinds run in their own executors. A deployment's own cloud
    identity MUST NOT be used for a tenant's provider account, and adapters MUST NOT use SDK default
    credential chains or instance metadata.
@@ -110,7 +120,16 @@ and eventually answers. Four forces make the execution model hard to reverse:
    carrier (no carrier counts as `pii`; `secret` is refused), and MUST refuse: a transcript level above
    the provider's ceiling; an `mcp` tool whose server ceiling is below it; and a `result` field, an
    approval-view tool input field or a child tool's input field annotated below it
-   (`CLASSIFICATION_LOOSENED`). At run time a value that does not validate against its carrier is not
+   (`CLASSIFICATION_LOOSENED`). The level a value inherits from an agent's output follows it: the
+   effective level of a workflow output field, a child node output field or a `child` tool result
+   carrier field is the stricter of its annotation and what it inherits through `end.outputExpr` and
+   child outputs (the domain's `written_level`), refused at publication, or at admission for a child
+   under an active-version policy. Publication records the provider revision, MCP-server revision and
+   snapshot it checked in the version; admission and every resolution recheck the transcript level
+   against the stricter of the pinned and current ceilings and the model against the current
+   allowlist, so a restriction applies at once and a later revision never widens a published version.
+   No string a model or a provider wrote (an undeclared tool name, a tool-use id, a reported model)
+   reaches a run-read surface. At run time a value that does not validate against its carrier is not
    sent (`CLASSIFICATION_EGRESS_REFUSED`), and an encoded (feature 031) value is never sent nor filled
    by the model (031's codes). Agent schemas are validated by the run-input validator of design 043,
    and a validation summary carries only its value-free rule and field. A `pii` ceiling follows the
@@ -123,10 +142,15 @@ and eventually answers. Four forces make the execution model hard to reverse:
 8. **Sensitive tools wait for a person through feature 014.** A tool approval is an
    `approval_requests` row of owner kind `AGENT_TOOL_CALL`, decided through the existing endpoint with
    decision-time authorization, deduplicated receipts, initiator exclusion and first-commit
-   resolution against expiry and cancellation. A `write` tool MUST declare an approval policy or the
-   explicit acknowledgement `approval: "none"`; an `operation` tool MUST declare a policy; a version
-   with an acknowledged unattended write tool MUST NOT be exposed through MCP or a feature-026 public
-   link.
+   resolution against expiry and cancellation. A decision is applied only when the decider's current
+   rights disclose every field of the tool input (a tool input field cannot be `secret`); nobody
+   approves arguments they cannot see. A `write` tool MUST declare an approval policy or the
+   explicit acknowledgement `approval: "none"`; an `operation` tool and a database `execute` tool MUST
+   declare a policy; a `child` tool declared `read` MUST declare a policy, and an `mcp` tool may be
+   `read` without one only when its pinned snapshot states it read-only. A version with an acknowledged
+   unattended write tool, in itself or in any child workflow it can start, MUST NOT be exposed through
+   MCP or a feature-026 public link, and a child admission under a run those surfaces admitted MUST
+   refuse such a child version.
 9. **Scope is bounded until proven.** Agents are root-only and not combined with `chainPolicy`;
    modality is text and JSON; provider-side tools, provider-side MCP connectors and server-side model
    fallbacks are not used; every limit has a default and a hard ceiling (plan.md).
@@ -176,5 +200,6 @@ declared done: the fault matrix and verification plan of
 [plan.md](../../specs/025-ai-agents-mcp/plan.md), six-SDK conformance
 ([contracts/conformance.md](../../specs/025-ai-agents-mcp/contracts/conformance.md)), the
 classification, secret and MCP-argument canary battery, and the measured performance report.
-Decisions D1280–D1319, D1635–D1638 and D025-001 to D025-015 and gaps G1280–G1297, G1635 and
-G025-001 to G025-003 are in [research.md](../../specs/025-ai-agents-mcp/research.md).
+Decisions D1280–D1319, D1635–D1638 and D025-001 to D025-016, gaps G1280–G1297, G1635 and
+G025-001 to G025-004, and Owner question 025-001 are in
+[research.md](../../specs/025-ai-agents-mcp/research.md).
