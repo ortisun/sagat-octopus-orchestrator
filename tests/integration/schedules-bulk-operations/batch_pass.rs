@@ -23,7 +23,7 @@ use serde_json::json;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::batch_executor::{Runs, everything, job, runs_started, status_of, write};
+use crate::batch_executor::{Runs, everything, job, runs_started, selected, status_of, write};
 use crate::firing::{Fixture, fixture};
 use crate::gap_store::SlotComesBetween;
 use crate::support::bounded::within;
@@ -455,12 +455,7 @@ async fn a_job_that_has_nothing_to_do_yet_does_not_keep_the_head_of_the_round() 
         tenant_id: job.tenant_id,
         id: job.id,
     };
-    for _ in 0..500 {
-        if refusing.step(&due(&stuck), None).await.expect("step") == Stepped::Acted {
-            break;
-        }
-        tokio::time::sleep(StdDuration::from_millis(5)).await;
-    }
+    selected(&refusing, &due(&stuck), None).await;
     // (the first step took the page of the selection; the next one meets the refusal)
     assert_eq!(
         refusing
@@ -514,12 +509,7 @@ async fn a_job_that_has_nothing_to_do_yet_does_not_keep_the_head_of_the_round() 
         clock.clone(),
         ExecutorSettings::default(),
     );
-    for _ in 0..500 {
-        if working.step(&due(&ready), None).await.expect("step") == Stepped::Acted {
-            break;
-        }
-        tokio::time::sleep(StdDuration::from_millis(5)).await;
-    }
+    selected(&working, &due(&ready), None).await;
 
     // a round that can look at one job looks at the one that can do something
     assert_eq!(ids_due(&f, &[&stuck, &ready], 1).await, vec![ready.id]);

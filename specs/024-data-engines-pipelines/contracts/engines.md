@@ -1,38 +1,52 @@
 # Draft contract — database engines (FR-024-001..013)
 
 Draft for review; merged into the canonical contracts by T024-008. Unchanged 017 rules apply to
-every driver: revision pinned at admission, two-phase capability resolution, one statement, one
-attempt, closed failure codes, no driver or provider message in any output, fresh session per
-attempt with no idle credential-bearing pool.
+every driver: revision pinned at admission, two-phase capability resolution (Principle V's second
+declared set: the credential reaches only the lease-owning `database-runner` with
+`database:execute`, pinned as the `primary` secret role), one statement, one attempt, closed failure
+codes, no driver or provider message in any output, fresh session per attempt with no idle
+credential-bearing pool. Feature 035's lake drivers (`iceberg`, `object_storage`, `clickhouse`) are
+unchanged and stay in `LakeDatabaseDriver`.
 
 ## Driver catalog
 
-| Driver id | Executor (reserved activity) | Operations | Auth modes | Network profile | Deadline ceiling |
-|---|---|---|---|---|---|
-| `postgresql` | database runner, private deployment (`sagat.database.postgresql`) | query, execute | password | private CIDR/port | 30 s |
-| `mysql` | database runner, private deployment (`sagat.database.mysql`) | query, execute | password | private CIDR/port | 30 s |
-| `mariadb` | database runner, private deployment (`sagat.database.mariadb`) | query, execute | password | private CIDR/port | 30 s |
-| `sqlserver` | database runner, private deployment (`sagat.database.sqlserver`) | query, execute | sql-login | private CIDR/port | 30 s |
-| `bigquery` | database runner, warehouse deployment (`sagat.database.bigquery`) | query, execute | service-account-key | public endpoint | 600 s |
-| `snowflake` | database runner, warehouse deployment (`sagat.database.snowflake`) | query, execute | key-pair | public endpoint (PrivateLink as operator network) | 600 s |
+| Driver id | Executor (reserved activity) | Binding profile | Registry capability | Operations | Auth modes | Network profile | Deadline ceiling | Recovery rule (Architecture decision 0071 decision 7) |
+|---|---|---|---|---|---|---|---|---|
+| `postgresql` | database runner (`sagat.database.postgresql`) | `database` | — (feature 017) | query, execute | password | private CIDR/port | 30 s | none: `OUTCOME_UNKNOWN`, a person |
+| `mysql` | database runner (`sagat.database.mysql`) | `database` | `database-engines-v1` | query, execute | password | private CIDR/port | 30 s | none: `OUTCOME_UNKNOWN`, a person |
+| `mariadb` | database runner (`sagat.database.mariadb`) | `database` | `database-engines-v1` | query, execute | password | private CIDR/port | 30 s | none: `OUTCOME_UNKNOWN`, a person |
+| `sqlserver` | database runner (`sagat.database.sqlserver`) | `database` | `database-engines-v1` | query, execute | sql-login | private CIDR/port | 30 s | none: `OUTCOME_UNKNOWN`, a person |
+| `bigquery` | database runner (`sagat.database.bigquery`) | `warehouse` | `database-warehouses-v1` | query, execute | service-account-key | public endpoint | 600 s | lookup by deterministic job id within the lease |
+| `snowflake` | database runner (`sagat.database.snowflake`) | `warehouse` | `database-warehouses-v1` | query, execute | key-pair | public endpoint (PrivateLink as operator network) | 600 s | lookup by deterministic `requestId` within the lease |
 
 DuckDB is not a driver: DuckDB queries are `dataQuery` data nodes executed by the sandbox data
 runtime ([data runtime](data-runtime.md#dataquery)), so ADR-0036 decision 1 and the 017 result view
-are unchanged. Both runner deployments use the existing `database-runner` role.
+are unchanged. Both runner deployments use the existing `database-runner` role, each bound to its
+profile (`ManagedKind::Sql(SqlDriver)`, Decision 024-002): the server hands a step only to a runner
+of the driver's profile that offers its reserved activity.
 
-A driver appears in `listDatabaseDrivers` only when enabled server-side, its release gate passed
-(for `bigquery`/`snowflake` the real-service suite, O1241) and at least the server capability is on;
-runner availability is reported separately by the probe. An executor registers only drivers its
-deployment enables; a 1.6 runner registers only `postgresql`.
+A driver appears in `listDatabaseDrivers` only when its registry capability is recorded, the
+deployment serves it and its release gate passed (for `bigquery`/`snowflake` the real-service suite;
+`database-warehouses-v1` is not recorded before it passes, Owner decision 2026-11-26-161); runner
+availability is reported separately by the probe. An executor registers only drivers its deployment
+enables; a runner registered below the new minor registers only `postgresql` (and the lake
+activities of its profile).
+
+Every new connection carries `egressCeiling` (`public`, `internal` default, `pii`; feature 035's
+`EgressCeiling`) under the uniform `pii`-egress rule (Owner question 1081, Decision 1617): `pii` is
+saved only by an administrator holding the namespace reveal grant, rechecked at each
+`ResolveDatabase` of a write that carries a `pii` value, revocation pauses the connection, each such
+attempt is audited, `secret` never leaves. A written value above the ceiling is refused with
+`CLASSIFICATION_EGRESS_REFUSED` before dispatch.
 
 ## Settings (non-secret, closed objects)
 
 | Driver | Fields (all others refused) |
 |---|---|
-| `mysql`, `mariadb` | `driver`, `host` (bare DNS name or IP), `port` (1–65535), `database` (1–64), `tls` (canonical 017 `DatabaseTls`: `verify-full` with optional CA PEM ≤ 64 KiB, or `development-plaintext`), `secretName`, `limits` |
-| `sqlserver` | `driver`, `host`, `port`, `database` (1–128), `encryption` (`strict`, `verify-full` or `development-plaintext`; optional CA PEM; optional `hostNameInCertificate`), `secretName`, `limits` |
-| `bigquery` | `driver`, `projectId` (`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`), `location` (1–64, `[A-Za-z0-9-]`), `maximumBytesBilled` (decimal string, 1..1 TiB), `secretName`, `limits` |
-| `snowflake` | `driver`, `account` (`^[A-Za-z0-9_.-]{1,255}$`, organisation-account identifier), `endpoint` (`public` or `privatelink`), `warehouse`, `role`, `database`, `schema` (identifiers, 1–255), `secretName`, `limits` |
+| `mysql`, `mariadb` | `driver`, `host` (bare DNS name or IP), `port` (1–65535), `database` (1–64), `tls` (canonical 017 `DatabaseTls`: `verify-full` with optional CA PEM ≤ 64 KiB, or `development-plaintext`), `secretName`, `limits`, `egressCeiling` |
+| `sqlserver` | `driver`, `host`, `port`, `database` (1–128), `encryption` (`strict`, `verify-full` or `development-plaintext`; optional CA PEM; optional `hostNameInCertificate`), `secretName`, `limits`, `egressCeiling` |
+| `bigquery` | `driver`, `projectId` (`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`), `location` (1–64, `[A-Za-z0-9-]`), `maximumBytesBilled` (decimal string, 1..1 TiB), `secretName`, `limits`, `egressCeiling` |
+| `snowflake` | `driver`, `account` (`^[A-Za-z0-9_.-]{1,255}$`, organisation-account identifier), `endpoint` (`public` or `privatelink`), `warehouse`, `role`, `database`, `schema` (identifiers, 1–255), `secretName`, `limits`, `egressCeiling` |
 
 URLs, DSNs, connection strings, user names and passwords in settings are refused. `limits` uses
 the 017 `DatabaseLimits` object; `timeoutMs` is bounded by the driver's ceiling.
@@ -44,6 +58,10 @@ the 017 `DatabaseLimits` object; `timeoutMs` is bounded by the driver's ceiling.
 | password, sql-login | `{"username","password"}` | 017 codec (username ≤ 63 bytes for PostgreSQL, ≤ 128 for SQL Server, ≤ 80 for MySQL/MariaDB); no NUL | `password` |
 | service-account-key | Google service-account key JSON | `type` must be `service_account`; `client_email`, `private_key_id`, `private_key` (PKCS#8 PEM) required; `token_uri`, if present, must equal `https://oauth2.googleapis.com/token`; `universe_domain`, if present, must equal `googleapis.com`; size ≤ 16 KiB | `private_key` (PEM and DER forms), `private_key_id` |
 | key-pair | `{"user","privateKeyPem","passphrase"?}` | PKCS#8 RSA ≥ 2048 bits, encrypted or not; `user` 1–255 | `privateKeyPem` (PEM and DER), `passphrase` |
+
+The codecs live beside the existing `JsonDatabaseCredentials` in `crates/infra-secrets/src/database.rs`,
+behind the `DatabaseCredentialsCodec` port of `crates/application/src/database.rs`, which gains the
+driver as an argument.
 
 Endpoints, audiences and token URIs are fixed by the driver and the deployment, never read from a
 credential. Signed JWTs (BigQuery token exchange, Snowflake key-pair) live only in runner memory for

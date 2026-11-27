@@ -21,7 +21,7 @@ impl Tripwire {
     /// Installs the switch, disarmed.
     pub async fn install(pool: &PgPool) -> Self {
         for statement in [
-            "CREATE TABLE fault_plan (kill_at int, watching boolean NOT NULL DEFAULT false, kill_table text)",
+            "CREATE TABLE fault_plan (kill_at int, watching boolean NOT NULL DEFAULT false, kill_table text, kill_until bigint)",
             "INSERT INTO fault_plan (kill_at, watching) VALUES (NULL, false)",
             // counts the kills: a sequence is not rolled back with the transaction it kills
             "CREATE SEQUENCE fault_kills",
@@ -29,16 +29,17 @@ impl Tripwire {
              statement int NOT NULL, table_name text NOT NULL)",
             "CREATE FUNCTION fault_tripwire() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER \
              SET search_path = public, pg_catalog AS $f$ \
-             DECLARE n int; target int; watch boolean; ktable text; \
+             DECLARE n int; target int; watch boolean; ktable text; v_until bigint; \
              BEGIN \
                n := coalesce(nullif(current_setting('fault.statements', true), ''), '0')::int + 1; \
                PERFORM set_config('fault.statements', n::text, true); \
-               SELECT kill_at, watching, kill_table INTO target, watch, ktable FROM fault_plan; \
+               SELECT kill_at, watching, kill_table, kill_until INTO target, watch, ktable, v_until FROM fault_plan; \
                IF watch THEN \
                  INSERT INTO fault_log (xid, statement, table_name) \
                  VALUES (txid_current(), n, TG_TABLE_NAME); \
                END IF; \
-               IF target IS NOT NULL AND n = target AND (ktable IS NULL OR ktable = TG_TABLE_NAME) THEN \
+               IF target IS NOT NULL AND n = target AND (ktable IS NULL OR ktable = TG_TABLE_NAME) \
+                  AND (v_until IS NULL OR (SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM fault_kills) < v_until) THEN \
                  PERFORM nextval('fault_kills'); \
                  PERFORM pg_terminate_backend(pg_backend_pid()); \
                  PERFORM pg_sleep(30); \
@@ -65,13 +66,13 @@ impl Tripwire {
 
     /// Records the writing statements of the transactions that follow, without killing anything.
     pub async fn watch(&self) {
-        self.set("UPDATE fault_plan SET kill_at = NULL, watching = true, kill_table = NULL")
+        self.set("UPDATE fault_plan SET kill_at = NULL, watching = true, kill_table = NULL, kill_until = NULL")
             .await;
     }
 
     /// Kills the connection of the next transaction that makes `statement` writing statements.
     pub async fn arm(&self, statement: usize) {
-        sqlx::query("UPDATE fault_plan SET kill_at = $1, watching = false, kill_table = NULL")
+        sqlx::query("UPDATE fault_plan SET kill_at = $1, watching = false, kill_table = NULL, kill_until = NULL")
             .bind(i32::try_from(statement).expect("statement"))
             .execute(&self.pool)
             .await
@@ -81,7 +82,7 @@ impl Tripwire {
     /// Kills the connection of the next transaction whose `statement`th writing statement writes `table`: the death of a process
     /// that already committed what came before (the run, when the table is the one a later, separate statement writes).
     pub async fn arm_on(&self, table: &str, statement: usize) {
-        sqlx::query("UPDATE fault_plan SET kill_at = $1, watching = false, kill_table = $2")
+        sqlx::query("UPDATE fault_plan SET kill_at = $1, watching = false, kill_table = $2, kill_until = NULL")
             .bind(i32::try_from(statement).expect("statement"))
             .bind(table)
             .execute(&self.pool)
@@ -89,8 +90,22 @@ impl Tripwire {
             .expect("arm");
     }
 
+    /// As [`Self::arm_on`], once: a process that retries in the same run (the automatic handover) is killed at that write the first
+    /// time only.
+    pub async fn arm_once_on(&self, table: &str, statement: usize) {
+        sqlx::query(
+            "UPDATE fault_plan SET kill_at = $1, watching = false, kill_table = $2, \
+                    kill_until = (SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM fault_kills) + 1",
+        )
+        .bind(i32::try_from(statement).expect("statement"))
+        .bind(table)
+        .execute(&self.pool)
+        .await
+        .expect("arm");
+    }
+
     pub async fn disarm(&self) {
-        self.set("UPDATE fault_plan SET kill_at = NULL, watching = false, kill_table = NULL")
+        self.set("UPDATE fault_plan SET kill_at = NULL, watching = false, kill_table = NULL, kill_until = NULL")
             .await;
     }
 

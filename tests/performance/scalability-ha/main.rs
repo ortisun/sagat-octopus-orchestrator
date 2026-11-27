@@ -109,6 +109,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::QuotaExceeded(_) => "QuotaExceeded",
         AppError::Versioning(_) => "Versioning",
         AppError::Unavailable => "Unavailable",
+        AppError::RegistrySilent => "RegistrySilent",
         AppError::PayloadTooLarge(_) => "PayloadTooLarge",
         AppError::Busy { .. } => "Busy",
         AppError::Internal => "Internal",

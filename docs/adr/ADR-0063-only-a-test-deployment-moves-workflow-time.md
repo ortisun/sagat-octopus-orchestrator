@@ -1,7 +1,7 @@
 # ADR-0063: Workflow time and infrastructure time are separate classes, and only a test deployment may move workflow time
 
-**Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-10-26)
+**Status:** Accepted (2026-11-24), with the additions under "Acceptance"
+**Decided by:** agent proposal (2026-10-26); accepted by delegate (OD-2026-11-24-4) on 2026-11-24, row OD-2026-11-24-705 of `docs/owner-decisions.md`
 **Refines / supersedes:** refines ADR-0020 (the database clock decides; stable `now()` bounds candidate ranges) and
 ADR-0019 (the first day runs on the real engine); supersedes none
 **Enforced by:** planned checks of feature 028 — the time-classification catalog test
@@ -92,6 +92,15 @@ behaviour or plans, because every in-flight run depends on it.
 - In a test deployment, run and journal instants are in workflow time and audit records in real time, by design.
 - Rollback: the functions remain with their production bodies; removing them is a code revert, not a data migration.
   In-flight runs are unaffected because production values never change.
+
+## Acceptance (2026-11-24)
+
+Accepted under Owner decision 2026-11-24-4 after a re-read against `develop` at `2c94064f` (Decision 028-004 of
+`specs/028-developer-tooling/research.md`). Two additions, neither of which changes a rule above: every design of
+release 0.3.0 that adds an instant classifies it in the time-class catalog (design 044's code runs read workflow time
+from their journal, so the virtual clock reaches them unchanged; design 045's step deadlines are workflow time and its
+heartbeat timeout infrastructure time); and the catalog test, run on the schema at build time, is the authority over
+the baseline counts written in feature 028's plan.
 
 ## Evidence
 

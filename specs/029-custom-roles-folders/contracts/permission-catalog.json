@@ -1,12 +1,12 @@
 {
-  "$comment": "Draft, feature 029. Classification of every catalog permission (FR-029-002). The canonical table is a match in crates/domain/src/access.rs whose explicit arms classify each known permission and whose compile-time default arm yields reserved-unclassified, so a permission added by another feature compiles and is reserved until it is classified here; a contract test lists the unclassified ones. Counts are derived, never written by hand. adminEquivalent: granting it needs an explicit confirmation in the API and Studio. seesPastRestriction: its holder sees hidden items through that surface.",
+  "$comment": "Draft, feature 029. Classification of every catalog permission (FR-029-002). The canonical table is a match in crates/domain/src/access.rs whose explicit arms classify each known permission and whose compile-time default arm yields reserved-unclassified, so a permission added by another feature compiles and is reserved until it is classified here; a contract test lists the unclassified ones. Counts are derived, never written by hand. adminEquivalent: granting it needs an explicit confirmation in the API and Studio. seesPastRestriction: its holder sees hidden items through that surface. Readiness of 2026-11-24: the five permissions merged since the baseline (schedule:read, schedule:write, schedule:operate and run:batch of feature 018; database:browse of feature 035) are classified, and design 013's identity:manage is classified reserved and administrator-equivalent (it can create administrators through a group-to-role mapping).",
   "version": 1,
   "derivedCounts": {
-    "permissions": 53,
-    "reserved": 10,
-    "assignable": 43,
+    "permissions": 59,
+    "reserved": 11,
+    "assignable": 48,
     "levelItem": 13,
-    "sensitiveItem": 11
+    "sensitiveItem": 13
   },
   "folderLevels": {
     "viewer": [
@@ -203,6 +203,7 @@
   },
   "builtinRoleRule": "Additive (coordinator decision C10, D1655): other drafts add machine roles (021 integration-runner, 025 agent-runner, possibly 020) and grants to existing roles; 029 removes or narrows none. Human roles are exactly admin, developer, operator, viewer; every other role is a machine role and never a principal. Tests assert set properties, not counts.",
   "permissionsAddedByOtherDrafts": [
+    "013",
     "018",
     "019",
     "020",
@@ -707,6 +708,61 @@
       "scopes": [
         "namespace"
       ]
+    },
+    {
+      "permission": "schedule:read",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "schedule:write",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "schedule:operate",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ]
+    },
+    {
+      "permission": "run:batch",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "run"
+        ]
+      }
+    },
+    {
+      "permission": "database:browse",
+      "assignability": "assignable",
+      "scopes": [
+        "namespace"
+      ],
+      "item": {
+        "class": "sensitive",
+        "kinds": [
+          "connection"
+        ]
+      }
+    },
+    {
+      "permission": "identity:manage",
+      "assignability": "reserved",
+      "scopes": [
+        "tenant"
+      ],
+      "adminEquivalent": true
     },
     {
       "permission": "access:read",

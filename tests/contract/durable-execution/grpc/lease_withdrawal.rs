@@ -786,6 +786,14 @@ async fn the_requirement_cannot_be_removed_once_a_journal_holds_a_withdrawal() {
             .contains("cannot be removed while a journal holds step.lease_withdrawn"),
         "{refused}"
     );
+    // the switch stops the withdrawals of unmarked leases only: from 1.8 it does not reach a marked one (request (6) of
+    // decision D006-059, Task 006-070)
+    assert!(
+        refused
+            .to_string()
+            .contains("to stop new withdrawals of unmarked leases"),
+        "{refused}"
+    );
     let still: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = 'lease-withdrawal-v1')",
     )
@@ -827,6 +835,50 @@ async fn a_requirement_the_registry_does_not_record_or_the_switch_off_withdraws_
         );
         assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
     }
+}
+
+/// Request (8) of decision D006-059 (Task 006-070, decision D006-095): `lease-withdrawal-v1` recorded by hand SQL for the
+/// engines only is not the requirement. The gate of this engine keeps it for both kinds (a gate that has not read the
+/// registry again), and the withdrawal's own read under the lock finds it for one kind: nothing is withdrawn, the lease
+/// lapses as before, and a 1.8 hand-back is answered `STALE_ATTEMPT` with nothing written (decision D006-089).
+#[tokio::test]
+async fn a_requirement_recorded_for_one_kind_withdraws_nothing() {
+    let barrier = barrier();
+    let p = platform(Some(withdrawing()), Some(barrier.probe)).await;
+    let outcome: String = sqlx::query_scalar(
+        "SELECT out_outcome FROM platform_requirement_activate('lease-withdrawal-v1', \
+         ARRAY['EXECUTION_ENGINE'], 'test')",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("recorded for the engines only");
+    assert_eq!(outcome, "RECORDED");
+    let workflow = p.publish("one-kind", &one_attempt("one-kind")).await;
+    let dropped = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let stream = open_stream(&mut worker, 1).await;
+    barrier.arrived.notified().await;
+    drop(stream);
+    until_withdrawal_ran(&p, 1).await;
+    assert_eq!(
+        step(&p, &dropped).await,
+        ("LEASED".to_owned(), 1, 1),
+        "the lease not sent lapses"
+    );
+    assert!(named(&journal(&p, &dropped).await, "step.lease_withdrawn").is_empty());
+
+    let handed = p.start(&workflow, &json!({})).await;
+    as_protocol_1_8(&p, "first").await;
+    let lease = worker.one_task().await;
+    let refused = worker
+        .fail_with(&lease, "TASK_NOT_STARTED", true)
+        .await
+        .expect_err("nothing is recorded");
+    assert_eq!(machine_code(&refused), "STALE_ATTEMPT", "{refused:?}");
+    assert_eq!(step(&p, &handed).await, ("LEASED".to_owned(), 1, 1));
+    let journal = journal(&p, &handed).await;
+    assert!(named(&journal, "step.lease_withdrawn").is_empty());
+    assert!(named(&journal, "step.failed").is_empty());
 }
 
 /// Correctness Major 3 and architecture Major 2 (decision D006-036): the stream's producer runs on the tracker a graceful
@@ -982,24 +1034,599 @@ async fn a_cancelled_unary_poll_keeps_its_tenant_slot_until_its_claim_ends() {
         .expect("the slots came back with the claims");
 }
 
-/// Architecture Major 1 of the second review (ADR-0099 decision 9): a session stored at minor 8, under a build whose ceiling
-/// is 6, is judged at 6, so its hand-back is an ordinary failure.
+/// Request (10) of decision D006-059 (Task 006-074, decision D006-099; it replaces the test that the hand-back was an
+/// ordinary failure): a session stored at minor 8, under a build whose ceiling is 6 (this build's own), is judged at 6, so
+/// it is never withdrawn; and since the stored minor reserves the code, the host's word that nothing ran is not turned into a
+/// failure either. It lapses: `STALE_ATTEMPT`, nothing written, the lease still live. The case is a binary rolled back to
+/// this build while hosts registered at 1.8 hand back before they register again. At the root and in a scope.
 #[tokio::test]
-async fn a_stored_minor_above_the_build_ceiling_is_judged_at_the_ceiling() {
+async fn a_hand_back_from_a_session_stored_at_1_8_that_this_build_cannot_honour_lapses() {
+    for scoped in [false, true] {
+        let mut options = Options::default();
+        options.worker.idle_retry = Duration::from_millis(50);
+        options.lease_withdrawal = Some(withdrawing());
+        let p = platform_with(options).await;
+        record_requirement(&p).await;
+        let name = format!("ceiling-{scoped}");
+        let workflow = p.publish(&name, &cancellable(&name, scoped, &[])).await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        as_protocol_1_8(&p, "first").await;
+        let (run, lease) = first_lease(&p, &mut worker, &workflow, scoped).await;
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("nothing is recorded");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "scoped={scoped}: {refused:?}"
+        );
+        let journal = journal(&p, &run).await;
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "scoped={scoped}"
+        );
+        assert!(named(&journal, "step.failed").is_empty(), "scoped={scoped}");
+        assert!(
+            named(&journal, "step.started").is_empty(),
+            "scoped={scoped}"
+        );
+        assert_eq!(p.status(&run).await, "RUNNING", "scoped={scoped}");
+        if !scoped {
+            assert_eq!(step(&p, &run).await, ("LEASED".to_owned(), 1, 1));
+        }
+        // the lease is still the step's: its heartbeat is answered
+        worker
+            .client
+            .heartbeat(worker.req(worker.heartbeat_message(&lease)))
+            .await
+            .unwrap_or_else(|stale| panic!("scoped={scoped}: the lease is still live: {stale:?}"));
+    }
+}
+
+/// Whether the lease is of an instance in a scope (a root lease names the root instance, with an empty path).
+fn in_a_scope(lease: &sagat_api_grpc::pb::TaskLease) -> bool {
+    lease
+        .instance
+        .as_ref()
+        .is_some_and(|instance| !instance.instance_path.is_empty())
+}
+
+/// Starts `workflow` (one item for a scoped one, with the iteration quota and a scheduler) and polls its first lease.
+async fn first_lease(
+    p: &Platform,
+    worker: &mut Worker<'_>,
+    workflow: &str,
+    scoped: bool,
+) -> (String, sagat_api_grpc::pb::TaskLease) {
+    let (run, scheduler) = if scoped {
+        let (status, body) = p
+            .rest(
+                reqwest::Method::PUT,
+                "/quotas/iteration_concurrency",
+                Some(&json!({"limit": 8})),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let run = p.start(workflow, &json!({"lines": [1]})).await;
+        (
+            run,
+            Some(crate::support::blob_collections::scheduler(p, None).await),
+        )
+    } else {
+        (p.start(workflow, &json!({})).await, None)
+    };
+    for _ in 0..20 {
+        if let Some(scheduler) = &scheduler {
+            scheduler.tick().await;
+        }
+        if let Some(lease) = worker.poll(1).await.pop() {
+            assert_eq!(in_a_scope(&lease), scoped);
+            return (run, lease);
+        }
+    }
+    panic!("scoped={scoped}: no lease");
+}
+
+/// Stores the secret `name` in the namespace and lets the publisher (`alice`) use it.
+async fn declared_secret(p: &Platform, name: &str) {
+    let namespace = p.namespace_id().await;
+    let (stored, _) = p
+        .rest(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{namespace}/secrets/{name}"),
+            Some(&json!({"value": "a-secret-value-long-enough-0001"})),
+        )
+        .await;
+    assert_eq!(stored, 200);
+    let (granted, _) = p
+        .rest(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{namespace}/secrets/{name}/access/alice"),
+            None,
+        )
+        .await;
+    assert_eq!(granted, 204);
+}
+
+/// One activity of one attempt, at the root or in the body of a `forEach` of one item, declaring `secrets`.
+fn cancellable(name: &str, scoped: bool, secrets: &[&str]) -> Value {
+    let mut activity = json!({
+        "id": "a", "type": "activity", "activity": "act.a",
+        "retry": {"maxAttempts": 1, "strategy": "fixed", "initialDelayMs": 1, "maxDelayMs": 1, "jitter": false}
+    });
+    if !secrets.is_empty() {
+        activity["secrets"] = json!(secrets);
+    }
+    if !scoped {
+        return json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": name}, "entrypoint": "a", "nodes": [activity]
+        });
+    }
+    activity["next"] = json!("returned");
+    json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": name}, "entrypoint": "lines",
+        "bodies": {"line": {"entrypoint": "a", "nodes": [
+            activity,
+            {"id": "returned", "type": "return", "result": "1"}
+        ]}},
+        "nodes": [
+            {"id": "lines", "type": "forEach", "items": "input.lines", "body": "line",
+             "result": "bodyResult", "maxItems": 1, "maxConcurrency": 1, "next": "done"},
+            {"id": "done", "type": "end"}
+        ]
+    })
+}
+
+/// Request (1) of decision D006-059, the part of this build (Task 006-069, decision D006-097): a host of 1.8 hands back a
+/// lease still `LEASED` of a run whose cancellation was requested. It is withdrawn whatever the cancellation and the stop
+/// reason say, at the root and in a scope, with and without declared secrets (the secret report fence let a stop through
+/// only for `CANCELLED`): nothing fails, the attempt is not spent, and the stopping run ends `CANCELLED`.
+#[tokio::test]
+async fn a_hand_back_of_a_run_whose_cancellation_was_requested_is_withdrawn() {
+    for (scoped, secrets) in [(false, false), (false, true), (true, false), (true, true)] {
+        let case = format!("scoped={scoped} secrets={secrets}");
+        let p = withdrawing_platform(None).await;
+        let declared: &[&str] = if secrets { &["handback-key"] } else { &[] };
+        if secrets {
+            declared_secret(&p, "handback-key").await;
+        }
+        let name = format!("cancel-hand-back-{scoped}-{secrets}");
+        let workflow = p
+            .publish(&name, &cancellable(&name, scoped, declared))
+            .await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        as_protocol_1_8(&p, "first").await;
+        let (run, scheduler) = if scoped {
+            let (status, body) = p
+                .rest(
+                    reqwest::Method::PUT,
+                    "/quotas/iteration_concurrency",
+                    Some(&json!({"limit": 8})),
+                )
+                .await;
+            assert_eq!(status, 200, "{body}");
+            let run = p.start(&workflow, &json!({"lines": [1]})).await;
+            let scheduler = crate::support::blob_collections::scheduler(&p, None).await;
+            (run, Some(scheduler))
+        } else {
+            (p.start(&workflow, &json!({})).await, None)
+        };
+        let mut lease = None;
+        for _ in 0..20 {
+            if let Some(scheduler) = &scheduler {
+                scheduler.tick().await;
+            }
+            if let Some(found) = worker.poll(1).await.pop() {
+                lease = Some(found);
+                break;
+            }
+        }
+        let lease = lease.unwrap_or_else(|| panic!("{case}: one lease"));
+        assert_eq!(in_a_scope(&lease), scoped, "{case}");
+        let (status, _) = p
+            .rest(
+                reqwest::Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "CANCEL", "reason": "the customer changed their mind"})),
+            )
+            .await;
+        assert_eq!(status, 202, "{case}");
+        if let Some(scheduler) = &scheduler {
+            scheduler.tick().await;
+        }
+        worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .unwrap_or_else(|refused| panic!("{case}: the hand-back is refused: {refused:?}"));
+        let run_id: Uuid = run.parse().expect("run id");
+        if let Some(scheduler) = &scheduler {
+            crate::support::blob_collections::tick_until_settled(&p, scheduler, run_id, 20).await;
+        }
+        assert_eq!(p.status(&run).await, "CANCELLED", "{case}");
+        let journal = journal(&p, &run).await;
+        let withdrawn = named(&journal, "step.lease_withdrawn");
+        assert_eq!(withdrawn.len(), 1, "{case}: {journal:?}");
+        assert_eq!(withdrawn[0]["cause"], "NOT_STARTED", "{case}");
+        assert_eq!(withdrawn[0]["attempt"], 1, "{case}");
+        assert!(named(&journal, "step.failed").is_empty(), "{case}");
+        assert!(named(&journal, "step.needs_review").is_empty(), "{case}");
+        assert!(named(&journal, "step.started").is_empty(), "{case}");
+        replays(&p, &run).await;
+    }
+}
+
+/// A member's gate, open, whose last decision under its epoch started `ago` before now.
+fn gate_decided(ago: Duration) -> Arc<ServingGate> {
+    let gate = ServingGate::closed();
+    gate.decided_by_the_registry();
+    gate.open(1);
+    let now = std::time::Instant::now();
+    gate.decided_at(now.checked_sub(ago).unwrap_or(now));
+    Arc::new(gate)
+}
+
+/// Request (7) of decision D006-059 (Task 006-072, decision D006-098; the amendment of ADR-0082 decision 5): an engine whose
+/// last beat decided under its epoch started more than 25 s ago serves no capability call (`ResolveSecrets`,
+/// `ResolveDatabase`, `ReadBlob`, `WriteBlob`): each is `UNAVAILABLE` with `REGISTRY_SILENT` and a retry hint, while
+/// `Heartbeat` and the reports are served. A beat that decides again serves them again.
+#[tokio::test]
+async fn a_silent_engine_serves_no_capability_call_and_keeps_heartbeats_and_reports() {
+    let gate = gate_decided(Duration::from_secs(26));
     let mut options = Options::default();
     options.worker.idle_retry = Duration::from_millis(50);
-    options.lease_withdrawal = Some(withdrawing());
+    options.serving_gate = Some(Arc::clone(&gate));
+    options.blobs = Some(sagat_application::blobs::BlobLimits {
+        max_bytes: 1024 * 1024,
+        max_pending: 8,
+        upload_ttl: Duration::from_secs(3600),
+        abandoned_after: Duration::from_secs(3600),
+    });
     let p = platform_with(options).await;
-    record_requirement(&p).await;
-    let workflow = p.publish("ceiling", &one_attempt("ceiling")).await;
+    let workflow = p.publish("silent", &one_attempt("silent")).await;
+    let run = p.start(&workflow, &json!({})).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let lease = worker.one_task().await;
+    let silent = |status: &tonic::Status, call: &str| {
+        assert_eq!(
+            status.code(),
+            tonic::Code::Unavailable,
+            "{call}: {status:?}"
+        );
+        assert_eq!(
+            machine_code(status),
+            "REGISTRY_SILENT",
+            "{call}: {status:?}"
+        );
+        assert_eq!(
+            status
+                .metadata()
+                .get("retry-after-ms")
+                .and_then(|value| value.to_str().ok()),
+            Some("1000"),
+            "{call}: a retry hint"
+        );
+    };
+    let refused = worker
+        .resolve_secrets(&lease)
+        .await
+        .expect_err("no secret is handed out");
+    silent(&refused, "ResolveSecrets");
+    let request = worker.req(Worker::resolve_secrets_message(&lease));
+    let refused = worker
+        .client
+        .resolve_database(request)
+        .await
+        .expect_err("no credential is handed out");
+    silent(&refused, "ResolveDatabase");
+    let header = sagat_api_grpc::pb::WriteBlobHeader {
+        content_type: "application/json".into(),
+        ..sagat_api_grpc::pb::WriteBlobHeader::default()
+    };
+    let refused = worker
+        .write_blob(&lease, header.clone(), b"{}", 2)
+        .await
+        .expect_err("nothing is stored");
+    silent(&refused, "WriteBlob");
+    let refused = worker
+        .read_blob(&lease, &Uuid::now_v7().to_string())
+        .await
+        .expect_err("nothing is read");
+    silent(&refused, "ReadBlob");
+    // heartbeats and reports keep flowing
+    worker
+        .client
+        .heartbeat(worker.req(worker.heartbeat_message(&lease)))
+        .await
+        .expect("the heartbeat is served");
+
+    // a beat decided under its epoch: the calls are served again
+    gate.decided_at(std::time::Instant::now());
+    assert!(
+        worker
+            .resolve_secrets(&lease)
+            .await
+            .expect("served again")
+            .is_empty()
+    );
+    let stored = worker
+        .write_blob(&lease, header, b"{}", 2)
+        .await
+        .expect("stored");
+    worker
+        .read_blob(&lease, &stored.blob_id)
+        .await
+        .expect("read");
+    // silent again: reports and claims are served (review of 2026-11-25, decision D006-100)
+    gate.forget_capability_decision();
+    worker
+        .complete(&lease, &json!({"ok": true}))
+        .await
+        .expect("CompleteStep is served while silent");
+    assert_eq!(p.status(&run).await, "SUCCEEDED");
+    let failing = p.start(&workflow, &json!({})).await;
+    let second = worker.one_task().await;
+    let ack = worker
+        .fail_with(&second, "PAYMENT_DECLINED", false)
+        .await
+        .expect("FailStep is served while silent");
+    assert_eq!(ack.step_status, "FAILED");
+    assert_eq!(p.status(&failing).await, "FAILED");
+}
+
+/// Waits until a backend of this database waits for a lock (the barrier: `pg_stat_activity`, never a sleep).
+async fn until_a_backend_waits_for_a_lock(p: &Platform) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                   AND pid <> pg_backend_pid() AND wait_event_type = 'Lock')",
+            )
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("pg_stat_activity");
+            if waiting {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a backend waits for the held run");
+}
+
+/// Holds the row of `run` `FOR UPDATE` in a transaction of the owner, so every transaction of the run waits for it.
+async fn hold_the_run(p: &Platform, run: &str) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut held = p.api.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(Uuid::parse_str(run).expect("run id"))
+        .execute(&mut *held)
+        .await
+        .expect("the run held");
+    held
+}
+
+async fn audits(p: &Platform, action: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = $1")
+        .bind(action)
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("audits")
+}
+
+/// Correctness review Major 3 and security review Minor 2 of 2026-11-25 (decision D006-100): a capability call admitted
+/// while the window held, whose window lapses while it waits (here for the run's row, held by the test), is refused
+/// `REGISTRY_SILENT` before anything leaves, and what it would have recorded as handed out is rolled back with it: no
+/// `secret.resolved`, no `blob.read`, and no blob stored for an upload.
+#[tokio::test]
+async fn a_call_whose_window_lapses_while_it_waits_hands_out_and_records_nothing() {
+    let gate = gate_decided(Duration::ZERO);
+    let mut options = Options::default();
+    options.worker.idle_retry = Duration::from_millis(50);
+    options.serving_gate = Some(Arc::clone(&gate));
+    options.blobs = Some(sagat_application::blobs::BlobLimits {
+        max_bytes: 1024 * 1024,
+        max_pending: 8,
+        upload_ttl: Duration::from_secs(3600),
+        abandoned_after: Duration::from_secs(3600),
+    });
+    let p = platform_with(options).await;
+    declared_secret(&p, "lapse-key").await;
+    let mut ir = one_attempt("lapse-secret");
+    ir["nodes"][0]["secrets"] = json!(["lapse-key"]);
+    let secret_workflow = p.publish("lapse-secret", &ir).await;
+    let blob_workflow = p.publish("lapse-blob", &one_attempt("lapse-blob")).await;
+    let mut worker = stream_worker(&p, "first").await;
+    let secret_run = p.start(&secret_workflow, &json!({})).await;
+    let secret_lease = worker.one_task().await;
+    let blob_run = p.start(&blob_workflow, &json!({})).await;
+    let blob_lease = worker.one_task().await;
+    let header = sagat_api_grpc::pb::WriteBlobHeader {
+        content_type: "application/json".into(),
+        ..sagat_api_grpc::pb::WriteBlobHeader::default()
+    };
+    let stored = worker
+        .write_blob(&blob_lease, header.clone(), b"{}", 2)
+        .await
+        .expect("stored while the window holds");
+    let reads_before = audits(&p, "blob.read").await;
+
+    // ResolveSecrets: the resolution waits for the run, the window lapses, the run is let go
+    let held = hold_the_run(&p, &secret_run).await;
+    let mut client = worker.client.clone();
+    let request = worker.req(Worker::resolve_secrets_message(&secret_lease));
+    let call = tokio::spawn(async move { client.resolve_secrets(request).await });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = call
+        .await
+        .expect("the call ended")
+        .expect_err("no value leaves");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    assert_eq!(
+        audits(&p, "secret.resolved").await,
+        0,
+        "no resolution is recorded"
+    );
+
+    // ReadBlob: the check of the read waits, the window lapses: no byte and no audit of the read
+    gate.decided_at(std::time::Instant::now());
+    let held = hold_the_run(&p, &blob_run).await;
+    let mut client = worker.client.clone();
+    let request = worker.req(Worker::read_blob_message(&blob_lease, &stored.blob_id));
+    let call = tokio::spawn(async move {
+        let mut stream = client.read_blob(request).await?.into_inner();
+        stream.message().await
+    });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = call
+        .await
+        .expect("the call ended")
+        .expect_err("no byte leaves");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    assert_eq!(
+        audits(&p, "blob.read").await,
+        reads_before,
+        "no read is recorded"
+    );
+
+    // WriteBlob: the check of the upload waits, the window lapses: nothing is stored
+    gate.decided_at(std::time::Instant::now());
+    let blobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("blobs");
+    let held = hold_the_run(&p, &blob_run).await;
+    use sagat_api_grpc::pb::{WriteBlobHeader, WriteBlobRequest, write_blob_request};
+    let messages = vec![
+        WriteBlobRequest {
+            part: Some(write_blob_request::Part::Header(WriteBlobHeader {
+                task_id: blob_lease.task_id.clone(),
+                run_id: blob_lease.run_id.clone(),
+                step_id: blob_lease.step_id.clone(),
+                attempt: blob_lease.attempt,
+                generation: blob_lease.generation,
+                lease_token: blob_lease.lease_token.clone(),
+                instance: blob_lease.instance.clone(),
+                ..header
+            })),
+        },
+        WriteBlobRequest {
+            part: Some(write_blob_request::Part::Chunk(bytes::Bytes::from_static(
+                b"{}",
+            ))),
+        },
+    ];
+    let request = worker.req(tokio_stream::iter(messages));
+    let mut client = worker.client.clone();
+    let upload = tokio::spawn(async move { client.write_blob(request).await });
+    until_a_backend_waits_for_a_lock(&p).await;
+    gate.forget_capability_decision();
+    held.commit().await.expect("the run is let go");
+    let refused = upload
+        .await
+        .expect("the call ended")
+        .expect_err("nothing is stored");
+    assert_eq!(machine_code(&refused), "REGISTRY_SILENT", "{refused:?}");
+    let blobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs")
+        .fetch_one(&p.api.db.pool)
+        .await
+        .expect("blobs");
+    assert_eq!(blobs_after, blobs_before);
+}
+
+/// Correctness review minor 5 of 2026-11-25 (decision D006-100): below 1.8 the code is not the host's, so a
+/// `TASK_NOT_STARTED` passes no cancellation: on a cancelled, still `LEASED` step with declared secrets, from a session of
+/// 1.4 or 1.5, the fence refuses it as before this follow-up (`STALE_ATTEMPT`, nothing written), at the root and in a scope.
+#[tokio::test]
+async fn below_1_8_a_task_not_started_passes_no_cancellation() {
+    for scoped in [false, true] {
+        let p = withdrawing_platform(None).await;
+        declared_secret(&p, "older-key").await;
+        let name = format!("older-hand-back-{scoped}");
+        let workflow = p
+            .publish(&name, &cancellable(&name, scoped, &["older-key"]))
+            .await;
+        let mut worker = p.worker("first").await;
+        worker
+            .register_version(&["act.a"], if scoped { "1.5" } else { "1.4" })
+            .await;
+        let (run, lease) = first_lease(&p, &mut worker, &workflow, scoped).await;
+        let (status, _) = p
+            .rest(
+                reqwest::Method::POST,
+                &format!("/runs/{run}/operations"),
+                Some(&json!({"action": "CANCEL", "reason": "the customer changed their mind"})),
+            )
+            .await;
+        assert_eq!(status, 202, "scoped={scoped}");
+        let refused = worker
+            .fail_with(&lease, "TASK_NOT_STARTED", true)
+            .await
+            .expect_err("the fence refuses it");
+        assert_eq!(
+            machine_code(&refused),
+            "STALE_ATTEMPT",
+            "scoped={scoped}: {refused:?}"
+        );
+        let journal = journal(&p, &run).await;
+        assert!(named(&journal, "step.failed").is_empty(), "scoped={scoped}");
+        assert!(
+            named(&journal, "step.lease_withdrawn").is_empty(),
+            "scoped={scoped}"
+        );
+    }
+}
+/// Correctness review minor 6 of 2026-11-25 (Task 006-068, decision D006-094): a journal that holds a withdrawal with the cause
+/// `NOT_ACKNOWLEDGED` replays (`verify_run`). Nothing of this build writes the cause, so the fixture is SQL: a hand-back is
+/// withdrawn as `NOT_STARTED`, then its event is given the cause of protocol 1.8, the append-only guard of the journal off for
+/// that one statement, in the fixture's own transaction.
+#[tokio::test]
+async fn a_journal_that_holds_a_not_acknowledged_withdrawal_replays() {
+    let p = withdrawing_platform(None).await;
+    let workflow = p
+        .publish("not-acknowledged", &one_attempt("not-acknowledged"))
+        .await;
     let run = p.start(&workflow, &json!({})).await;
     let mut worker = stream_worker(&p, "first").await;
     as_protocol_1_8(&p, "first").await;
     let lease = worker.one_task().await;
-    let ack = worker
+    worker
         .fail_with(&lease, "TASK_NOT_STARTED", true)
         .await
-        .expect("reported");
-    assert_eq!(ack.step_status, "FAILED");
-    assert!(named(&journal(&p, &run).await, "step.lease_withdrawn").is_empty());
+        .expect("the hand-back is withdrawn");
+    let mut fixture = p.api.db.pool.begin().await.expect("a transaction");
+    sqlx::query("ALTER TABLE run_events DISABLE TRIGGER run_events_append_only")
+        .execute(&mut *fixture)
+        .await
+        .expect("the guard off in this transaction");
+    let changed = sqlx::query(
+        "UPDATE run_events SET detail = jsonb_set(detail, '{cause}', '\"NOT_ACKNOWLEDGED\"') \
+          WHERE run_id = $1 AND event_type = 'step.lease_withdrawn'",
+    )
+    .bind(Uuid::parse_str(&run).expect("run id"))
+    .execute(&mut *fixture)
+    .await
+    .expect("the cause of 1.8");
+    assert_eq!(changed.rows_affected(), 1);
+    sqlx::query("ALTER TABLE run_events ENABLE ALWAYS TRIGGER run_events_append_only")
+        .execute(&mut *fixture)
+        .await
+        .expect("the guard back");
+    fixture.commit().await.expect("committed");
+    let journal = journal(&p, &run).await;
+    assert_eq!(assert_withdrawn(&journal, "NOT_ACKNOWLEDGED"), 1);
+    replays(&p, &run).await;
+    runs_once_afterwards(&p, &run, 1).await;
 }

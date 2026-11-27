@@ -76,3 +76,14 @@ there is none.
   (FR-032-020, D1595), CDC under async (FR-032-015, D1596), time classes (FR-032-017, D1597), peer probe on
   the admin listener (FR-032-011, D1598), connector leases at activation (FR-032-007, D1599). The items
   above were re-checked against the revised text; their marks are unchanged.
+- **Settled 2026-11-24, delegate (Owner decision 2026-11-24-4), Owner decision 2026-11-24-510.** The five unticked
+  items are accepted as they stand, so they no longer block implementation under the transitional clause; their marks
+  stay unticked because the criteria are not met, and the acceptance is what lifts the gate. Reasons, item by item:
+  "No implementation details" and "No implementation details leak": the guarantees of this feature are defined by
+  PostgreSQL's replication functions and the platform's existing contracts, so naming them is the requirement, not a
+  leak; "Written for non-technical stakeholders": the readers are platform operators and integrators, and the owner's
+  questions are written for the owner; "Success criteria are technology-agnostic": replication modes and commit latency
+  are the subject of the feature; "Feature meets measurable outcomes": not applicable before the build, and the
+  outcomes are the release gate of Task T032-063. Two ticked items read differently since 2026-11-24: the amendment of
+  O1560 is constitution 5.0.0, decided by the owner (Owner decision 2026-11-24-2), and the owner's three questions are
+  answered (`plan.md`, "Readiness against `develop` (2026-11-24)").

@@ -6,6 +6,7 @@ oidc:
   audience: sagat
   jwksUri: https://idp.example/jwks.json
 secrets: {existingSecret: sagat-keys}
+schedules: {autoHandover: {databaseSecret: sagat-handover}}
 nats: {url: "nats://nats.nats:4222", credentialsSecret: nats-creds}
 controlPlane: {allowPlaintextSecrets: true}
 engine:

@@ -1,6 +1,6 @@
 # Conformance, batteries and scans (draft)
 
-## Shared five-SDK scenario `access-control`
+## Shared six-SDK scenario `access-control`
 
 File: `tests/contract/sdk-conformance/scenarios/access-control.json` with expected observations in
 `tests/contract/sdk-conformance/expected/`. The harness provisions the access objects through REST as an

@@ -295,3 +295,41 @@ investigation; behaviour is described as it exists at that revision.
 - **O1362 — Ship custom components in the first release?** *Recommended default:* yes, disabled per
   namespace until an administrator enables it, `pii` only by explicit `allowPii`, and G1361 stated in
   the Studio when the policy is enabled.
+
+## Readiness decisions (2026-11-24)
+
+Taken by the agent the coordinating session briefed for the product surface, under Owner decision 2026-11-24-4
+("delegate (OD-2026-11-24-4)"), each weighed over its options for the most architectural and business advantage. New
+entries use the feature-scoped form of `docs/governance/identifier-scheme.md`.
+
+- **Decision 027-001 — O1361 answered: no delegated mode.** Options: viewer identity only; a publisher mode with an
+  enumerated policy (Windmill's default); an app principal with its own role. Chosen: viewer identity only. The
+  business need behind a publisher mode (let a team act through an app without broad rights) is met in the same
+  release by feature 029: a custom role or a folder `runner` level on the target workflow, granted to a group, gives
+  exactly the rights the app needs, visible in the access explanation, audited and revoked on the next request. A
+  publisher mode would make every published app a standing grant outside the role model, make the audited actor
+  ambiguous and need its own approval and revocation lifecycle; constitution 5.0.0 ("Admitted scope") admits apps only
+  with sessions that carry no more than the viewer's authority. Recorded as OD-2026-11-24-702.
+- **Decision 027-002 — O1362 answered: custom components ship, off by default.** Options: ship them on by default;
+  ship them off by default; leave them for a later release. Chosen: ship, off per namespace. Without them the builder
+  has a parity gap (Windmill has custom components); the risk is confined by the dedicated sandbox origin and the
+  author-level rule (ADR-0062 decisions 6 and 7), and an administrator turns them on knowingly, with Gap 1361 shown.
+  Recorded as OD-2026-11-24-703.
+- **Decision 027-003 — ADR-0062 accepted with three refinements.** The embedded sign-in issuer is the platform's
+  sign-in service when design 013's federation is on (the control plane then redeems the code in process and
+  registers the apps origin's redirect itself, which closes Gap 1364 for federated tenants; it stays for the
+  deployment issuer); the app-session row is locked `FOR UPDATE` in slot 1, the mode ADR-0050's slot table records
+  (D1646 and the plan said `FOR SHARE`; both conflict with the revoking `UPDATE`, and `FOR UPDATE` only serializes one
+  viewer's own writes, so aligning with the accepted record costs nothing and needs no new architecture decision);
+  built-in components are Astryx components (ADR-0101). Recorded as OD-2026-11-24-701.
+- **Decision 027-004 — Start bindings go through the run input gate.** A `start` binding calls `RunService::start`, so
+  design 043's gate checks its input; a refusal (`422 VALIDATION_FAILED`, `details.rule`, `details.field`) is shown by
+  the form at the field. No new creator path is added (design 043's thirteen rows stay thirteen); T027-023 gains the
+  test that an app start is refused by the gate.
+- **Decision 027-005 — The `operation` binding kind is enabled in 0.3.0 once feature 022's standalone step admission
+  is built.** Feature 022's remaining parts are in 0.3.0 (Owner decision 2026-11-24-1), so the kind need not wait for a
+  later release; it stays refused (`BINDING_CAPABILITY_UNAVAILABLE`) until that admission exists, behind the capability
+  `apps.operation-bindings` (follow-up task T027-062).
+- **Decision 027-006 — Code workflows.** Design 044's code runs answer declared Queries and Updates from declared
+  state (its ADR-0108), so `query` and `update` bindings work for them unchanged; its ephemeral worker queries are not
+  bindable (not declared, not classified).

@@ -216,6 +216,8 @@ async fn send_report(
                     .to_owned()
             };
             let request = pb::CompleteStepRequest {
+                // Design 041 (protocol 1.7): a database runner's carry is ignored by the server; it sends none.
+                step_logs: None,
                 instance: lease.instance.clone(),
                 task_id: lease.task_id.clone(),
                 run_id: lease.run_id.clone(),
@@ -241,6 +243,8 @@ async fn send_report(
         }
         Report::Fail { code, retryable } => {
             let request = pb::FailStepRequest {
+                // Design 041 (protocol 1.7): a database runner's carry is ignored by the server; it sends none.
+                step_logs: None,
                 instance: lease.instance.clone(),
                 task_id: lease.task_id.clone(),
                 run_id: lease.run_id.clone(),

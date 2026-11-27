@@ -1248,6 +1248,9 @@ async fn report(
                     output_sha256,
                     traceparent: lease.traceparent.clone(),
                     instance,
+                    // The step-log carry of protocol 1.7 (design 041 section 2a): this SDK captures no step log
+                    // until its own task builds the capture, so it carries none, as a worker below 1.7.
+                    step_logs: None,
                 }),
                 None,
             )
@@ -1284,6 +1287,9 @@ async fn report(
                     retryable: error.retryable,
                     traceparent: lease.traceparent.clone(),
                     instance,
+                    // The step-log carry of protocol 1.7 (design 041 section 2a): this SDK captures no step log
+                    // until its own task builds the capture, so it carries none, as a worker below 1.7.
+                    step_logs: None,
                 }),
             )
         }

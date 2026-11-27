@@ -10,7 +10,7 @@ the remediation table and the conformance suite at implementation time.
 | [permission-catalog.json](./permission-catalog.json) | The classification of all 53 permissions and the folder levels |
 | [evaluation.md](./evaluation.md) | The normative evaluation function, administration rules and test vectors |
 | [group-source.md](./group-source.md) | The contract a future identity-provider group source must satisfy (not built here) |
-| [conformance.md](./conformance.md) | Five-SDK scenario, opacity battery, canary scan, escalation matrix, coverage test |
+| [conformance.md](./conformance.md) | Six-SDK scenario, opacity battery, canary scan, escalation matrix, coverage test |
 
 Unchanged on purpose (D1461): the workflow IR (`workflow.schema.json`), the worker protocol
 (`worker.proto`, no minor bump), the AsyncAPI document (no event is published), `Error.code`.
@@ -48,20 +48,22 @@ x-access:
 
 ## Capabilities
 
-`GET /version` gains (additive; the only response change for a tenant without access objects):
+`GET /version` gains these names in its one capability list (design 050, Architecture decision 0143; additive; the only
+response change for a tenant without access objects), each present when its gate has passed:
 
 ```yaml
-accessControl:
-  customRoles: true
-  groups: true
-  folders: true                      # open folders and placement
-  restrictedFolders: [workflow, run] # item kinds whose battery, scan and requirement check passed
-  operationLists: false              # same gate, for runs
-  externalGroups: false              # not built here (O1440)
+capabilities:
+  - access.custom-roles
+  - access.groups
+  - access.folders.workflow          # open folders and placement, per item kind
+  - access.restricted.workflow       # item kinds whose battery, scan and requirement check passed
+  - access.restricted.run
+  - access.operation-lists           # same gate, for runs
+  - access.external-groups           # design 013's sources are enabled (identity.federation or identity.scim)
 ```
 
 A request that needs a disabled capability is `422 VALIDATION_FAILED` with `ACCESS_CAPABILITY_DISABLED`.
-`restrictedFolders` and `operationLists` stay empty or `false` until a deployment administrator has
+The `access.restricted.*` and `access.operation-lists` names stay absent until a deployment administrator has
 activated `access-narrowing-v1` through feature 018's instance-capability registry (an audited operator
 command; activation is never a side effect of a tenant request).
 
