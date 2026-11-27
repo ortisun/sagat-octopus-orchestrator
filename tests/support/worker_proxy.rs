@@ -82,16 +82,17 @@ pub async fn start(url: &str) -> Running {
     }
 }
 impl Proxy {
-    /// The answer of a report that reached the server, dropped once when `lose_report_ack` is armed.
+    /// The answer of a report that reached the server, dropped once when `lose_report_ack` is armed: the fault is
+    /// spent by the call whatever the server answered.
     fn lose_report(
         &self,
-        response: Response<pb::StepCommandResponse>,
+        response: Result<Response<pb::StepCommandResponse>, Status>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
         if self.faults.lose_report_ack.swap(false, Ordering::SeqCst) {
             self.faults.lost_reports.fetch_add(1, Ordering::SeqCst);
             return Err(Status::unavailable("lost report answer"));
         }
-        Ok(response)
+        response
     }
 }
 #[tonic::async_trait]
@@ -137,7 +138,10 @@ impl WorkerService for Proxy {
             return std::future::pending().await;
         }
         let started = Instant::now();
-        let response = self.client.clone().complete_step(r).await?;
+        let response = match self.client.clone().complete_step(r).await {
+            Ok(response) => response,
+            Err(status) => return self.lose_report(Err(status)),
+        };
         if self.faults.measure.load(Ordering::SeqCst) {
             let mut samples = self.faults.completions.lock().unwrap();
             assert!(samples.len() < 512);
@@ -149,13 +153,13 @@ impl WorkerService for Proxy {
         if self.faults.lose_complete_ack.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("lost committed ack"));
         }
-        self.lose_report(response)
+        self.lose_report(Ok(response))
     }
     async fn fail_step(
         &self,
         r: Request<pb::FailStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        let response = self.client.clone().fail_step(r).await?;
+        let response = self.client.clone().fail_step(r).await;
         self.lose_report(response)
     }
     async fn resolve_secrets(
@@ -170,12 +174,13 @@ impl WorkerService for Proxy {
         &self,
         r: Request<pb::AppendStepLogsRequest>,
     ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
-        let response = self.client.clone().append_step_logs(r).await?;
+        let response = self.client.clone().append_step_logs(r).await;
+        // Armed for one call: spent by it whatever the server answered.
         if self.faults.lose_append_ack.swap(false, Ordering::SeqCst) {
             self.faults.lost_appends.fetch_add(1, Ordering::SeqCst);
             return Err(Status::unavailable("lost step-log answer"));
         }
-        Ok(response)
+        response
     }
     async fn resolve_database(
         &self,

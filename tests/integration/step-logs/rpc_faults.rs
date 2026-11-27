@@ -118,14 +118,18 @@ async fn a_batch_for_another_tenants_run_is_answered_before_its_audit_is_written
     assert_eq!(answer.verdict, i32::from(StepLogVerdict::StopAttempt));
     assert_eq!(answer.stop_reason, i32::from(StepLogStopReason::Lease));
     blocked_on(&p, pid, 1).await;
+    // Filed under the caller's tenant and the caller, never under the run's tenant.
+    let tenant = p.tenant.as_uuid();
     let audited = |run: String| {
         let pool = p.api.db.pool.clone();
         async move {
             sqlx::query_scalar::<_, i64>(
                 "SELECT count(*) FROM audit_records \
-                 WHERE action = 'access.denied.cross_tenant' AND resource_id = $1",
+                 WHERE action = 'access.denied.cross_tenant' AND resource_id = $1 \
+                   AND tenant_id = $2 AND actor = 'wanda'",
             )
             .bind(run)
+            .bind(tenant)
             .fetch_one(&pool)
             .await
             .expect("the cross-tenant audit")
@@ -340,4 +344,96 @@ async fn a_restart_of_the_api_in_the_middle_of_an_attempt_stores_the_next_batch_
     assert_eq!(next.verdict, i32::from(StepLogVerdict::Continue));
     assert_eq!(next.stored_through_sequence, 3);
     assert_eq!(stored_lines(&p, &lease.run_id).await, 3, "no duplicate");
+}
+
+/// The server canary through the handler (the security review of task T041-8, finding 1): a connection string whose
+/// password is the canary, sent whole by a client that skips its own redaction in the message, the exception, a field
+/// key, a field value and alone under a sensitive name. The canary is in neither the wire answer nor the captured
+/// `tracing` output of the call (the handler's span and request parsing included), and the stored line is scrubbed.
+#[tokio::test]
+async fn the_server_canary_reaches_neither_the_answer_nor_the_trace_of_the_rpc() {
+    use sagat_api_grpc::pb::{StepLogField, step_log_field};
+    let p = platform().await;
+    let (mut worker, _, _) = registered(&p, "wanda", "1.7").await;
+    let lease = leased(&p, &mut worker).await;
+    let canary = format!("cnry{}", uuid::Uuid::now_v7().simple());
+    let value = format!("postgres://svc:{canary}@db.internal/app");
+    let mut message = batch(&worker, &lease, &[1]);
+    let record = &mut message.records[0];
+    record.message = format!("connecting with {value}");
+    record.exception = format!("ConnectionError: {value} refused");
+    record.fields = vec![
+        StepLogField {
+            key: "target".into(),
+            value: Some(step_log_field::Value::StringValue(format!("dsn {value}"))),
+        },
+        StepLogField {
+            key: format!("dsn {value}"),
+            value: Some(step_log_field::Value::IntValue(1)),
+        },
+        StepLogField {
+            key: "password".into(),
+            value: Some(step_log_field::Value::StringValue(canary.clone())),
+        },
+    ];
+    let (guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
+    let answer = crate::rpc::append(&mut worker, message).await;
+    drop(guard);
+    let answer = answer.expect("a verdict");
+    assert_eq!(answer.verdict, i32::from(StepLogVerdict::Continue));
+    let stored: String = sqlx::query_scalar(
+        "SELECT coalesce(string_agg(l::text, E'\\n'), '') FROM step_log_lines l WHERE run_id = $1::uuid",
+    )
+    .bind(&lease.run_id)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the stored line");
+    assert!(
+        stored.contains("[REDACTED]"),
+        "the line is stored, scrubbed"
+    );
+    for (surface, text) in [
+        ("the wire answer", format!("{answer:?}")),
+        ("the stored line", stored),
+        ("the captured tracing output", captured.text()),
+    ] {
+        assert!(!text.contains(&canary), "the canary reached {surface}");
+    }
+}
+
+/// A database error that quotes the bound text, through the handler (the security review of task T041-8, finding 1): a
+/// `BEFORE INSERT` trigger on `step_log_lines` raises with `NEW.message`; the call fails, and the text is in neither the
+/// status the worker gets nor the captured `tracing` output of the call.
+#[tokio::test]
+async fn a_database_error_that_quotes_the_bound_text_reaches_neither_the_status_nor_the_trace_of_the_rpc()
+ {
+    let p = platform().await;
+    for statement in [
+        "CREATE FUNCTION test_quote_the_line() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'refused line: %', NEW.message; END $$",
+        "CREATE TRIGGER test_quote_the_line BEFORE INSERT ON step_log_lines \
+         FOR EACH ROW EXECUTE FUNCTION test_quote_the_line()",
+    ] {
+        sqlx::query(statement)
+            .execute(&p.api.db.pool)
+            .await
+            .expect("the quoting trigger");
+    }
+    let (mut worker, _, _) = registered(&p, "wanda", "1.7").await;
+    let lease = leased(&p, &mut worker).await;
+    let text = format!("bound-{}", uuid::Uuid::now_v7().simple());
+    let mut message = batch(&worker, &lease, &[1]);
+    message.records[0].message.clone_from(&text);
+    let (guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
+    let status = crate::rpc::append(&mut worker, message).await;
+    drop(guard);
+    let status = status.expect_err("the insert is refused");
+    for (surface, shown) in [
+        ("the status's message", status.message().to_owned()),
+        ("the status's debug form", format!("{status:?}")),
+        ("the captured tracing output", captured.text()),
+    ] {
+        assert!(!shown.contains(&text), "the bound text reached {surface}");
+    }
+    assert_eq!(stored_lines(&p, &lease.run_id).await, 0);
 }

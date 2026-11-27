@@ -552,6 +552,8 @@ async fn the_server_canary_reaches_no_row_event_audit_record_or_trace() {
         let w = world().await;
         let canary = format!("cnry{}", uuid::Uuid::now_v7().simple());
         let secret = format!("postgres://svc:{canary}@db.internal/app");
+        // Captured from before the secret is stored and resolved, so that the resolution is covered too.
+        let (guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
         w.put_secret("db-url", &secret).await;
         let workflow = w
             .publish(document(
@@ -588,7 +590,6 @@ async fn the_server_canary_reaches_no_row_event_audit_record_or_trace() {
             ],
             ..record(1, &format!("connecting with {value}"))
         };
-        let (guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
         assert_eq!(send(&ingest(&w), &a, vec![line]).await, continued(1));
         w.complete(&a.session, &a.task, &json!({}))
             .await
