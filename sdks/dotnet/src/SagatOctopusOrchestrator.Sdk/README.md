@@ -18,7 +18,7 @@ Public .NET REST client, value contracts, configuration, canonical errors/JSON a
 
 ## Invariants
 
-- The host offers protocol 1.5; copied schema ResolveDatabase is additive 1.6 and has no ordinary WorkerRpc wrapper. Retry classification accepts eligible Transport/Unavailable/RateLimited/Internal; caller cancellation remains OperationCanceledException. [SdkInfo.cs:ProtocolVersion] [Workers/WorkerRpc.cs:WorkerRpc] [SagatException.cs:SagatException]
+- The host offers protocol 1.7 (step-log capture, design 041); copied schema ResolveDatabase is additive 1.6 and has no ordinary WorkerRpc wrapper. Retry classification accepts eligible Transport/Unavailable/RateLimited/Internal; caller cancellation remains OperationCanceledException. [SdkInfo.cs:ProtocolVersion] [Workers/WorkerRpc.cs:WorkerRpc] [SagatException.cs:SagatException]
 - Canonical JSON sorts keys ordinally and rejects lone surrogates, non-finite values and digit-form integers beyond 2^53-1. Client paths are validated locally and result models retain raw JSON; server authorization/durability is outside these local checks. [CanonicalJson.cs:Write] [SagatClient.cs:RunPath] [Models.cs:Run]
 
 ## Side Effects

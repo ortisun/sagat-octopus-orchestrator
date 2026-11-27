@@ -93,6 +93,12 @@ public sealed partial class WorkerHost : IWorkerHost
     // cannot be given the internals) to read the pacing exactly instead of by the wall clock.
     private readonly TimeProvider time = TimeProvider.System;
 
+    // Step-log capture (SPEC section 6.9): the state the last registration gave its session, and the attempts that capture now. The tick of
+    // an attempt's sender is a timer of the clock above, every second; the tests replace it by reflection to tick by hand.
+    private volatile CaptureSession captureSession = CaptureSession.Off;
+    private readonly ConcurrentDictionary<AttemptCapture, byte> captures = new();
+    private readonly Func<Action, IDisposable> stepLogTicker;
+
     /// <summary>Creates a host. <see cref="SagatOptions.GrpcUrl"/>, <see cref="SagatOptions.Namespace"/>, a token and <see cref="WorkerOptions.Name"/> are required to start it.</summary>
     public WorkerHost(SagatOptions options, ILoggerFactory? loggerFactory = null)
     {
@@ -104,6 +110,12 @@ public sealed partial class WorkerHost : IWorkerHost
             throw SagatException.Invalid("MaxInflight is between 1 and 1000");
         }
 
+        if (!StepLogFormat.IsCaptureLevel(this.options.Worker.StepLogs.Level))
+        {
+            throw SagatException.Invalid("Worker.StepLogs.Level is Trace, Debug, Information, Warning, Error or Critical");
+        }
+
+        stepLogTicker = action => time.CreateTimer(_ => action(), null, StepLogLimits.FlushEvery, StepLogLimits.FlushEvery);
         this.loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         ILogger created = NullLogger.Instance;
         Safe.Run(() => created = this.loggerFactory.CreateLogger<WorkerHost>());
@@ -262,6 +274,10 @@ public sealed partial class WorkerHost : IWorkerHost
             if (late)
             {
                 Log.ShutdownCancelled(logger);
+
+                // The attempts left whose handler still runs send what they buffered once, as one batch each, before their tokens are cancelled
+                // and the channel closes (SPEC section 6.9).
+                var flushed = Task.WhenAll(captures.Keys.Select(capture => capture.FlushOnShutdownAsync(StepLogLimits.ShutdownFlush)));
                 foreach (var task in inflight.Values)
                 {
                     task.Runtime.Cancel(CancellationReasons.Shutdown);
@@ -269,7 +285,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
                 try
                 {
-                    await pending.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false);
+                    await Task.WhenAll(pending, flushed).WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false);
                 }
                 catch (TimeoutException)
                 {
@@ -278,6 +294,14 @@ public sealed partial class WorkerHost : IWorkerHost
             }
 
             running = false;
+
+            // The captures still open send nothing more once the channel closes; what they hold is counted as not sent.
+            foreach (var capture in captures.Keys)
+            {
+                capture.Close();
+            }
+
+            captures.Clear();
             current?.Close();
             current = null;
 
@@ -367,6 +391,11 @@ public sealed partial class WorkerHost : IWorkerHost
                 var match = VersionPattern().Match(accepted);
                 minor = match.Success ? (match.Groups[1].Success ? int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : 0) : 0;
                 streamUnavailable = false;
+
+                // A new session: the policy of this registration, for the attempts dispatched from now on (SPEC section 6.9). An absent policy
+                // is capture off.
+                captureSession = new CaptureSession(
+                    minor >= StepLogLimits.Minor && response.StepLogs is { Enabled: true } && options.Worker.StepLogs.Capture);
                 RequireStreamingProtocol();
                 Log.WorkerRegistered(logger, options.Worker.Name!, accepted);
                 return;
@@ -958,6 +987,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
 
         JsonDocument? document = null;
+        AttemptCapture? capture = null;
         try
         {
             try
@@ -1021,7 +1051,8 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
             }
 
-            using var secretsLoader = new SecretsLoader(lease, session, protocolMinor);
+            using var secretsLoader = new SecretsLoader(lease, session, protocolMinor, logger);
+            capture = Capture(lease, session, protocolMinor);
             var context = new ActivityExecutionContext(
                 runtime,
                 lease.ActivityName,
@@ -1044,16 +1075,23 @@ public sealed partial class WorkerHost : IWorkerHost
                 protocolMinor >= 2 ? lease.TargetNode : string.Empty,
                 protocolMinor >= 2 ? lease.TargetIdempotencyKey : string.Empty,
                 steps,
-                ContextLogger(lease.ActivityName),
+                ContextLogger(lease.ActivityName, capture),
                 secretsLoader.GetAsync,
                 (source, blobOptions, cancellationToken) => WriteBlobAsync(session, lease, runtime, protocolMinor, source, blobOptions, cancellationToken),
                 (descriptor, cancellationToken) => ReadBlobAsync(session, lease, runtime, protocolMinor, descriptor, cancellationToken));
 
-            await RunAndReportAsync(session, lease, runtime, protocolMinor, registered, typed, context, secretsLoader, started, span).ConfigureAwait(false);
+            await RunAndReportAsync(session, lease, runtime, protocolMinor, registered, typed, context, secretsLoader, capture, started, span).ConfigureAwait(false);
         }
         finally
         {
             document?.Dispose();
+
+            // An attempt that made no report with a carry is over all the same: what it holds is let go and counted.
+            if (capture is not null)
+            {
+                capture.Close();
+                captures.TryRemove(capture, out _);
+            }
         }
     }
 
@@ -1070,9 +1108,13 @@ public sealed partial class WorkerHost : IWorkerHost
         object? typed,
         ActivityExecutionContext context,
         SecretsLoader secretsLoader,
+        AttemptCapture? capture,
         long started,
         Activity? span)
     {
+        // The report carries what the attempt's logger captured (SPEC section 6.9): taken once, so every resend holds the same carry.
+        Task<StepLogCarry?> Carry() => capture is null ? Task.FromResult<StepLogCarry?>(null) : capture.CarryAsync();
+
         using var stopBeat = new CancellationTokenSource();
         var heartbeat = BeatAsync(session, lease, runtime, protocolMinor, stopBeat.Token);
         try
@@ -1091,6 +1133,7 @@ public sealed partial class WorkerHost : IWorkerHost
             {
                 if (runtime.Reason == CancellationReasons.Shutdown)
                 {
+                    capture?.End();
                     // The host is going away and the handler said it stopped: the step is not failed, its lease lapses and the
                     // server leases it again (SPEC section 6.4).
                     Safe.Add(Telemetry.TasksDropped, tags);
@@ -1110,6 +1153,9 @@ public sealed partial class WorkerHost : IWorkerHost
 
             runtime.MarkFinished();
 
+            // The handler ended: its logger captures nothing more (the calls still reach the host's logging).
+            capture?.End();
+
             // The secrets are credentials: gone when the handler is, before the result is reported.
             secretsLoader.Close();
 
@@ -1123,13 +1169,13 @@ public sealed partial class WorkerHost : IWorkerHost
 
             if (failure is not null)
             {
-                await FailAsync(session, lease, protocolMinor, failure.Code, failure.Message, failure.IsRetryable, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, failure.Code, failure.Message, failure.IsRetryable, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
 
             if (result is VerdictResult { Verdict: null })
             {
-                await FailAsync(session, lease, protocolMinor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "RECONCILIATION_ANSWER_INVALID", "a reconciler answers applied, notApplied or unknown", retryable: false, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
 
@@ -1139,7 +1185,7 @@ public sealed partial class WorkerHost : IWorkerHost
             {
                 if (protocolMinor < 3)
                 {
-                    await FailAsync(session, lease, protocolMinor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "UNSUPPORTED_PROTOCOL", "blob output requires worker protocol 1.3", retryable: false, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                     return;
                 }
 
@@ -1149,7 +1195,7 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
                 catch (SagatException)
                 {
-                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", "the blob output descriptor is malformed", retryable: false, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                     return;
                 }
 
@@ -1163,18 +1209,18 @@ public sealed partial class WorkerHost : IWorkerHost
                 }
                 catch (SagatException error)
                 {
-                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", error.Message, retryable: false, started, span).ConfigureAwait(false);
+                    await FailAsync(session, lease, protocolMinor, "OUTPUT_INVALID", error.Message, retryable: false, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                     return;
                 }
             }
 
             if (Encoding.UTF8.GetByteCount(output) > MaxOutputBytes)
             {
-                await FailAsync(session, lease, protocolMinor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", retryable: false, started, span).ConfigureAwait(false);
+                await FailAsync(session, lease, protocolMinor, "PAYLOAD_TOO_LARGE", "the output is over 256 KiB", retryable: false, started, span, carry: await Carry().ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
 
-            await CompleteAsync(session, lease, protocolMinor, output, blob, started, span).ConfigureAwait(false);
+            await CompleteAsync(session, lease, protocolMinor, output, blob, started, span, await Carry().ConfigureAwait(false)).ConfigureAwait(false);
         }
         finally
         {
@@ -1183,11 +1229,97 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private ILogger ContextLogger(string activity)
+    /// <summary>The attempt's logger: the host's logger of the activity, behind the attempt's capture when it captures (SPEC section 6.9).</summary>
+    private ILogger ContextLogger(string activity, AttemptCapture? capture)
     {
         ILogger? created = null;
         Safe.Run(() => created = loggerFactory.CreateLogger("SagatOctopusOrchestrator.Activity." + activity));
-        return SafeLogger.Of(created ?? NullLogger.Instance);
+        var hosted = created ?? NullLogger.Instance;
+        return capture is null ? SafeLogger.Of(hosted) : new SafeLogger(new StepLogLogger(hosted, capture));
+    }
+
+    /// <summary>
+    /// The capture of an attempt when its session captures (SPEC section 6.9): at 1.7 or later, the registration's policy on, the option on,
+    /// the session's and the process's capture not stopped, and the host not stopping. Its batches go on the channel of this start only.
+    /// </summary>
+    private AttemptCapture? Capture(TaskLease lease, Session session, int protocolMinor)
+    {
+        var state = captureSession;
+        if (stopping || protocolMinor < StepLogLimits.Minor || !state.Enabled || state.Stopped || ProcessStepLogs.CaptureStopped)
+        {
+            return null;
+        }
+
+        var identity = new AppendStepLogsRequest
+        {
+            TaskId = lease.TaskId,
+            Generation = lease.Generation,
+            LeaseToken = lease.LeaseToken,
+            RunId = lease.RunId,
+            StepId = lease.StepId,
+            Attempt = lease.Attempt,
+            Instance = lease.Instance,
+        };
+        var dropped = tags;
+        var capture = new AttemptCapture(
+            new CaptureHost
+            {
+                Session = () => (workerId, sessionToken),
+                Append = (request, deadline, token) => AppendStepLogsAsync(session, request, deadline, token),
+                Life = session.ReportToken,
+                Timeout = options.Timeout,
+                Dropped = (reason, records) =>
+                {
+                    var reasoned = dropped;
+                    reasoned.Add("sagat.steplogs.reason", reason);
+                    Safe.Add(Telemetry.StepLogsDropped, records, reasoned);
+                },
+                WarnOnce = line =>
+                {
+                    if (ProcessStepLogs.FirstTime(line))
+                    {
+                        StepLogMessages.CaptureStopped(logger);
+                    }
+                },
+                Ticker = stepLogTicker,
+                Time = time,
+            },
+            state,
+            identity,
+            options.Worker.StepLogs.Level);
+        captures.TryAdd(capture, 0);
+        return capture;
+    }
+
+    /// <summary>One <c>AppendStepLogs</c> on the channel of the attempt's start; a call the host gave up because it is stopping is told apart from a status the server sent.</summary>
+    private static async Task<AppendOutcome> AppendStepLogsAsync(Session session, AppendStepLogsRequest request, TimeSpan deadline, CancellationToken token)
+    {
+        if (token.IsCancellationRequested || session.ReportToken.IsCancellationRequested)
+        {
+            return AppendOutcome.HostAbandoned;
+        }
+
+        try
+        {
+            return AppendOutcome.Of(await session.Rpc.AppendStepLogsAsync(request, deadline, token).ConfigureAwait(false));
+        }
+        catch (Exception) when (token.IsCancellationRequested || session.ReportToken.IsCancellationRequested)
+        {
+            return AppendOutcome.HostAbandoned;
+        }
+        catch (Grpc.Core.RpcException error)
+        {
+            var trailer = error.Trailers.GetValue("retry-after-ms");
+            return AppendOutcome.Failed(
+                error.StatusCode,
+                int.TryParse(trailer, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var ms) ? ms : null);
+        }
+#pragma warning disable CA1031 // A transport failure, a token provider that failed: retried as UNAVAILABLE.
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return AppendOutcome.Failed(Grpc.Core.StatusCode.Unavailable, null);
+        }
     }
 
     private static bool IsCancellation(Exception error) =>
@@ -1394,7 +1526,7 @@ public sealed partial class WorkerHost : IWorkerHost
         }
     }
 
-    private async Task CompleteAsync(Session session, TaskLease lease, int protocolMinor, string output, BlobDescriptor? blob, long started, Activity? span)
+    private async Task CompleteAsync(Session session, TaskLease lease, int protocolMinor, string output, BlobDescriptor? blob, long started, Activity? span, StepLogCarry? carry = null)
     {
         var channel = session.Rpc;
         try
@@ -1416,6 +1548,12 @@ public sealed partial class WorkerHost : IWorkerHost
             if (protocolMinor >= 5 && lease.Instance is not null)
             {
                 request.Instance = lease.Instance;
+            }
+
+            // The same carry on every resend of the report (SPEC section 6.9).
+            if (carry is not null && protocolMinor >= StepLogLimits.Minor)
+            {
+                request.StepLogs = carry;
             }
 
             var reported = await WithRetriesAsync(session, token => channel.CompleteStepAsync(
@@ -1449,7 +1587,8 @@ public sealed partial class WorkerHost : IWorkerHost
     /// <see cref="TaskNotStarted"/> is reserved for the host (SPEC section 6.2): only a hand-back (<paramref name="handBack"/>) sends it, and
     /// any other failure that carries it, a handler's above all, is reported as <c>WORKER_ERROR</c> with its own message and retryable flag.
     /// </remarks>
-    private async Task FailAsync(Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long? started, Activity? span, bool handBack = false)
+    private async Task FailAsync(
+        Session session, TaskLease lease, int protocolMinor, string code, string message, bool retryable, long? started, Activity? span, bool handBack = false, StepLogCarry? carry = null)
     {
         var channel = session.Rpc;
         var safeCode = handBack ? TaskNotStarted : CodePattern().IsMatch(code) && code != TaskNotStarted ? code : "WORKER_ERROR";
@@ -1472,6 +1611,11 @@ public sealed partial class WorkerHost : IWorkerHost
             if (protocolMinor >= 5 && lease.Instance is not null)
             {
                 request.Instance = lease.Instance;
+            }
+
+            if (carry is not null && protocolMinor >= StepLogLimits.Minor)
+            {
+                request.StepLogs = carry;
             }
 
             var reported = await WithRetriesAsync(session, token => channel.FailStepAsync(
@@ -1537,7 +1681,7 @@ public sealed partial class WorkerHost : IWorkerHost
 
     // --------------------------------------------------------------------------------------- secrets
 
-    private static async Task<ActivitySecrets> ResolveSecretsAsync(Session session, TaskLease lease, int protocolMinor, CancellationToken cancellationToken)
+    private static async Task<ActivitySecrets> ResolveSecretsAsync(Session session, TaskLease lease, int protocolMinor, ILogger logger, CancellationToken cancellationToken)
     {
         if (protocolMinor < 2)
         {
@@ -1563,6 +1707,13 @@ public sealed partial class WorkerHost : IWorkerHost
             request,
             lease.Traceparent.Length > 0 ? lease.Traceparent : null,
             cancellationToken).ConfigureAwait(false);
+
+        // Every value the process resolves joins its secret set before any handler can see it (SPEC sections 6.7 and 6.9).
+        if (ProcessStepLogs.AddSecrets(answer.Secrets.Select(secret => secret.Value.Memory)) && ProcessStepLogs.FirstTime(nameof(StepLogMessages.SecretSetFull)))
+        {
+            StepLogMessages.SecretSetFull(logger);
+        }
+
         var values = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         foreach (var secret in answer.Secrets)
         {
@@ -1576,7 +1727,7 @@ public sealed partial class WorkerHost : IWorkerHost
     /// Resolves the secrets of one attempt once, on first use (a failed resolution is not remembered), and wipes them when the handler returns:
     /// after that nothing can be asked for.
     /// </summary>
-    private sealed class SecretsLoader(TaskLease lease, Session session, int protocolMinor) : IDisposable
+    private sealed class SecretsLoader(TaskLease lease, Session session, int protocolMinor, ILogger logger) : IDisposable
     {
         private readonly SemaphoreSlim gate = new(1, 1);
         private ActivitySecrets? loaded;
@@ -1589,7 +1740,7 @@ public sealed partial class WorkerHost : IWorkerHost
             {
                 return Volatile.Read(ref closed)
                     ? throw SagatException.Invalid("the secrets of an attempt are not available once its handler has returned")
-                    : loaded ??= await ResolveSecretsAsync(session, lease, protocolMinor, cancellationToken).ConfigureAwait(false);
+                    : loaded ??= await ResolveSecretsAsync(session, lease, protocolMinor, logger, cancellationToken).ConfigureAwait(false);
             }
             finally
             {

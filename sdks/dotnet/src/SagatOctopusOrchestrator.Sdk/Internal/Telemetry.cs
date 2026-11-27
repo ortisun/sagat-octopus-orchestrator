@@ -18,6 +18,7 @@ internal static class Telemetry
     internal static readonly Counter<long> Heartbeats = Meter.CreateCounter<long>("sagat.worker.heartbeats", "{heartbeat}", "Heartbeats answered.");
     internal static readonly Counter<long> Polls = Meter.CreateCounter<long>("sagat.worker.polls", "{poll}", "Polls answered.");
     internal static readonly Counter<long> Reconnects = Meter.CreateCounter<long>("sagat.worker.reconnects", "{reconnect}", "Times the host registered again or backed off after a failed call.");
+    internal static readonly Counter<long> StepLogsDropped = Meter.CreateCounter<long>("sagat.worker.steplogs.dropped", "{record}", "Step-log records an attempt dropped, by reason (sagat.steplogs.reason), counted once when the attempt ends.");
     internal static readonly Histogram<double> ActivityDuration = Meter.CreateHistogram<double>("sagat.worker.activity.duration", "s", "How long an activity attempt took, from taking the lease to reporting it.");
 
     /// <summary>The W3C trace context of the current activity, when there is one and it is W3C.</summary>

@@ -15,6 +15,18 @@ namespace SagatOctopusOrchestrator.Sdk.Tests.Support;
 
 internal sealed record Scripted(StatusCode Code, string? Reason = null, long? RetryAfterMs = null);
 
+/// <summary>
+/// One scripted answer of <c>AppendStepLogs</c> (design 041): a verdict, or a status with its <c>retry-after-ms</c> trailer; held until
+/// <see cref="Hold"/> completes (a barrier the test opens, never a fixed delay).
+/// </summary>
+internal sealed record AppendAnswer(
+    StepLogVerdict Verdict = StepLogVerdict.Continue,
+    StepLogStopReason StopReason = StepLogStopReason.Unspecified,
+    int RetryAfterMs = 0,
+    StatusCode? Code = null,
+    long? TrailerRetryAfterMs = null,
+    Task? Hold = null);
+
 internal sealed record RecordedCall(string Method, object Request, Metadata Headers, string? ClientCertificate = null)
 {
     /// <summary>When the call arrived, on the monotonic clock.</summary>
@@ -35,6 +47,15 @@ internal sealed class FakeWorkerState
     private int streams;
 
     internal string AcceptedVersion { get; set; } = "1.2";
+
+    /// <summary>The step-log policy the registration answers with (field 4 of <c>RegisterWorkerResponse</c>); none by default.</summary>
+    internal StepLogPolicy? StepLogs { get; set; }
+
+    /// <summary>Each registration gets its own session token, <c>session-1</c>, <c>session-2</c> and so on (otherwise always <c>session-1</c>).</summary>
+    internal bool NumberSessions { get; set; }
+
+    /// <summary>The answers of the next <c>AppendStepLogs</c> calls, in order; a call with none left is answered <c>CONTINUE</c>.</summary>
+    internal ConcurrentQueue<AppendAnswer> AppendAnswers { get; } = new();
 
     internal void AcceptVersions(params string[] versions)
     {
@@ -217,7 +238,32 @@ internal sealed class FakeWorkerState
 internal sealed class FakeWorkerService(FakeWorkerState state) : WorkerService.WorkerServiceBase
 {
     public override Task<RegisterWorkerResponse> RegisterWorker(RegisterWorkerRequest request, ServerCallContext context) =>
-        Answer("RegisterWorker", request, context, () => new RegisterWorkerResponse { WorkerId = "w-1", SessionToken = "session-1", AcceptedProtocolVersion = state.TakeAcceptedVersion() });
+        Answer("RegisterWorker", request, context, () => new RegisterWorkerResponse
+        {
+            WorkerId = "w-1",
+            SessionToken = state.NumberSessions ? "session-" + state.Registrations.ToString(System.Globalization.CultureInfo.InvariantCulture) : "session-1",
+            AcceptedProtocolVersion = state.TakeAcceptedVersion(),
+            StepLogs = state.StepLogs?.Clone(),
+        });
+
+    public override async Task<AppendStepLogsResponse> AppendStepLogs(AppendStepLogsRequest request, ServerCallContext context)
+    {
+        state.Record("AppendStepLogs", request, context.RequestHeaders);
+        var answer = state.AppendAnswers.TryDequeue(out var scripted) ? scripted : new AppendAnswer();
+        if (answer.Hold is { } hold)
+        {
+            await hold.WaitAsync(context.CancellationToken).ConfigureAwait(false);
+        }
+
+        // When the answer left: the order of an answer and a report is read from these records.
+        state.Record("AppendStepLogs answered", request, context.RequestHeaders);
+        if (answer.Code is { } code)
+        {
+            throw Rpc(new Scripted(code, RetryAfterMs: answer.TrailerRetryAfterMs));
+        }
+
+        return new AppendStepLogsResponse { Verdict = answer.Verdict, StopReason = answer.StopReason, RetryAfterMs = answer.RetryAfterMs };
+    }
 
     public override async Task<PollTasksResponse> PollTasks(PollTasksRequest request, ServerCallContext context)
     {

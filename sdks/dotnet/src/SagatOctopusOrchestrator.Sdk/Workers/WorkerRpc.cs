@@ -95,6 +95,19 @@ internal sealed class WorkerRpc : IDisposable
     internal Task<ResolveSecretsResponse> ResolveSecretsAsync(ResolveSecretsRequest request, string? traceparent, CancellationToken cancellationToken) =>
         CallAsync("ResolveSecrets", traceparent, (headers, call) => client.ResolveSecretsAsync(request, Options(headers, call, cancellationToken)), cancellationToken);
 
+    /// <summary>
+    /// Protocol 1.7 (design 041): the records of one leased attempt that is still running, with the attempt's own deadline (SPEC section 6.9).
+    /// The status of a failure is not mapped: the sender reads it and the <c>retry-after-ms</c> trailer itself. Neither the request nor its
+    /// answer is logged or traced.
+    /// </summary>
+    internal async Task<AppendStepLogsResponse> AppendStepLogsAsync(AppendStepLogsRequest request, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var token = await options.ResolveTokenAsync(cancellationToken).ConfigureAwait(false);
+        var headers = new Metadata { { "authorization", "Bearer " + token } };
+        using var call = client.AppendStepLogsAsync(request, Options(headers, DateTime.UtcNow + timeout, cancellationToken));
+        return await call.ResponseAsync.ConfigureAwait(false);
+    }
+
     internal async Task<(WriteBlobResponse Response, long Size, string Sha256)> WriteBlobAsync(
         WriteBlobHeader header,
         Stream source,

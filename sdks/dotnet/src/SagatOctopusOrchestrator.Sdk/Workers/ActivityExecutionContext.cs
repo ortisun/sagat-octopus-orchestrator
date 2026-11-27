@@ -150,7 +150,13 @@ public sealed class ActivityExecutionContext
     /// <summary>One of <see cref="CancellationReasons"/> once <see cref="CancellationToken"/> is cancelled; null before.</summary>
     public string? CancellationReason => runtime.Reason;
 
-    /// <summary>A logger for the handler; the log scope carries the task, run, node and attempt. Never log a payload or a secret.</summary>
+    /// <summary>
+    /// A logger for the handler. It writes to the host's logging as it always did and, when the server accepted worker protocol 1.7 and its
+    /// policy says capture is on, keeps each call at or above <see cref="StepLogOptions.Level"/> as a line of the run's step log (SPEC section
+    /// 6.9): the formatted message, the structured values of the call and of the scopes begun on this logger as fields, and the exception's
+    /// <c>ToString()</c>. Every secret value the process has resolved is replaced by <c>[REDACTED]</c> before a line leaves the process. A call
+    /// never waits for the network and never throws. Still, never log a payload or a secret.
+    /// </summary>
     public ILogger Logger { get; }
 
     /// <summary>
