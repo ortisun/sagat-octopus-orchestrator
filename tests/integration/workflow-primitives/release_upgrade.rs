@@ -128,6 +128,7 @@ async fn complete_old_ready_activity(api: &TestApi, run: RunId) {
         .complete_step(worker_request(
             api,
             CompleteStepRequest {
+                step_logs: None,
                 task_id: task.task_id.clone(),
                 run_id: task.run_id.clone(),
                 step_id: task.step_id.clone(),

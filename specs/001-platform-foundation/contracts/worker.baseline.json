@@ -11,16 +11,6 @@
         "repeated": true,
         "type": "Message:.sagat_octopus_orchestrator.v1.StepLogRecord"
       },
-      "11": {
-        "name": "final_batch",
-        "repeated": false,
-        "type": "Bool"
-      },
-      "12": {
-        "name": "highest_sequence",
-        "repeated": false,
-        "type": "Uint64"
-      },
       "2": {
         "name": "session_token",
         "repeated": false,
@@ -136,6 +126,11 @@
         "name": "instance",
         "repeated": false,
         "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      },
+      "13": {
+        "name": "step_logs",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogCarry"
       },
       "2": {
         "name": "run_id",
@@ -309,6 +304,11 @@
         "name": "instance",
         "repeated": false,
         "type": "Message:.sagat_octopus_orchestrator.v1.ExecutionInstanceIdentity"
+      },
+      "13": {
+        "name": "step_logs",
+        "repeated": false,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogCarry"
       },
       "2": {
         "name": "run_id",
@@ -1048,6 +1048,18 @@
         "name": "run_status",
         "repeated": false,
         "type": "String"
+      }
+    },
+    "sagat_octopus_orchestrator.v1.StepLogCarry": {
+      "1": {
+        "name": "records",
+        "repeated": true,
+        "type": "Message:.sagat_octopus_orchestrator.v1.StepLogRecord"
+      },
+      "2": {
+        "name": "highest_sequence",
+        "repeated": false,
+        "type": "Uint64"
       }
     },
     "sagat_octopus_orchestrator.v1.StepLogField": {

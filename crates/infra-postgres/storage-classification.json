@@ -5166,7 +5166,7 @@
         "evidence": "logical PostgreSQL value, independent of TOAST/compression"
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5184,7 +5184,7 @@
         "evidence": "logical PostgreSQL value, independent of TOAST/compression"
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5202,7 +5202,7 @@
         "evidence": "Closed set `line`, `ceiling_marker`, `script_marker` (data-model.md §1), enforced by the database CHECK `step_log_lines_kind_valid`. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5220,7 +5220,7 @@
         "evidence": "The per-row charge of 128 bytes (ADR-0027 Amendment item 4, OD-2026-11-15-6) on a NOT NULL column whose value is the closed set `trace`, `debug`, `info`, `warn`, `error` (CHECK `step_log_lines_level_valid`)."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5238,7 +5238,7 @@
         "evidence": "Closed set `attempt_records`, `attempt_bytes` or null (data-model.md §1), enforced by the database CHECK `step_log_lines_kind_valid`. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5256,7 +5256,7 @@
         "evidence": "logical PostgreSQL value, independent of TOAST/compression"
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5274,7 +5274,7 @@
         "evidence": "Closed set `attempt_records`, `attempt_bytes`, `tenant_quota` or null (data-model.md §1), enforced by the database CHECK `step_log_streams_ceiling_valid`. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5292,7 +5292,7 @@
         "evidence": "Copied from the `steps` row of the attempt: at most 8 integers, each 0..9999 (MAX_ITERATION_INDEX), the same length as its node path (CHECK `step_log_streams_path_valid`). Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5310,7 +5310,7 @@
         "evidence": "Copied from the `steps` row of the attempt: at most 8 entries (MAX_SCOPE_DEPTH), each a node id of at most 64 bytes validated by `NodeId` (CHECK `step_log_streams_path_valid`). Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5328,7 +5328,7 @@
         "evidence": "Validated node identifier of the published definition, copied from the `steps` row or the script execution of the attempt; no run input or output. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5346,7 +5346,7 @@
         "evidence": "Closed set `service_busy` or null (data-model.md §1, decision D041-129), enforced by the database CHECK `step_log_streams_not_stored_valid`. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
@@ -5364,7 +5364,7 @@
         "evidence": "Closed set `worker`, `script` (data-model.md §1), enforced by the database CHECK `step_log_streams_source_valid`. Writer/source: the migration of design 041, task T041-5."
       },
       "owner_paths": [
-        "crates/infra-postgres/migrations/20270210000000_step_logs.up.sql"
+        "crates/infra-postgres/src/step_logs.rs"
       ]
     },
     {
