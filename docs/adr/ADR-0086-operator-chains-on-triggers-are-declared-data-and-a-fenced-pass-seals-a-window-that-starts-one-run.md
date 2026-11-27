@@ -129,3 +129,22 @@ Decisions 2, 3, 6 and 7 are superseded by [ADR-0155](ADR-0155-trigger-windows-ar
 (Owner decision 2026-11-27-428): keys and `distinct` values are plain digests that never leave the database, the apply
 counts new keys on a usage row of its own, a window is identified by a random id, and the start is unfenced and writes
 its window after its run. The text of those decisions above is kept as the record of what was accepted.
+
+## Revision of 2026-11-27 (design 042, approval reads)
+
+Recorded under Owner decision 2026-11-24-4 (Owner decision 2026-11-27-467). Besides decisions 2, 3, 6 and 7, these parts
+of this record are superseded by [ADR-0155](ADR-0155-trigger-windows-are-identified-by-a-random-id-merged-as-sessions-and-started-unfenced-after-their-run.md)
+and are kept only as the record of what was accepted:
+
+- decision 4's clauses that an elapsed deadline is never extended (session windows merge and re-partition, ADR-0155
+  decision 2 and design 042 Task 042-60) and that the backlog rule counts only events with `attempts = 0` (the hold
+  covers unapplied events that can still join, ADR-0155 decision 5 and Task 042-63);
+- decision 10's sentence that the caller is recorded as the starter of the run (the engine starts every window's run,
+  and the caller is recorded in the audit records only, design 042 FR-042-023);
+- decision 11 (the fleet rule is the instance registry's capability under design 053, ADR-0153 decision 4 and design
+  042 FR-042-034);
+- the Enforced-by line's HMAC test, the Consequences' per-tenant HMAC key, admission grace and "five tables", and the
+  first revision of 2026-11-27 (the window as a slot 8a row, `operator_key_hmac` over `pgcrypto`): there is no keyed
+  hash and no definer function for keys (ADR-0155 decision 6), and the start's window write is a recorded deviation of
+  ADR-0050 decision 7 (ADR-0155).
+

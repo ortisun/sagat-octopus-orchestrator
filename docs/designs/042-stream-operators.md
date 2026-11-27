@@ -1814,7 +1814,259 @@ re-read is the third revision of this design. The cut order of section 10 applie
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T042-60 Session windows re-partition on a merge, and a merged window stays readable. This task supersedes, for
+  session windows and `debounce`, the merge rule of FR-042-016 ("windows it bridges merge into the earliest opened")
+  and the sentence of section 4 that the other windows "are deleted": an apply that bridges `OPEN` windows of one key
+  takes their union of members under the key lock, sorts it by `(received_at, source, event_id)`, keeps one member per
+  `(source, event_id)` (a duplicate answers `SUPPRESSED`/`duplicate_member` for the event being applied and is dropped
+  silently for a member already held), and splits it at every gap above `gapMs`, at `opened_at + maxWaitMs`, at
+  `maxCount` and at the byte ceiling; each part gets its deadline recomputed and its horizon cleared, the earliest part
+  keeps the surviving `window_id`, and every other window id of the union becomes a terminal `MERGED` row with
+  `merged_into` (no members, no held bytes, purged with its survivor). A read of a delivery or of `GET …/windows/{id}`
+  that names a `MERGED` window resolves through `merged_into`; no foreign key runs from `event_deliveries` to
+  `operator_windows`. `MERGED` joins the state list of section 4 (`OPEN` → `MERGED` only, written under the key lock)
+  and the state-write fitness check of Task 042-58. Tests: the property test of Task 042-15 with a generator that binds
+  `maxWaitMs`, `maxCount` and the byte ceiling, every permutation of the applies giving the same partition; the
+  arithmetic case of `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#1` (elements at 0,
+  25, …, 275, 295, 310 with `gapMs` 30 s and `maxWaitMs` 300 s) in both orders; a merge of two windows of 600 members
+  under `maxCount` 1,000; a re-admitted duplicate inside two bridged windows; a delivery read after a merge (Task
+  042-29). Answers `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#1` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#2`.
+  Refs: FR-042-016, FR-042-018, FR-042-031
+- [ ] T042-61 The fan-out start is guarded per index, and every seal sets its start time. This task supersedes, for
+  `flatMap` windows, the replay rule of FR-042-019 ("a short transaction sets `STARTED` with the replayed run id under
+  the same guard") and the guard of section 6: `RunTx::record_window_start` for index `k` updates
+  `WHERE window_id = $1 AND state = 'SEALED' AND started_count = $k`, sets `started_count = k + 1`, sets `STARTED` only
+  when `k + 1 = fan_out`, and must change exactly one row; the deletion of fan-out row `k` must delete exactly one row;
+  each index's run id is recorded in a row of its own (`operator_window_runs (tenant, namespace, window_id, index,
+  run_id)`, kept with its window); a replay of index `k` advances under the same `started_count = $k` guard in its
+  short transaction, and a replay that finds `started_count` already past `k` changes nothing. Every seal, by the pass,
+  by a flush or at the apply, sets `next_attempt_at` explicitly (the time of the seal for the pass; one second ahead
+  for a window sealed at once, so that the dispatcher's own start goes first) and resets `attempts`; the start selects
+  windows whose `next_attempt_at` is at or before `now()`, never a null. Tests: two starters held at a barrier on index
+  1 of a fan-out of 3 end with three runs and `STARTED`; a window sealed after a `quota_wait` starts at its seal time,
+  not at its old back-off. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#3` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#9`.
+  Refs: FR-042-019, FR-042-020
+- [ ] T042-62 Trigger removal, the discard and the purge get one owner, a bound and a stated lock order. This task
+  supersedes, for a removed trigger, FR-042-022's "its open windows are discarded, each audited and counted", the
+  removal steps of Task 042-59 and the purge order of section 6: the publication or `switch` that removes the trigger
+  updates the chain row to `REMOVED` first and touches no window; the `operator_windows` pass discards a `REMOVED`
+  chain's `OPEN` windows in bounded batches per tenant (at most 256 windows per tick and replica), each batch one
+  transaction taking the chain row `FOR SHARE`, then each key row `FOR UPDATE`, then its windows, with its audit
+  records; `SEALED` windows are refused by their start as Task 042-59 says. The purge takes the chain row `FOR SHARE`,
+  then the usage row, then key rows, in the slot-3 order of section 5 (chain, usage, key, windows), and deletes an
+  empty chain in a transaction of its own that takes the chain row `FOR UPDATE` first and checks again that no key,
+  mark or window is left. The slot test of `tests/support/lock_order.rs` covers the apply, the seal, the start, the
+  purge, the discard, the flush and both retries. Tests: removing a trigger that holds more windows than one batch;
+  a removal racing an apply on the same key, held at a barrier, in both orders with no deadlock; two purges of one
+  empty chain after a lapsed lease. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#3`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#6` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#8`.
+  Refs: FR-042-018, FR-042-022
+- [ ] T042-63 The backlog hold waits only for events that can still join. This task supersedes, for the backlog hold,
+  the wording of FR-042-017 and of section 6 ("the oldest `PENDING` inbox event … and skip the windows that event is
+  not past"): a window is held only by a `PENDING` inbox event of a matching source and type that has no
+  `event_deliveries` row for this trigger and whose `received_at` lies in the range that can still join the window
+  (`[opened_at - gapMs, D]` for a session window, the span for a tumbling window, at or before `D` for a count window),
+  read with `LIMIT 1` and `NOT EXISTS` over `inbox_events_pending_match_idx`. For a trigger without a source the read is
+  one per (tenant, namespace) over a second partial index `(tenant_id, namespace_id, received_at) WHERE status =
+  'PENDING'`; for a trigger without a type, the prefix `(tenant_id, namespace_id, source)`; both reads are counted in the
+  pass's statement budget. Tests: an event already `HELD` by the trigger and stuck pending because another consumer
+  waits for room does not hold a later window; a pending event received before `opened_at - gapMs` does not hold it;
+  a wildcard trigger's read uses the index (an `EXPLAIN` assertion). Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#4` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#11`.
+  Refs: FR-042-017, NFR-042-001
+- [ ] T042-64 The commit order of the two usage rows does not depend on trigger names or table order. This task
+  supersedes, for the commit-time flushes, the "by name order" rule of section 4: `operator_held_flush()` first runs the
+  tenant's content flush (`sagat_quota_flush_deltas` for the transaction, which locks `tenant_retained_usage`) and only
+  then locks the tenant's `operator_held_usage` row, so every transaction that touches both takes the content row
+  first, whichever of its tables queued the first deferred event; ADR-0050's design-042 deviation states it. A catalog
+  test checks that every table carrying `zz_operator_held_flush` also carries a `*_quota_flush` trigger. ADR-0155 gains
+  a sentence on why a held-bytes column on the existing delta path was rejected: the existing flush enforces one
+  tenant ceiling, and held bytes need their own ceiling and the final refusal of FR-042-021 inside the transaction,
+  which the commit-time flush cannot give. Tests: a window-opening apply and a start of the same tenant committing
+  together at a barrier, in both orders, with no deadlock. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#5` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#9`.
+  Refs: FR-042-021, NFR-042-002
+- [ ] T042-65 A window retry takes the key lock, and a purge of values is recorded on the window. This task supersedes,
+  for the `SEAL_EXPIRED` and `START_EXPIRED` retries, the lock order of section 6 and FR-042-018's list of who locks a
+  `REFUSED` window: a retry takes the chain row `FOR SHARE`, then the key row `FOR UPDATE` (re-reserving a slot on the
+  usage row when the key row is gone, or refusing `409 KEY_LIMIT`), then the window; a key row is kept while it has a
+  `REFUSED` window whose `values_expire_at` has not passed; the purge of an expired window's values takes the window
+  `FOR UPDATE SKIP LOCKED`, checks its state and `values_expire_at` again under that lock, deletes the values and sets
+  `values_purged_at`; a retry refuses `WINDOW_VALUES_PURGED` on that marker, never on a clock comparison. The purge
+  joins FR-042-018's lock list and the slot test. Tests: a retry of a `SEAL_EXPIRED` window whose key row was purged
+  re-reserves the slot or is refused at `maxKeys`; a retry and a value purge held at a barrier in both orders (the
+  retry wins and keeps the values, or is refused `WINDOW_VALUES_PURGED`, never `202` with values gone). Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#2` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#4`.
+  Refs: FR-042-015, FR-042-018, FR-042-019
+- [ ] T042-66 Every execution engine that runs the scheduler's collection entry lists `collection-operators-v1`,
+  whatever the collection switch, because it evaluates and restores stored chained scopes; a control plane lists it
+  when its definition service has `SAGAT_COLLECTION_OPERATORS_ENABLED` on. This task supersedes, for the engine kind,
+  the listing rule of section 10. Tests in Task 042-54: the requirement recorded for both kinds is accepted by a fleet
+  of switched-off engines and refused while an engine of a build without the capability is live. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#1`.
+  Refs: FR-042-003, FR-042-034
+- [ ] T042-67 One apply use case in `crates/application`. This task supersedes, for where the apply lives, section 5's
+  "in `EventDispatcher`" and FR-042-033's "with the dispatcher's application method": `crates/application/src/
+  operators.rs` holds `OperatorChains::apply(evaluated: TriggerChainOutput, …)`, which takes an output already
+  evaluated and runs the transaction of section 5; the dispatcher (`crates/scheduler`) and the control plane's delivery
+  retry each run `trigger_chain` in a blocking task of their own first, so `crates/application` gains no `tokio`
+  dependency beyond today's and the control plane no dependency on `crates/scheduler`. The window start calls
+  `RunInputGate::check` with `Creator::Trigger` before `RunStore::create`, as every creator does; an
+  `InputRefusal::Unavailable` leaves the window `SEALED`; `VERSION_UNAVAILABLE` is the version read returning none,
+  and `MissingReference` from `create` is not a window outcome. Tests: the delivery retry and the dispatcher reach the
+  same use case (one implementation, a test through each caller); `scripts/check-architecture.py` passes unchanged.
+  Answers `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#5` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#6`.
+  Refs: FR-042-014, FR-042-019, FR-042-033
+- [ ] T042-68 The publication check opens the element positions, and a key needs a stage that uses it. This task
+  supersedes, for the check `OPERATOR_INPUT_SCHEMA`, the sample of FR-042-032 ("with `value` null") and the scope of
+  FR-042-003: `DefinitionService` validates a one-member sample of every shape the chain can emit (the same set in both
+  requirements: the stateless `{"value": …}` when the chain has a `map`, and every window emission) against the
+  version's `inputSchema` with every subschema at a `value` position replaced by `true`, so the check covers the
+  envelope only and design 043's check of the real input at the start covers the element. A `key` or `chainLimits` on
+  a chain without `distinct`, `skip`, `take`, `window` or `debounce` is refused at publication with
+  `OPERATOR_KEY_UNUSED`. Tests in Task 042-43: CUJ 3 with a typed `value` schema (`required` `orderId`) publishes; a
+  schema that refuses the envelope's `window` key is refused; a `key` on a chain of only `filter` and `map` is refused.
+  Answers `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#1` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#5`.
+  Refs: FR-042-003, FR-042-013, FR-042-032
+- [ ] T042-69 The trigger surface of the six SDKs, without breaking a caller. This task supersedes, for triggers, the
+  one line of FR-042-028 and section 9 ("the trigger builders reuse the operator factory"): a table beside section 3's
+  collection table gives, per SDK, where `key`, `operators` and `chainLimits` attach to the SDK's `Trigger`: TypeScript
+  and Go optional fields of the trigger options, Python keyword-only arguments, C# optional init properties, Java an
+  overload of the trigger builder, Rust a builder method `Trigger::with_chain(key, operators, limits)` that leaves the
+  public `Trigger` struct (no `#[non_exhaustive]` today) unchanged; the factory gives `window` one function per surface
+  (`ops.window(count)` for a collection, `ops.window_tumbling`, `ops.window_session` and `ops.window_count` for a
+  trigger, in each language's casing), and `ops.debounce(quietMs, maxWaitMs)` and `ops.ignore_elements()`. Task 042-36
+  gains a compile test per SDK that every present trigger call still builds. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#2`.
+  Refs: FR-042-028, NFR-042-004
+- [ ] T042-70 The quota resources live in the domain enumeration, with their checks and limits. This task supersedes,
+  for the quotas of FR-042-021, the wording of Task 042-13 ("with their defaults in `quota_limits` and
+  `quota_ceilings`"): the four resources are values of `QuotaResource` (`crates/domain/src/quota.rs`) with `as_str`,
+  `default_limit`, `limit_name`, ceiling, kind and unit, named `operator_chain_count`, `operator_declared_keys`,
+  `operator_declared_marks` and `operator_held_bytes` so that no resource is named after a table; they are
+  tenant-scoped; the migration restates the three check lists (`quota_*_resource_valid`, `quota_limits_tenant_scoped`,
+  `quota_*_value_range`) with a `WHEN 'operator_held_bytes'` branch admitting bytes up to 1,099,511,627,776; the quota
+  usage view shows each one's usage under `quota:read`; `operator_held_room` also returns the resolved held-bytes and
+  content limits, so the room read stays one statement. The per-key mark ceiling is `floor(maxMarks / maxKeys)`, 10 with
+  the defaults, stated in FR-042-021 and the runbook with its tuning (a lower `maxKeys` raises it), and a mark beyond it
+  fails `MARK_LIMIT`, not `KEY_LIMIT`. Tests: the restatement test names every resource; an operator sets
+  `operator_held_bytes` to 2 GiB; the eleventh distinct value of one key under the defaults fails `MARK_LIMIT`. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#3` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#8`.
+  Refs: FR-042-015, FR-042-021, FR-042-024
+- [ ] T042-71 One error table for the trigger surface. This task supersedes, for the codes and statuses of the trigger
+  surface, the scattered wording of FR-042-033, section 1 ("its trigger twin"), section 9 and Task 042-43: one table
+  gives code, HTTP status, retryable, the endpoint or path that raises it and the error shape. The switch being off is
+  `TRIGGER_OPERATORS_DISABLED` (`IrError::TriggerOperatorsDisabled { trigger }`, `409` on publication, `503` on the
+  delivery retry, retryable); an operator of a later cut step not shipped is `OPERATOR_UNSUPPORTED`
+  (`IrError::Operator { refusal }`, `422`, not retryable), raised by `DefinitionService`, never in `convert::*`;
+  `OPERATOR_ORDER`, `OPERATOR_NEVER_EMITS`, `OPERATOR_INPUT_SCHEMA` and `OPERATOR_KEY_UNUSED` are refusal values of
+  `IrError::Operator` (`422`); the flush's `409 QUOTA_EXCEEDED`, a flush whose `flatMap` evaluation refuses the window
+  (`200` with the window `REFUSED` and its code) or overruns its budget (`409 WINDOW_EVALUATION_BUDGET`, the window
+  unchanged) are rows. `operator_windows.last_error_code` gets a `CHECK` over the closed set of window codes. The window
+  list pages with the shared `Cursor` parameter and a page schema, as `listRuns` does (`openapi.yaml` of feature 001). The control plane's trigger
+  switch is `SAGAT_TRIGGER_OPERATORS_ENABLED`, the same variable as the engine's. Each cut step shipped after 0.3.0
+  comes behind a capability of its own under Requirement 053-006. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#4`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#9` and part of
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#12`.
+  Refs: FR-042-026, FR-042-033, FR-042-034
+- [ ] T042-72 One deadline for both waits, and the true longest hold. This task supersedes, for the expiries, the
+  wording of FR-042-019 (`start_expires_at` "24 hours after the seal"), FR-042-022 and section 4: `seal_expires_at` and
+  `start_expires_at` are one deadline, `max_close_at + 24 hours`, fixed when the window opens and recomputed only when a
+  merge or a re-partition (Task 042-60) changes `opened_at`; so a window's values are held at most `maxWaitMs` (at most
+  24 hours) plus 24 hours of seal and start waits plus the 24-hour retry grace plus `maxHoldMs`, 72 hours and 10 minutes
+  at the ceilings, with no operator retry, which the runbook, the alert and Task 042-26 state. "Such a seal never
+  waits" becomes "never waits for held bytes", and the T042-24 case runs with content room. FR-042-024's deletion of
+  held values points to section 4's list of deletion points (a start, index by index after `flatMap`, a discard, a
+  refusal other than an expiry, the end of the retry grace, the purge). Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#1` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#10`.
+  Refs: FR-042-019, FR-042-022, FR-042-024
+- [ ] T042-73 The six alerts and two gauges are built as defined. This task supersedes "three alerts" in
+  NFR-042-003, Task 042-35 and the Constitution Check, and "seven tables" in Complexity Tracking (ten): Task 042-35
+  ships the six alert rules of section 9 (`OperatorWindowsLag`, `OperatorSealHorizonOld`, `OperatorSealedPastHold`,
+  `OperatorSealQuotaWait`, `OperatorWindowsExpired`, `OperatorHeldBytesNearQuota`)
+  each with its promtool case; `operator_windows` gains `seal_horizon_at`, from which
+  `operator_seal_horizon_age_seconds` is computed; `operator_held_tenants_near_quota` is emitted once by the monitor
+  (`crates/scheduler/src/monitor.rs`), not per replica. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#2`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#11` and part of
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#12`.
+  Refs: FR-042-025, NFR-042-003
+- [ ] T042-74 No evaluation under the apply's locks. This task supersedes, for a `flatMap` chain, step 4 of section 5
+  ("with `flatMap`, evaluate `select` and record the fan-out"): a `count` or `onFull` seal at the apply of a `flatMap`
+  chain marks the window `full` and due and leaves its seal to the pass, whose evaluation runs outside any transaction;
+  for a window sealed at once (a chain with no window stage), `select` and the validator run in step 1 with
+  `trigger_chain`, before any lock. The seal's evaluation of an envelope is a second evaluator method,
+  `trigger_emission(chain, envelope)`, beside `trigger_chain`. Test: a `count` seal of a `flatMap` chain at the apply
+  holds no lock while `select` runs (a barrier inside the evaluator and a concurrent apply on the same key). Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#3` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#10`.
+  Refs: FR-042-014, FR-042-020
+- [ ] T042-75 The single-window read of a value-dependent chain without `reveal=pii` answers only the window's id and
+  state, as the list and the flush do. This task supersedes, for that case, the row `GET …/windows/{windowId}` of
+  section 9. Test in Task 042-53: a Viewer reading a window of a keyed chain by its id gets id and state only. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#5`.
+  Refs: FR-042-024, FR-042-026
+- [ ] T042-76 An element nests at most 116 levels. The apply checks the depth of the projected element against 116
+  (the collection side's 120 less the 4 levels the envelope adds) and refuses a deeper one `FAILED`/`OPERATOR_DEPTH`,
+  a row of FR-042-031's table; this task adds that row. Test at the ceiling and one above it. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/security.md#6`.
+  Refs: FR-042-021, FR-042-031
+- [ ] T042-77 Budgets, audit counts, late elements and key encodings stated exactly. This task supersedes: the
+  statement budget of section 5 and NFR-042-001 (the savepoint counts, so an event joining an open window costs at most
+  9 statements); the `KEY_LIMIT` audit of section 6 (the pass writes it from `DELETE … RETURNING count` in the same
+  transaction, only for minutes older than the statement timeout); the definition of a late element of FR-042-017 (an
+  element is late only when a window sealed by its deadline or by a flush covered it, never one sealed by a ceiling, so
+  CUJ 4's later runs carry `late: false`); and the encodings of FR-042-019 and FR-042-020 (the start key hashes the
+  length-prefixed `window_id` as its 16 bytes and, after `flatMap`, the index as an 8-byte big-endian unsigned integer,
+  in `start_key`'s form; the fingerprint hashes the length-prefixed `source` and `event_id` of every member in emit
+  order, one fingerprint shared by every index of a fan-out). Tests: the budget test of Task 042-33 counts the
+  savepoint; a refusal upserted while the pass audits lands in the next minute's record; CUJ 4 with `late: false`;
+  golden values of a start key and a fingerprint. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#7`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#8`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#12` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#7`.
+  Refs: FR-042-017, FR-042-019, FR-042-020, NFR-042-001
+- [ ] T042-78 Versions, removed chains and stateless outcomes written precisely. This task supersedes: section 4's
+  "the version that registered it" (a window's `version_id` is taken from the trigger row at the apply that opens it);
+  the chain identity of FR-042-022 (a trigger re-added after removal gets a new `chain_id`; the identity
+  `(trigger_id, chain_digest)` is unique only among `ACTIVE` and `DRAINING` chains; no foreign key runs from
+  `operator_chains` to `workflow_triggers`); and the stateless path of FR-042-014 (`DeliveryRef` gains an `outcome`
+  field, `STARTED` written by `RunTx::record_delivery`; `SUPPRESSED` and `FAILED` are written by a run-less store method
+  `record_chain_outcome`, idempotent on the delivery's key, audited only for `FAILED`). Tests in Task 042-15. Answers
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/correctness.md#13` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#6`.
+  Refs: FR-042-014, FR-042-022, FR-042-031
+- [ ] T042-79 The records and the reading aids follow the design. ADR-0086 marks its decisions 4 (the elapsed-deadline
+  and `attempts = 0` clauses), 10 (the caller as starter) and 11, its Enforced-by line, its Consequences and its first
+  2026-11-27 revision paragraph as superseded by ADR-0155, and ADR-0155 lists them and records its deviations of
+  ADR-0020 decision 3 and ADR-0050 decision 6 (done in the change that settled the approval reads, 2026-11-27; this
+  task checks them against the code when the fitness checks of Task 042-58 land). This task supersedes section 6's
+  sentence that ADR-0050 decision 6 "keeps fence reads to passes' own aggregates"; FR-042-030's "cost what it costs
+  today" (every admission pays the index of section 4 and the reordered statement, measured in Task 042-19); and adds
+  to the runbook of Task 042-40 that during phase 1 of a deactivation events for chained triggers wait as room waits
+  and go `DEAD` after a day, so triggers are replaced before phase 1. The Terms section gains "value-dependent",
+  "envelope", "pre-charge" and "retry grace"; "Summary" points to FR-042-032; FR-042-019's outcome table gains the seal's
+  refusals `EXPRESSION_ERROR` and `OPERATOR_FAN_OUT`; FR-042-020 is read as four parts (evaluation, held bytes, waiting,
+  start) in the runbook. Answers `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#4`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#7`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#13`,
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/architecture.md#14` and
+  `docs/designs/042-stream-operators.reviews/2026-11-27/approval/egm-review.md#10`.
+  Refs: FR-042-003, FR-042-019, FR-042-030, NFR-042-003
 
 ### Verification Plan
 
