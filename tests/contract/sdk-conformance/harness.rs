@@ -1106,9 +1106,10 @@ async fn must_not_store_sources(run: &Run, out: &Value) -> Result<Vec<(String, S
     .map_err(|e| format!("listing the tables: {e}"))?;
     let mut database = String::new();
     for (table,) in tables {
-        let rows: (Option<String>,) = sqlx::query_as(&format!(
+        // The name comes from the catalogue, quoted by `quote_ident`: no input of a scenario reaches it.
+        let rows: (Option<String>,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT string_agg(row_to_json(t)::text, E'\\n') FROM {table} t"
-        ))
+        )))
         .fetch_one(pool)
         .await
         .map_err(|e| format!("reading the table {table}: {e}"))?;
