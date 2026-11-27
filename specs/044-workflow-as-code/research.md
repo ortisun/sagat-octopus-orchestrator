@@ -886,8 +886,10 @@ finding was answered.
   wait for an event, an approval command's step, or an activity held for its entry's approval) reaches the function as
   `HISTORY_STEP_OUTCOME` with `STEP_OUTCOME_CANCELLED` and the error code `CANCELLED`, the history form of the journal's
   `step.cancelled` for that step. The origin is `effect` when the completion's own `step_cancel` cancelled a step whose
-  attempt has not begun (`READY`, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval
-  request is withdrawn in that transaction). A step whose attempt began (leased, or awaiting its reconciliation or a
+  current attempt has not begun (`READY`, including a step waiting for its retry after earlier attempts that each
+  ended in a known failure, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval request
+  is withdrawn in that transaction), checked by a compare-and-swap on the step's row under the run lock (Technical
+  Plan 5.2, step 6). A step whose attempt began (leased, or awaiting its reconciliation or a
   review after an unknown outcome, feature 037) is never cancelled by the command: `step_cancel` journals
   `step.cancel_requested`, the review or reconciliation stays in place, and the step's outcome is whatever its
   attempt, its reconciliation or its review settles, with the origin `engine` (`CANCELLED` only when the worker or the
@@ -929,7 +931,9 @@ finding was answered.
   `requestCancellation(command)` on the promise of an activity, a script, a wait, an approval, a child or a sleep makes
   `step_cancel` (`timer_cancel` for a sleep); the promise of a cancelled activity, script, wait or approval rejects with
   `CommandCancelled`, a cancelled sleep with `TimerCancelled`, a cancelled child with `ChildWorkflowError` of status
-  `cancelled`. delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
+  `cancelled`. The promise settles from the history's outcome, never at the call: it resolves if the attempt completes,
+  and rejects only on a cancelled outcome (a sleep, whose `timer_cancel` is its end, rejects once the command is
+  issued). delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
   the same commands and raise the same three errors for one golden.
 - **D044-249** (2026-11-27) The independent correctness review of the relay changes (commits 9808a47e and b1f03c8b; no
   Blocker, six Major, five Minor, two Nit) is answered by fixes, none contested: the reported scope
@@ -940,6 +944,18 @@ finding was answered.
   additive export (Minor 8, Decision 044-244); the other cancellation sources (Minor 9) and the scope on another kind
   (Minor 10), Decision 044-245 and 044-244; the gap between bounded waits (Minor 11, Decision 044-247); the Nits in
   Technical Plan 4.2 and Decision 044-246.
+- **D044-250** (2026-11-27) The independent security review of the relay changes (commits up to 3c40a11b; no Blocker,
+  one Major, three Minor, one Nit group and one suspicion) is answered by fixes, none settled otherwise (a security
+  finding is always fixed): `actual_saga_scope` is checked against `^s-[1-9][0-9]{0,9}$` and dropped otherwise, the
+  expected scope comes from the server's record, and it joins Non-functional requirement 044-007's list of identifiers
+  checked before they appear (Major 1; `a_reported_saga_scope_outside_its_pattern_is_dropped`, Task 044-8); the
+  effect rule counts a step waiting for its retry after known failures, and Technical Plan 10.2 states that a script's
+  timeout is a known failure as for a graph script, Gap 044-032 (Minor 2); the cancellation is a compare-and-swap on
+  the step's row under the run lock, with two barrier tests in Task 044-9 (Minor 3); no eager lease for a step its own
+  completion cancels, Task 044-14 (Minor 4); `actual_saga_scope` in Technical Plan 13.1 and `sdks/SPEC.md`, a script's
+  `timeoutMs` in Technical Plan 5.1, the description of Decision 044-241 on `codeProfileScript`, and the main
+  cancellation golden's wording (Nit 5); and the promise of a cancelled step settles only from the history's outcome
+  (the suspicion, Decision 044-248 and `sdks/SPEC.md`).
 
 ## 3. Gaps
 
@@ -1067,6 +1083,13 @@ finding was answered.
   that `JournalEvent.payloadRef` would return (an input, a state or a side-effect digest would be a server-side field
   under Technical Plan 4.5); Task 044-9 writes them and Task 044-24's `no_read_returns_a_body_digest_risk_metadata_or_the_seed`
   checks the column. Raised by the security review of Task 044-2.
+
+- **G044-032** (2026-11-27) A script's attempt that ends by its `timeoutMs` or its artifact's `wall` fails as a known
+  failure (`SCRIPT_TIMEOUT`, retryable), for a graph script node and for a code run's script command alike, although
+  the script's egress through its supervisor may have had an effect; feature 037's unknown-outcome rule covers
+  activities only. A code run keeps the graph's rule (Technical Plan 10.2); whether a script's timeout after its
+  attempt began should be an unknown outcome is for the owners of features 005 and 037. Raised by the security review
+  of the relay changes (Decision 044-250).
 
 ## 4. Owner questions (all delegated)
 

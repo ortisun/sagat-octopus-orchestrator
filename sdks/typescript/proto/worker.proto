@@ -890,7 +890,8 @@ message FailWorkflowTaskRequest {
   string code_digest = 12;               // the session's digest, checked by the server
   string traceparent = 13;
   // NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
-  // so a change of scope alone is reported with what differs (Decision 044-244).
+  // so a change of scope alone is reported with what differs (Decision 044-244). Checked against ^s-[1-9][0-9]{0,9}$
+  // and dropped otherwise (the report keeps its cause); the expected scope is the server's own record (Decision 044-250).
   string actual_saga_scope = 14;
 }
 message FailWorkflowTaskResponse { bool already_applied = 1; }

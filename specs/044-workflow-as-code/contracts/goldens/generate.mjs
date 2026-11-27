@@ -1835,7 +1835,8 @@ workflow refundReview(input):                                 // run "own-steps"
     ],
     shows: [
       'run.cancel_requested is visible and waking (EXTERNAL) with its grace and the origin REQUEST.',
-      'main: `step_cancel` of the leased c-1 (journal step.cancel_requested); the engine\'s CANCELLED outcome follows.',
+      'main: `step_cancel` of the leased c-1 (journal step.cancel_requested); the activity worker reports the',
+      '  cancellation and its CANCELLED outcome follows with the origin ENGINE (the command alone never cancels it).',
       'grace-expires: no answer; the deadline pass stops the run; the stop drain\'s cancellation of the timer is',
       '  journaled after the stop began, and no workflow task follows.',
       'acknowledge-in-saga: `saga_abort` then `acknowledge_cancellation`, deferred with OUTSTANDING_OBLIGATIONS while',

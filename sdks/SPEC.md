@@ -1018,8 +1018,15 @@ must match `^[A-Z][A-Z0-9_]{0,63}$` (another becomes `WORKFLOW_FAILED`); its mes
 and target, and for an activity or a script the saga scope the record carries, `HistoryCommandRecord.saga_scope`,
 empty outside a scope; Decision 044-244), and reports a command where the history has none, a recorded command the function no longer makes, a
 `patched(id)` that disagrees with the markers and a deferred command not re-emitted last as a failure with cause
-`NONDETERMINISM`, the command number, the actual kind and target and the code digest, never a payload (Requirement
+`NONDETERMINISM`, the command number, the actual kind and target (and, for an activity or a script, the actual saga
+scope, `FailWorkflowTaskRequest.actual_saga_scope`, `s-<n>` or empty) and the code digest, never a payload (Requirement
 044-006, scenario `code-nondeterminism`).
+
+**Cancellation of the function's own steps.** `requestCancellation` only issues the command: the promise of an
+activity, a script, a wait, an approval or a child settles from the history's outcome, never at the call. It resolves
+if the attempt completes, and rejects with `CommandCancelled` (or `ChildWorkflowError`, status `cancelled`) only on a
+cancelled outcome, because a step whose attempt began may still have had its effect (Decision 044-245). A sleep's
+`timer_cancel` is its end, so its promise rejects with `TimerCancelled` once the command is issued.
 
 ### 12.5 Registration and the capability declaration
 

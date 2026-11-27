@@ -536,8 +536,8 @@ graph declares, and the versioning rules that keep code and history together.
 - **Non-functional requirement 044-007 (security)** No workflow code runs in a platform process. A workflow task holds no
   secret. Another tenant's run, history, update, query, version or key is indistinguishable from a missing one. No
   payload, secret or worker-supplied free text appears in a review cause, a nondeterminism report, a metric or a log;
-  worker-supplied identifiers (an exception type, an actual target, a marker identifier) appear only after their pattern
-  is checked, and are stored as `pii` where a review or the Studio shows them.
+  worker-supplied identifiers (an exception type, an actual target, an actual saga scope, a marker identifier) appear
+  only after their pattern is checked, and are stored as `pii` where a review or the Studio shows them.
 
 ### Success criteria
 
@@ -1407,7 +1407,9 @@ replaying SDK reads the deferral from the `workflow_task.completed` of its histo
 and expects the function to make that command last in that activation; another command is a mismatch
 (`NONDETERMINISM`). A deferral is a success: `CompleteWorkflowTask` answers OK with the outcome `ACCEPTED_DEFERRED`
 and its cause, also on an idempotent replay. `FailWorkflowTask` carries a cause from the closed
-list of section 6.3 and, for a nondeterminism, the command number and the actual kind and target; for a workflow task
+list of section 6.3 and, for a nondeterminism, the command number and the actual kind and target, and for an activity
+or a script the actual saga scope, accepted only if it matches `^s-[1-9][0-9]{0,9}$` and dropped otherwise (the report
+keeps its cause; Decision 044-250); for a workflow task
 failure, the exception's type name, accepted only if it matches `^[A-Za-z_][A-Za-z0-9_.$]{0,127}$` and dropped
 otherwise; never a message. Both are idempotent by the lease's idempotency key, looked up before any fence check and
 again under the run lock; an idempotent replay of a completion answers its outcome without any eager lease, after the
@@ -1445,7 +1447,7 @@ fields from the envelope, and adds the literal fields a command needs (marked "a
 | Kind | Fields the fragment sets | From the envelope (a fragment may repeat, never change) | Refused |
 |---|---|---|---|
 | Activity | `activity`, `retry`, `compensationRetry`, `compensationTimeoutMs`, `timeoutMs`, the literal keys of the entry's `concurrency` and `rateLimit` (feature 022), the saga scope; additions: literal `input` (validated against the entry's `inputSchema`); with design 045, `scheduleToStartMs`, `scheduleToCloseMs`, `heartbeatTimeoutMs`, `heartbeatFrom`, `retry.byErrorCode`, `nonRetryableErrorCodes` | `secrets`, `irreversible`, `highRisk`, `compensateWith`, `reconcileWith`, `outputSchema`, `requiresApproval`, the `concurrency` and `rateLimit` policies | `idempotencyTemplate` (the platform's step key is stable across attempts and replays), `destinations`, `onError` |
-| Script | `artifactDigest`, `retry`; addition: literal `input` | `language`, `secrets`, `outputSchema`, `compensateWith` from the script entry | as for an activity |
+| Script | `artifactDigest`, `retry`, `timeoutMs` (Decision 044-247); addition: literal `input` | `language`, `secrets`, `outputSchema`, `compensateWith` from the script entry | as for an activity |
 | Timer | `durationMs` | none | none |
 | Wait for event | `eventType` (an entry of `envelope.events`), `timeoutMs`, `lookbackMs` (at most the entry's); addition: literal `correlationKey` | none | `correlationExpr`, `onTimeout` (the function handles the timeout), `outputSchema` |
 | Child | `workflowId`, `cancelPolicy`; additions: literal `input`, `businessId` | `version` from the `children` entry, `outputSchema` | expression `input`, `version` |
@@ -1547,7 +1549,12 @@ and number printing are not RFC 8785's). Then, in one transaction:
    immediate effects, one batched statement, which moves `code_last_waking_seq` for any waking event it appends.
 5. Insert the node specs into `code_step_nodes`, one batched statement.
 6. Upsert the steps the commands create or change (timers, waits, the eager activity leases as provisional `LEASED`
-   rows) and the workflow-task step itself (`CLOSED`, `READY` or `WAITING` per section 4.3), one batched statement.
+   rows) and the workflow-task step itself (`CLOSED`, `READY` or `WAITING` per section 4.3), one batched statement. A
+   `step_cancel` is a compare-and-swap under the run lock: the step is cancelled as the command's effect only where its
+   row still shows no attempt begun (`READY`, or `WAITING` on an event, an approval or a gate) and, for a child,
+   `child_started` is false; otherwise the statement journals `step.cancel_requested` and leaves the step to its
+   attempt, its reconciliation or its review (Decision 044-245). No eager lease is offered for a step the same
+   completion cancels.
 7. Insert the outbox rows for the new `READY` steps; compare-and-swap the run row (`run_version`, `code_command_chain`,
    `code_command_count`, `code_last_completed_start_seq`, `code_consecutive_failures` reset to 0); mark the consumed
    inbox signals; write the idempotency record; and, only when a command needs them, the collapsed audit of no-ops, the
@@ -1586,8 +1593,9 @@ command the function did not make by the time
 it yields with no event left to apply, a command where the history has none, and a `patched(id)` that disagrees with the
 markers are mismatches, and so is an activation whose `workflow_task.completed` records a deferral in which the
 function does not make the deferred command last (section 4.4). The report (`FailWorkflowTask`, cause `NONDETERMINISM`) names the command number, the actual kind
-and target and the code digest; the server takes the expected kind and target from its own record, never from the
-worker, and checks the actual target against the identifier pattern of its kind; a marker identifier (patch or side
+and target (and saga scope) and the code digest; the server takes the expected kind, target and scope from its own
+record, never from the worker, checks the actual target against the identifier pattern of its kind, and drops an actual
+scope outside `^s-[1-9][0-9]{0,9}$`; a marker identifier (patch or side
 effect) matches `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`.
 
 #### 6.2 On the server: the command chain
@@ -2060,7 +2068,10 @@ does.
 An activity from code that reports `OUTCOME_UNKNOWN`, times out after the attempt began or loses its lease follows
 feature 037 exactly as a graph activity: its `reconcileWith` lookup runs; `applied` completes it with the lookup's output;
 anything else waits for an authorized review. The function sees only the final outcome or keeps waiting. It cannot repeat
-an unknown effect itself, because it has no handle on the attempt; a failure it sees is a known failure.
+an unknown effect itself, because it has no handle on the attempt; a failure it sees is a known failure. A script's
+attempt that ends by its `timeoutMs` or its artifact's `wall` is a known failure (`SCRIPT_TIMEOUT`), as for a graph
+script node (feature 005), although its egress may have had an effect; that is the graph's rule and its gap, Gap
+044-032, for the owners of features 005 and 037.
 
 #### 10.3 Why no local activities
 
@@ -2159,7 +2170,7 @@ carries `requiresApproval`, and nothing else; an allowed exception of the server
 | `HistoryEvent` | `seq int64`, `kind HistoryEventKind` (an enumeration of the visible kinds), `origin HistoryEventOrigin`, `command_number int64`, `at_us int64`, `oneof body` (one typed message per kind: activity outcome, timer fired, wait outcome, child finished, approval decided, saga outcome, signal, update admitted, cancellation requested, marker, command record, run started with the input and the carried state, workflow task started with its two flags, workflow task completed with a deferral's kind and target), payloads as `bytes` (at most 256 KiB) or a blob reference |
 | `Command` | `command_number int64`, `kind CommandKind`, `fragment_json bytes` for work commands, `oneof typed` (cancel, saga open, close, abort, marker, set state, update decision, update result, consume signals, complete, fail, continue as new, acknowledge cancellation) |
 | `CompleteWorkflowTask` | request: fence fields, `idempotency_key`, `applied_through_seq`, `replayed_chain bytes`, `commands` (the consumption of signals is one of them), `deferred_command` (a `Command` without a number: the terminal or continue-as-new command the SDK re-emits), `eager_activity_slots`, reserved `behaviour_flags`; answer: outcome (`ACCEPTED`, `ACCEPTED_DEFERRED` with its cause, `REVIEW` with its cause), eager provisional activity leases |
-| `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `exception_type` |
+| `FailWorkflowTask` | fence fields, `idempotency_key`, `cause WorkflowTaskFailureCause`, `command_number`, `actual_kind`, `actual_target`, `actual_saga_scope`, `exception_type` |
 | `ReadHistory` | request: lease or read token, `from_seq`; server stream of pages of `HistoryEvent` |
 | `QueryTask`, `RespondWorkerQuery` | the query's name, its arguments inline (`args bytes`, at most 64 KiB), the deadline, `gated_entries` and `state_max_bytes` of the run's current version; the answer inline (`answer bytes`, at most 256 KiB) and `committed_through_seq` |
 | `ReplayCheckTask`, `RespondReplayCheck` | the task: up to 16 items with run and read token, and the target version's `gated_entries` and `state_max_bytes`; each answer: one item, `from_command`, at most 8,192 `body_digests`, and with the last range `s_k`, `chain` and `deferred_body_digest` (when the last completion recorded a deferral); the server compares each range as it arrives and the verdict is its own |
@@ -2794,6 +2805,7 @@ a replaying worker derives from `ReadHistory`.
   `...::the_history_is_paged_at_1024_events_or_3_mib`, `...::setting_workflow_types_needs_definition_publish`, `...::reading_history_extends_the_lease_up_to_120_seconds`,
   `...::a_revoked_binding_stops_read_history`, `...::a_completion_of_404_commands_is_refused`,
   `...::a_record_carries_the_scope_its_activity_was_scheduled_in` (the overlay's `scope`, never its `root_scope`),
+  `...::a_reported_saga_scope_outside_its_pattern_is_dropped`,
   `...::a_registration_of_65_workflow_types_is_refused`, `...::a_node_spec_over_1_kib_is_refused`,
   `...::a_registration_with_the_sagat_workflow_prefix_is_refused` (the digest and sticky forms),
   `...::read_blob_with_a_replay_check_token_reads_only_blobs_of_its_run`,
@@ -2858,7 +2870,8 @@ a replaying worker derives from `ReadHistory`.
   and `...::cancelling_a_timer_that_fired_is_a_no_op_that_replays` (both at a barrier, in both orders, with a cold
   replay), `...::cancelling_a_waiting_wait_or_approval_journals_its_cancelled_outcome_and_withdraws_the_approval`,
   `...::cancelling_an_activity_of_unknown_outcome_keeps_its_review`, `...::cancelling_a_child_before_its_run_starts_finishes_it_cancelled`
-  (Decision 044-245), `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (the generator, with an
+  (Decision 044-245), `...::a_cancel_racing_a_claim_takes_one_side` and `...::a_cancel_racing_a_child_start_takes_one_side`
+  (each with the claim or the children pass held at a barrier, in both orders), `integration_workflow_as_code::activation_window::live_and_replayed_activations_are_equal` (the generator, with an
   oracle from `run_events` and the injected events: each visible event delivered exactly once, in the window holding its
   sequence),
   and `integration_claim_transition_efficiency::work_budget::a_completion_of_403_commands_of_every_kind_stays_within_63_statements`.
@@ -2965,7 +2978,9 @@ a replaying worker derives from `ReadHistory`.
   Owner-gate: OD-2026-11-24-3
 - [ ] T044-14 (deferrable) The sticky preference and eager dispatch on the server and in the six SDKs, after feature 006's
   delivery acknowledgement.
+  No eager lease is offered for a step the same completion cancels (Technical Plan 5.2, step 6).
   Red tests: `integration_workflow_as_code::sticky::a_sticky_workflow_task_goes_to_its_session_first`,
+  `...::eager::a_step_cancelled_in_its_own_completion_gets_no_eager_lease`,
   `...::the_timer_pass_rewrites_an_expired_sticky_name_and_writes_its_hint`, `...::release_sticky_of_another_session_changes_nothing`,
   `...::a_failure_clears_the_sticky_fields`, `...::a_move_clears_the_sticky_fields`,
   `...::an_eager_lease_respects_quotas_gates_and_approvals`, `...::eager_activity_leases_are_provisional_and_granted_in_the_completion_transaction`,

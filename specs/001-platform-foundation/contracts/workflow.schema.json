@@ -3547,6 +3547,7 @@
     "codeProfileScript": {
       "type": "object",
       "additionalProperties": false,
+      "description": "The code profile of a script command (Technical Plan 5.1). The publisher's fields (secrets, compensateWith) may be repeated from the script's envelope entry, never changed: each one present must equal the entry's value (secrets compared as sets), and one the entry does not set is refused (Decision 044-241).",
       "required": [
         "type",
         "artifactDigest"

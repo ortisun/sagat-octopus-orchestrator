@@ -7685,7 +7685,8 @@ type FailWorkflowTaskRequest struct {
 	CodeDigest     string                   `protobuf:"bytes,12,opt,name=code_digest,json=codeDigest,proto3" json:"code_digest,omitempty"`          // the session's digest, checked by the server
 	Traceparent    string                   `protobuf:"bytes,13,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	// NONDETERMINISM of an activity or a script: the saga scope the function scheduled it in (empty outside a scope),
-	// so a change of scope alone is reported with what differs (Decision 044-244).
+	// so a change of scope alone is reported with what differs (Decision 044-244). Checked against ^s-[1-9][0-9]{0,9}$
+	// and dropped otherwise (the report keeps its cause); the expected scope is the server's own record (Decision 044-250).
 	ActualSagaScope string `protobuf:"bytes,14,opt,name=actual_saga_scope,json=actualSagaScope,proto3" json:"actual_saga_scope,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
