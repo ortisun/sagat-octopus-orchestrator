@@ -907,8 +907,8 @@ take the same options.
 ```typescript
 activity<T>(name: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number;
   concurrencyKey?: string; rateLimitKey?: string }): Promise<T>          // fragment: activity profile
-script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy }): Promise<T>
-  // no timeoutMs: the artifact's policy (`wall`) bounds a script, as for a graph script node (Decision 044-247)
+script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number }): Promise<T>
+  // timeoutMs as for a graph script node; the artifact's policy (`wall`) bounds the attempt as well (Decision 044-247)
 sleep(durationMs: number): Promise<void>                                  // timer
 waitForEvent<T>(eventType: string, correlationKey: string, options: { timeoutMs: number; lookbackMs?: number }): Promise<T | undefined>
   // timeoutMs is required (1 ms to 366 days), as for a graph waitEvent node (Decision 044-247)
@@ -925,6 +925,9 @@ patched(id: string): boolean; deprecatePatch(id: string): void
 sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
 now(): Date; random(): number; randomInt(n: number): number; uuid(): string
 continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
+requestCancellation(command: Promise<unknown>): void   // step_cancel, or timer_cancel for a sleep (Decision 044-248)
+  // a cancelled activity, script, wait or approval rejects with CommandCancelled, a sleep with TimerCancelled,
+  // a child with ChildWorkflowError (status 'cancelled')
 cancellation: { requested: boolean; promise: Promise<void> }; acknowledgeCancellation(): never
 class WorkflowFailure extends Error { constructor(code: string, safeMessage: string) }
 continueAsNewSuggested(): boolean; historyLimitReached(): boolean
@@ -947,11 +950,11 @@ The client gains `definitions.publishCode(manifest, envelope, declarations?)` (�
 | Language | Package | Workflow API | Client additions |
 |---|---|---|---|
 | TypeScript | entry point `@sagat-octopus-orchestrator/sdk/workflows` (`./workflows` in the package's `exports`), which checks at load that Node is 22.8 or later; the bundler `@sagat-octopus-orchestrator/workflows-bundler` (`sdks/typescript-workflows-bundler/`, command `sagat-workflows`) | §12.1 | §12.1 |
-| Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
-| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
-| C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
+| Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `request_cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
+| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `RequestCancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
+| C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `RequestCancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
 | Java | artifact `sagat-workflows` (Java release 21; the core SDK stays on release 17) | The same names as TypeScript; the SDK also provides `Async.function`, `Promise` and `WorkflowQueue` for branches and queues | The same names, in the core SDK |
-| Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
+| Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, `ctx.request_cancellation`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
 
 A language's waiting calls return its own asynchronous shape (a promise, an awaitable, a future, a task); the shapes and
 the exact option types are fixed by that SDK's runtime task, under these names. Each SDK documents the same rules for
@@ -1104,7 +1107,8 @@ in a test of the language's own framework (Requirement 044-025):
   default), **export format version 1**: JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1,
   "gatedEntries": [...], "stateMaxBytes": n, ...}`, every payload redacted by the rules of feature 016 for the reader
   and every blob a reference without its content.
-- The replayer **refuses a history of an unknown format version**.
+- The replayer **refuses a history of an unknown format version**, and ignores the fields of a line it does not know
+  (a format grows additively within its version, Decision 044-244).
 - A replay that reads a placeholder (a redacted field, a blob-carried value) stops with the verdict
   **`INCONCLUSIVE_REDACTED`** at that command, never with a false mismatch.
 - A mismatch names the command number and the expected and actual kind and target (and saga scope, for an activity or a

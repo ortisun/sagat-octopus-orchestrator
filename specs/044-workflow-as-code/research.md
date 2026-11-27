@@ -876,15 +876,27 @@ finding was answered.
   the engine plans (Technical Plan 10.1), so a replay that moves a member between scopes is another saga; left to the
   chain alone it would be found only by the server and a dry-run move, under the less precise cause, and never by the
   replayer in continuous integration. The scope is a structural identifier of the run, as `node` is, not a body, an
-  actor or risk metadata, so the rule that a record never carries a body holds. Answers the TypeScript lane's Gap
-  044-303.
+  actor or risk metadata, so the rule that a record never carries a body holds. A report of a mismatch names the scope
+  the function used (`FailWorkflowTaskRequest.actual_saga_scope`, field 14), so a change of scope alone is reported
+  with what differs; `Command.saga_scope` on any kind but an activity or a script is `COMMAND_INVALID`. An export of
+  format 1 gains the field additively: a replayer ignores the fields of a line it does not know (`sdks/SPEC.md` 12.9),
+  and no export of format 1 exists yet (Task 044-24 builds it), so no reader meets a format 1 line without the scope
+  of a scoped activity. Answers the TypeScript lane's Gap 044-303.
 - **D044-245** (2026-11-27) A cancelled step that the function can cancel with `step_cancel` (an activity, a script, a
   wait for an event, an approval command's step, or an activity held for its entry's approval) reaches the function as
   `HISTORY_STEP_OUTCOME` with `STEP_OUTCOME_CANCELLED` and the error code `CANCELLED`, the history form of the journal's
-  `step.cancelled` for that step: with the origin `effect` when the completion's own `step_cancel` cancelled a step that
-  no worker held (`READY`, or `WAITING` on an event or an approval, whose open approval request is withdrawn in that
-  transaction), and with the origin `engine` when a leased attempt ends cancelled later or the stop drain cancels the
-  step (a timer included). `HistoryWaitOutcome` (satisfied or timed out) and `HistoryApprovalDecided` (approved,
+  `step.cancelled` for that step. The origin is `effect` when the completion's own `step_cancel` cancelled a step whose
+  attempt has not begun (`READY`, or `WAITING` on an event, an approval, or a gate of feature 022; an open approval
+  request is withdrawn in that transaction). A step whose attempt began (leased, or awaiting its reconciliation or a
+  review after an unknown outcome, feature 037) is never cancelled by the command: `step_cancel` journals
+  `step.cancel_requested`, the review or reconciliation stays in place, and the step's outcome is whatever its
+  attempt, its reconciliation or its review settles, with the origin `engine` (`CANCELLED` only when the worker or the
+  review establishes it), because stopping is not evidence that an effect never happened. The origin is `engine` too
+  when the engine cancels a step: a saga abort's `cancelPolicy` on a member still in flight, and after the run closed
+  the stop drain and continue-as-new's handoff (a timer or a wait included, which the function never sees). A child
+  whose run has not started yet (its `child_run_id` reserved, the children pass not run) ends with
+  `HISTORY_CHILD_FINISHED`, status `CANCELLED`, an empty `child_run_id` and the origin `effect`, and the children pass
+  skips it. `HistoryWaitOutcome` (satisfied or timed out) and `HistoryApprovalDecided` (approved,
   rejected or expired) keep their outcomes; a child's cancellation is its `HISTORY_CHILD_FINISHED` with the status
   `CANCELLED` once the child run ends; a timer the function cancels ends with the record of its `timer_cancel`, which is
   that `step.cancelled`. delegate (OD-2026-11-24-4): one outcome for every cancellable step, the one the journal
@@ -893,23 +905,41 @@ finding was answered.
 - **D044-246** (2026-11-27) In every transaction that creates a run (a start, Signal-with-Start, Update-with-Start, a
   schedule's or trigger's start, a child's start, a successor's handoff), `run.started` is the run's first journal row,
   at sequence 1; the signal a Signal-with-Start buffers and the update an Update-with-Start admits are appended after it
-  in the same transaction, so activation 1 applies `run.started`, where the function begins and registers its handlers,
+  (and after the `run.start_delayed` that feature 018 journals right after `run.started` for a delayed start) in the same
+  transaction, so activation 1 applies `run.started`, where the function begins and registers its handlers,
   before the `signal.buffered` or the `update.admitted`. A reset's new run begins with the prefix it copies, whose first
   row is the source's `run.started`. delegate (OD-2026-11-24-4): an SDK starts the function on `run.started`, and the
   TypeScript runtime rejects an update applied before any handler exists (`HANDLER_NOT_REGISTERED`); the corpus
   (`code-update-with-start`, sequences 1 and 2) and `the_goldens_parse_and_their_chains_recompute` ("run.started
   first") hold it for the goldens, and Task 044-21 holds it on the server with
-  `update_with_start_journals_run_started_first`.
-- **D044-247** (2026-11-27) The code profile keeps the IR's rules: a script command takes no `timeoutMs`, because a
-  script is bounded by its artifact's policy (`wall`, 1 s to 15 min, `ScriptPolicy` in `crates/domain/src/scripts.rs`),
-  as a graph script node is, which has no `timeoutMs` either; and a wait for an event requires `timeoutMs` (1 ms to 366
-  days, the graph node's rule). Technical Plan 1.12's signatures are corrected to `script<T>(artifactDigest, input,
-  options?: { retry? })` and `waitForEvent<T>(eventType, correlationKey, options: { timeoutMs: number; lookbackMs?:
-  number })`, and `sdks/SPEC.md` with them. delegate (OD-2026-11-24-4): a per-call script timeout would be a second limit
-  beside the reviewed artifact policy, one the command could set and publication approval would not see; a wait without
-  a bound would hold its subscription for the run's lifetime, which the graph refuses for the same reason, and a
-  function that waits longer loops over bounded waits; per-command deadlines come with design 045's fields (Task
-  044-27).
+  `update_with_start_journals_run_started_first` and `signal_with_start_journals_run_started_first`.
+- **D044-247** (2026-11-27) The code profile follows the graph's nodes for both: a script command takes `timeoutMs`, as
+  a graph script node does (the base node's `timeoutMs`, which `crates/infra-ir/src/convert.rs` reads for every node),
+  so Technical Plan 1.12's `script(..., {retry, timeoutMs})` stands and `codeProfileScript` gains the field; the
+  attempt is bounded by it and by its artifact's policy (`wall`, 1 s to 15 min), whichever ends first; and a wait for
+  an event requires `timeoutMs`, as the graph node does, so Technical Plan 1.12's signature becomes
+  `waitForEvent<T>(eventType, correlationKey, options: { timeoutMs: number; lookbackMs?: number })`, and `sdks/SPEC.md`
+  with it. Both durations are the code profile's (1 ms to 366 days), stricter than the graph's bare minimum on purpose
+  (Decision 044-242). delegate (OD-2026-11-24-4): a wait without a bound would hold its subscription for the run's
+  lifetime, which the graph refuses for the same reason; a function that waits longer loops over bounded waits, each
+  with a `lookbackMs` that covers the gap between one wait's timeout and the next wait's start (at most 7 days), or an
+  event that arrives in the gap is not seen. Task 044-5 holds the script's field with
+  `a_script_fragment_takes_timeout_ms_as_a_graph_script_node`.
+- **D044-248** (2026-11-27) Technical Plan 1.12 names the cancellation of a function's own steps and what it raises:
+  `requestCancellation(command)` on the promise of an activity, a script, a wait, an approval, a child or a sleep makes
+  `step_cancel` (`timer_cancel` for a sleep); the promise of a cancelled activity, script, wait or approval rejects with
+  `CommandCancelled`, a cancelled sleep with `TimerCancelled`, a cancelled child with `ChildWorkflowError` of status
+  `cancelled`. delegate (OD-2026-11-24-4): the names the TypeScript lane built (its Decision 044-311), so six SDKs make
+  the same commands and raise the same three errors for one golden.
+- **D044-249** (2026-11-27) The independent correctness review of the relay changes (commits 9808a47e and b1f03c8b; no
+  Blocker, six Major, five Minor, two Nit) is answered by fixes, none contested: the reported scope
+  (`actual_saga_scope`, Major 1); Decision 044-247 restated on the graph's real rules (Major 2: a graph script node does
+  take `timeoutMs`); the cancellation of a step whose attempt began, and of a child not started (Majors 3 and 4,
+  Decision 044-245); the cancel call and its errors (Major 5, Decision 044-248); the named server tests (Major 6, in
+  Tasks 044-5, 044-8, 044-9 and 044-21); the corpus checks of one end per step and of the origins (Minor 7); the
+  additive export (Minor 8, Decision 044-244); the other cancellation sources (Minor 9) and the scope on another kind
+  (Minor 10), Decision 044-245 and 044-244; the gap between bounded waits (Minor 11, Decision 044-247); the Nits in
+  Technical Plan 4.2 and Decision 044-246.
 
 ## 3. Gaps
 
