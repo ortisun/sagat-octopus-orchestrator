@@ -58,7 +58,18 @@ of a model or MCP call (Decision 025-005).
   `ResolveModelCall` and `ResolveMcpCall` each refuse every kind but their own, so the checks below
   cannot be bypassed through another call.
 
-## Credential delivery (Principle V, first declared set)
+## Credential delivery (Principle V: static credentials under the first declared set, broker tokens under the third)
+
+Two paths, each with its own checks (Decision 025-020). The static credentials (a provider's API key or
+bearer token, an MCP server's static bearer secret) follow the first declared set, below. A broker
+token (the Entra access token, and an OAuth MCP server's token once enabled) follows the third declared
+set: only the current access token, never a refresh token, client secret or signing key, delivered
+under the same caller, binding, lease and audit checks, the resource's authorities below and the
+secret-access rules of the slots the broker reads, and it is never a first-set secret. On both paths
+the resource's authorities are checked in both phases: the publisher's and, for a run a person
+started, the initiator's `resource:use` on every pinned provider and MCP-server resource, and
+`resource:effect` on the MCP-server resource for every `write` `mcp` tool (feature 021,
+FR-021-031); a missing authority refuses disclosure.
 
 A model-call or MCP-call task's immutable task definition is the agent node of the published version
 plus the provider revision and the MCP-server revision that version pins; a probe or refresh task's is
@@ -92,14 +103,16 @@ the two provider modes above, are outside it: they reach access tokens only thro
 broker, under the third declared set of Principle V that the owner approved for constitution 5.1.0
 (Owner decision 2026-11-25-3), merged in pull request 286; `auth_mode` `oauth-client-credentials` is refused at save
 until the broker is built (Gap 025-001), and the OAuth fields of `McpEndpoint` below
-are reserved for that case. Once the broker exists, the two provider modes are delivered through it
-(Decision 025-017): the client secret and the long-lived AWS key pair are read by the broker only; for
-`azure-entra-client-credentials` the broker runs the client-credentials grant against the recorded
-Entra authority, and for `aws-access-key` it calls AWS STS (`AssumeRole` with the recorded role,
-`GetSessionToken` without one; 900 seconds by default, at most 3,600) and mints from that session an
-Amazon Bedrock short-term API key; `ResolveModelCall` returns that access token, with its expiry, in the
-`bearer` slot, and the runner sends it as a bearer token. The runner makes no token request, holds no
-SigV4 signer, and never receives the client secret, the long-lived key or the session's signing key.
+are reserved for that case. Once the broker exists, `azure-entra-client-credentials` is delivered
+through it (Decision 025-017): the client secret is read by the broker only, the broker runs the
+client-credentials grant against the recorded Entra authority, and `ResolveModelCall` returns the access
+token, with its expiry, in the `bearer` slot under the third-set path above; the runner sends it as a
+bearer token, makes no token request and never receives the client secret. `aws-access-key` stays
+refused until the owner answers Owner question 025-002 (Decision 025-020); if the answer admits it, the
+broker would call AWS STS (`AssumeRole` with the recorded role, `GetSessionToken` without one; 900
+seconds by default, at most 3,600) and mint from that session an Amazon Bedrock short-term API key,
+returned the same way, so the runner would hold no SigV4 signer, no long-lived key and no session
+signing key.
 
 ## New calls
 

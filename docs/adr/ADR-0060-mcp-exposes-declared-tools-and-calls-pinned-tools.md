@@ -48,7 +48,8 @@ to change once clients depend on it:
    schema, a closed result projection with `disclosure: "declared-mcp-result-v1"` and a
    `maxResultClassification` (`public`, `internal` or `pii`). Saving an exposure requires `mcp:expose`,
    the right to start the target and the rights of the declared level. An exposure MUST NOT target an
-   unattended version: one containing an agent `write` tool acknowledged `approval: "none"`, or able to
+   unattended version: one containing an agent `write` tool acknowledged `approval: "none"` or whose
+   `decisionFields` leave out any input field (a blind approval, feature 025 Decision 025-020), or able to
    start a child workflow (child node or `child` tool, at any depth, under its version policy) that is
    unattended; checked when the exposure is saved, again when a call resolves the version, and at every
    child admission under a run the MCP server admitted (feature 026 public links apply the same rule).

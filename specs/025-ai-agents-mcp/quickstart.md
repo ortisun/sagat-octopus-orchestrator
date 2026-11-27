@@ -58,8 +58,8 @@ Expected: revision 1, `ACTIVE`, no credential value in the response; the probe i
 values, not real prices. Saving the same provider with `"credential": {"mode":
 "azure-entra-client-credentials", ...}` or `aws-access-key` is refused with
 `AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker exists (Gap 025-001); once it does, the
-runner receives only an access token from it (an Entra access token, or an Amazon Bedrock short-term
-API key minted from a short-lived STS session), never the client secret or the access key (Decision
+runner receives only an Entra access token from it, never the client secret, and `aws-access-key`
+stays refused until the owner answers Owner question 025-002 (Decision 025-020; Decision
 025-017).
 
 ## 2. Publish and run an agent (US01–US04)
@@ -99,6 +99,7 @@ endpoint returns it only to a holder of `payload:read-internal` and the reveal g
 | Ceiling lowered after publication | keep the published version; save a new provider revision with `maxPromptClassification: public` (no republication); start a run, and separately let a run already waiting on approval reach turn 3 | the new run is refused at admission (`409 AI_DESTINATION_RESTRICTED`); the waiting run's next model call fails `CLASSIFICATION_EGRESS_REFUSED` before dispatch and the dev provider receives nothing |
 | Blind approval | decide the `issue_refund` approval as a member without `payload:read-internal` | the tool-call view shows the decision context, the redacted transcript outline and every input field masked by path and level only, with `decidable: false`; the decision is `403 APPROVAL_INPUT_WITHHELD`, nothing is applied, `ai.approval_input_withheld` is audited |
 | Masked decision declared | with a context field annotated `pii` (so the transcript level is `pii`), republish with `issue_refund`'s approval `decisionFields: []` (an `activity` tool, which may run with `approval: "none"`); decide as an `operator` without the reveal grant | the view masks `orderId` and `amountCents` by path and level only; `decidable: true`; the decision applies and records the masked fields; the same declaration on an `operation` tool is refused at publication `DECISION_FIELDS_REQUIRED` |
+| Narrowed approval offered remotely | the version of the "Masked decision declared" row (`issue_refund` with `decisionFields: []`); save an MCP exposure of it, and call a parent exposed workflow that starts it as a child | the exposure save is `422 UNATTENDED_WRITE_TOOL`; the child admission under the MCP-admitted parent creates no child and the tool call fails `UNATTENDED_WRITE_TOOL`; the same versions run normally when started by a person |
 | No decider with context | a `pii` transcript, the default `decisionFields`, an `escalation` route to the `admin` role, nobody holding the reveal grant; approval `timeoutMs: 120000` | at open, `ai.approval_escalated`; within 60 seconds the request is marked `NO_DECIDER_WITH_CONTEXT` and `agent_approvals_without_decider` is 1; at the deadline `onExpire` applies with the reason `NO_DECIDER_WITH_CONTEXT`, audited `ai.approval_no_decider`; granting the reveal grant to an `admin` before the deadline clears the mark at the next sweep and that admin decides |
 | Redirected probe | dev provider scenario `redirect-probe` (`302` to another allowed host) | the probe fails `AI_DESTINATION_DENIED`, `egress.denied` is audited, and the other host receives no request and no credential |
 | Undeclared tools | scenario `undeclared-tools` (256 requests named after a canary string) | 256 refusal results; the run graph, journal and spans show `UNKNOWN_TOOL` and call indexes only; the canary appears only in the transcript |

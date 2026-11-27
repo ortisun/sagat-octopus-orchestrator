@@ -280,9 +280,11 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 - [ ] T025-032 [US3] `approval_requests` owner kind `AGENT_TOOL_CALL`, the single shared amendment of
   feature 014 that 026 cites (coordinator C22): migration, constraint versions, the escalation columns
   of Decision 025-019 (`decision_fields`, `escalation_policy`, `escalated_at`, `context_checked_at`,
-  `no_decider_reason`, null for every other owner kind) and their partial index, lock-order review with
-  feature 014 (G1289) — FR-025-017 — `crates/infra-postgres/migrations/`,
-  `src/primitives.rs` — 014 approval suites still pass; new owner-kind tests.
+  `no_decider_reason`, null for every other owner kind) and their partial index, `GRANT UPDATE
+  (escalated_at, context_checked_at, no_decider_reason) ON approval_requests TO sagat_app` (Decision
+  025-020), lock-order review with feature 014 (G1289) — FR-025-017 — `crates/infra-postgres/migrations/`,
+  `src/primitives.rs` — 014 approval suites still pass; new owner-kind tests; the runtime-role sweep
+  (Task 025-007) runs the escalation and the context check with `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
 - [ ] T025-033 [US3] Open, decide, expire and cancel tool approvals; `refuse`/`fail`; clamped deadline;
   the decision refusal of Task 025-096 and the escalation of Task 025-103 — FR-025-017, 018 —
   `crates/application/src/agents/approvals.rs` — races decision vs expiry vs escalation vs cancel (50
@@ -366,7 +368,9 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   URL-safe) and hexadecimal canaries of at least 8 bytes; no argument above the server's
   `maxArgumentClassification` reaches it; an `MCP_TOOL_ERROR` text never reaches an agent whose
   transcript level is below `pii`. Canaries shorter than 8 bytes and doubly encoded or compressed ones
-  are run and reported as known gaps (Gap 025-004), never counted as passes.
+  are run and reported as known gaps (Gap 025-004), never counted as passes, as are a base64 canary
+  resolved by a child workflow's activity and returned through a `child` tool, and a non-UTF-8 canary
+  (Decision 025-020).
 - [ ] T025-043 [P] [US5] Retention: manifest entries, deletion with the run, snapshot maintenance job —
   FR-025-021 — `storage-classification.json`, `crates/application/src/maintenance.rs` — retention tests.
 - [ ] T025-084 [US5] Step logs refused for the agent runner (design 041): an `agent-runner` token refused
@@ -443,8 +447,8 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   `none` and `bearer`, secrets (`ai:manage` and `secret:use` to save), the `pii` argument ceiling under
   the rule of Owner decision 2026-11-26-120, the `toolClassifications` field of Task 025-102 in the
   form and the API; `oauth-client-credentials` refused with `MCP_AUTH_MODE_UNAVAILABLE` — FR-025-034 — `routes/mcp_servers.rs`, `frontend/apps/studio/src/features/ai/`
-  — HTTP and component tests. The OAuth part waits for constitution 5.1.0 to merge and for design 047's
-  token broker.
+  — HTTP and component tests. The OAuth part waits for design 047's token broker (constitution 5.1.0
+  is adopted, pull request 286).
   Owner-gate: OD-2026-11-26-120, OD-2026-11-26-122, OD-2026-11-25-3
 - [ ] T025-053 [US7] Refresh job (origin `MCP_TOOL_REFRESH`, through `start_private`) in the runner;
   immutable snapshots with digests and bounds — FR-025-035 — `crates/infra-ai/src/mcp_client.rs`,
@@ -457,7 +461,10 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 - [ ] T025-055 [US7] Untrusted-content handling and injection canaries: instructions in descriptions and
   results cannot call undeclared tools, skip approvals, exceed budgets or reach denied destinations
   (G1286) — FR-025-011, 017, 023, 035 — `tests/integration/ai-agents-mcp/untrusted.rs` — documented
-  threat model in the runbook.
+  threat model in the runbook, which also states the pass-through of an activity or script that
+  returns model-written values: they become a new value under that step's declared carrier and inherit
+  no transcript level, so the author's annotation of that carrier decides where they may go (Decision
+  025-020).
 - [ ] T025-056 [US7] Drift detection before each call (`AI_TOOL_CHANGED`, `mcp.tool_changed`) —
   FR-025-035 — `crates/infra-ai/src/mcp_client.rs` — test: changed schema is never called.
 - [ ] T025-057 [US7] MCP call execution in the runner: at-least-once, unknown outcome, unsupported
@@ -469,7 +476,7 @@ slices and two parallel lanes is in [Build slices](#build-slices).
 - [ ] T025-058 [P] [US7] OAuth client credentials with resource indicator, with tokens only from design
   047's broker: issuer and token endpoint recorded in the revision and confirmed by an `ai:manage`
   holder, refresh-time comparison with discovered metadata (`mcp.oauth_metadata_changed`, calls refused
-  until revised). Rests on constitution 5.1.0's third declared set (Owner decision 2026-11-25-3); waits for 5.1.0 to merge and for design 047's broker (Gap 025-001) —
+  until revised). Rests on constitution 5.1.0's third declared set (Owner decision 2026-11-25-3; adopted, pull request 286); waits for design 047's broker (Gap 025-001) —
   FR-025-034, 036 — `crates/infra-ai/src/mcp_auth.rs`, `crates/application/src/mcp_servers.rs` — tests
   against the test authorization server, including a server that switches its advertised token
   endpoint.
@@ -525,7 +532,10 @@ slices and two parallel lanes is in [Build slices](#build-slices).
   the output secret scan published in the form of Architecture decision 0085 rule 12 (Gap 025-004,
   accepted by the owner in Owner decision 2026-11-27-2): a section "The limit, stated and not hidden"
   saying that a resolved value shorter than 8 bytes, or transformed other than JSON-escaped, base64 or
-  hexadecimal, is not detected, with no sentence elsewhere claiming otherwise, and the incident steps
+  hexadecimal, a value that is not valid UTF-8 and any output that is not valid UTF-8 are not detected,
+  and that base64 and hexadecimal are looked for only among the values the scanned attempt received
+  (so not for a `child` tool's child activities or an earlier step's output entering through
+  `context`), with no sentence elsewhere claiming otherwise, and the incident steps
   that purge the run's agent content and then rotate the secret; the approvals runbook section for an
   approval marked `NO_DECIDER_WITH_CONTEXT` (grant the reveal grant, declare an `escalation` route, or
   narrow `decisionFields`) — FR-025-017, 020, 045 — `docs/runbooks/{ai-agents,agent-runner,mcp}.md`,
@@ -623,7 +633,8 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   publish unchanged (the 016 fixtures pass).
 - [ ] T025-094 [US6] Transitive unattended flag and remote roots: `agent_unattended_writes` true when
   the version, or any child workflow it can start under a pinned version policy at any depth, has an
-  agent `write` tool acknowledged `approval: "none"`; `starts_active_children` recorded; exposure save
+  agent `write` tool acknowledged `approval: "none"` or whose `decisionFields` leave out any input
+  field (Decision 025-020); `starts_active_children` recorded; exposure save
   and call resolve active-version children to their current versions and refuse an unattended one;
   `runs.remote_root` set for a root admitted through MCP or a 026 public link and copied to every
   descendant; a child admission (node or `child` tool) under a remote root refusing an unattended child
@@ -632,8 +643,10 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   path in `crates/application/src/`, `crates/infra-postgres/migrations/` (lane A) — fixtures and
   integration tests: a pinned child two levels down with an unattended tool makes the root unattended
   (exposure refused); an active-version child activated with an unattended tool after the exposure was
-  saved is refused at its admission under an MCP-admitted run and admitted under an ordinary run; the
-  flag survives a reset (Task 025-078).
+  saved is refused at its admission under an MCP-admitted run and admitted under an ordinary run; a
+  version whose `issue_refund` tool narrows `decisionFields` to none is refused at exposure save, at
+  call time, as a public-link target and as a child under a remote root; the flag survives a reset
+  (Task 025-078).
 - [ ] T025-095 Reserved `sagat.ai.` prefix and claims by managed kind: `check_node`
   (`crates/domain/src/workflow.rs`, which reserves only `sagat.database.` today) and
   `managed_capabilities_allowed` (`crates/application/src/worker.rs`) refuse an ordinary activity,
@@ -673,8 +686,10 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   `crates/infra-postgres/src/agents.rs` — integration tests: a provider lowered to `public` by a new
   revision without republication refuses the next admission and the next model call of a running agent;
   an MCP server lowered the same way refuses the next call; a model removed from the current revision's
-  allowlist refuses the next call; a raised ceiling does not widen a published version; the
-  `secret:use` check at delivery uses the secrets of the recorded revision.
+  allowlist refuses the next call; a raised ceiling does not widen a published version; an `mcp` tool
+  published `effect: "read"` and reclassified `write` by a new MCP-server revision refuses the next
+  admission (`AI_DESTINATION_RESTRICTED`) and the next call before dispatch; the `secret:use` check at
+  delivery uses the secrets of the recorded revision.
 - [ ] T025-098 [US8] No model-written or provider-written string on run-read surfaces: undeclared tool
   requests recorded as `UNKNOWN_TOOL` plus call index in `agent_tool_calls`, `AgentProgress`, the
   journal (`agent.tool_refused` and the others), the stream and spans; the provider's tool-use id kept
@@ -700,7 +715,8 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   exists (`AI_CREDENTIAL_MODE_UNAVAILABLE` until then); the client secret is a slot the broker reads and
   `ResolveModelCall` never returns; the broker runs the client-credentials grant against the recorded
   `entraAuthority` only and returns the current access token, which `ResolveModelCall` delivers to the
-  lease-owning runner under the third declared set; the adapter sends it as a bearer token —
+  lease-owning runner under the third declared set, never as a first-set secret, with the publisher's and
+  the initiator's `resource:use` checked (Decision 025-020); the adapter sends it as a bearer token —
   FR-025-003 — `crates/application/src/agent_capability.rs`, `crates/infra-ai/src/azure.rs`, design
   047's broker port — tests: the resolve response for an Entra revision carries an access token and no
   client-secret slot; a token request to a host other than the recorded authority is refused; a revoked
@@ -708,18 +724,22 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   secret (it reaches no runner, transcript, log, span or audit).
   Owner-gate: OD-2026-11-27-400
 - [ ] T025-101 [US1] AWS access keys through design 047's broker (Owner decision 2026-11-27-401,
-  Decision 025-017): `aws-access-key` accepted at save once the broker exists; the broker holds the
+  Decision 025-017; waits for Owner question 025-002, Decision 025-020): `aws-access-key` accepted at
+  save once the broker exists and the owner's answer admits a broker-derived bearer credential under the
+  third declared set (until then it stays refused, Owner decision 2026-11-27-480); the broker holds the
   long-lived key pair, calls AWS STS (`AssumeRole` with the recorded `aws_role_arn`, `GetSessionToken`
   without one; `aws_session_seconds` 900 by default, 900 to 3,600), mints from that session an Amazon
   Bedrock short-term API key whose lifetime does not exceed the session's, and `ResolveModelCall`
   delivers only that key; the runner uses the bearer path of Task 025-011 and holds no SigV4 signer —
   FR-025-003 — `crates/application/src/agent_capability.rs`, `crates/infra-ai/src/bedrock.rs`, design
   047's broker port — tests: the resolve response for an AWS revision carries one bearer key with its
-  expiry and neither the access key id's secret nor a session secret key nor a session token; a key
+  expiry and neither the long-lived secret access key nor a session secret key (the key carries the
+  session's `X-Amz-Security-Token` inside its presigned query, which is useless without the secret); a key
   past its expiry is never delivered; a session longer than 3,600 seconds is refused at save; the
   runner's dependency tree holds no SigV4 signer (an architecture check); the canary battery extended
   to the long-lived and the session secrets.
-  Owner-gate: OD-2026-11-27-401
+  Owner-gate: the owner's answer to Owner question 025-002 (a row of `docs/owner-decisions.md`, not yet
+  recorded); Owner decision 2026-11-27-480 keeps the mode refused until then
 - [ ] T025-102 [US7] Pinned MCP tool classifications (Owner decision 2026-11-27-402, Decision 025-018):
   the MCP-server revision's `toolClassifications` (tool name to `read` or `write`, at most 512, a tool
   not named is `write`) saved by the `ai:manage` holder and immutable with the revision; publication
@@ -731,8 +751,12 @@ Tasks added on 2026-11-27 after the security review of that date (Decision 025-0
   `crates/api-http/src/routes/mcp_servers.rs` — tests: the test MCP server's `delete_records` stating
   `readOnlyHint: true` on an unclassified tool is refused as `read` and audited; the same tool classified
   `read` by the administrator is allowed and the mismatch of a later `destructiveHint: true` refresh is
-  audited without changing the published version; a classification change needs a new revision and a
-  republication to take effect.
+  audited without changing the published version; a new revision that reclassifies the tool `write`
+  refuses the next admission and the next call of a published `read` declaration without republication
+  (Task 025-097), while a revision that reclassifies a tool `read` widens nothing published as `write`;
+  a classification carries the description and input-schema digests it was given for, and a snapshot
+  whose digests differ (the server changed the tool) makes the tool unclassified, so `write` (Decision
+  025-020).
 - [ ] T025-103 [US3] Escalation and `NO_DECIDER_WITH_CONTEXT` (Owner decision 2026-11-27-403, Decision
   025-019): the context check at the opening transaction, after every `APPROVAL_INPUT_WITHHELD` refusal
   and in the approval sweeper every 60 seconds, under the run row then the request row; escalation to the
@@ -760,9 +784,10 @@ blocks US02–US09. US03, US04 and US05 depend on US02's tool planning (T025-025
 Phase 1 and the admission path only; US07 needs the runner (T025-016, T025-017, T025-091). The provider
 and MCP-server resource tasks (T025-006, T025-022, T025-024, T025-052) need 021's resource core; until
 then T025-092's test provider stands in. US08 streaming needs feature 026; T025-028 needs feature 021's
-operations; script and operation exposures need feature 022; T025-058 waits for constitution 5.1.0, approved by
-the owner (Owner decision 2026-11-25-3), to merge and for design 047's broker, as do T025-100 and
-T025-101 (the Entra and AWS broker routes, Decision 025-017); T025-090 needs design 040 built. Phase 10 closes after every story
+operations; script and operation exposures need feature 022; T025-058 waits for design 047's broker
+(constitution 5.1.0 is adopted, pull request 286), as does T025-100 (the Entra broker route, Decision
+025-017); T025-101 (the AWS route) also waits for the owner's answer to Owner question 025-002
+(Decision 025-020); T025-090 needs design 040 built. Phase 10 closes after every story
 it covers.
 
 ## Build slices

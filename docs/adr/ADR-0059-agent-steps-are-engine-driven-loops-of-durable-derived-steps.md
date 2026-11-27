@@ -95,11 +95,13 @@ and eventually answers. Four forces make the execution model hard to reverse:
    signing key (`azure-entra-client-credentials`, `aws-access-key`), reach tokens only through design
    047's token broker, under the third declared set of Principle V that the owner approved for
    constitution 5.1.0 (Owner decision 2026-11-25-3), which excludes a resource's client secret and
-   signing key; they are refused until it merges and the broker issues access tokens. The first set
-   never covers those secrets (Owner decision 2026-11-27-400): the broker runs the Entra
-   client-credentials grant, or exchanges the AWS key for a short-lived STS session and mints from it
-   an Amazon Bedrock short-term API key, and the runner receives only that access token (Decision
-   025-017). The
+   signing key (5.1.0 adopted, pull request 286); they are refused until the broker issues access
+   tokens. The first set never covers those secrets (Owner decision 2026-11-27-400): the broker runs
+   the Entra client-credentials grant and the runner receives only that access token, under the third
+   set with the resource's authorities (`resource:use`, and `resource:effect` for `write` MCP tools),
+   never as a first-set secret (Decisions 025-017 and 025-020). The AWS exchange for an STS session and
+   an Amazon Bedrock short-term API key waits for the owner's answer to Owner question 025-002, and
+   `aws-access-key` stays refused until then. The
    runner follows no redirect (`max_redirects = 0` for every provider and MCP request, the probe
    included) and reads its namespace egress policy from operator-owned configuration before every
    attempt. The agent runner sends no step logs (design 041) and the transcript is
@@ -119,7 +121,9 @@ and eventually answers. Four forces make the execution model hard to reverse:
    ordinary claim runs none of these statements (the budget of design 038). Cost is always an estimate
    from operator-declared prices.
 7. **Data leaves only below a declared ceiling, and model-written values are never classified below
-   what entered the transcript.** A provider revision MUST declare `maxPromptClassification` and an
+   what entered the transcript where an expression or a child output carries them** (a value an activity
+   or script returns is a new value under that step's carrier and inherits nothing; feature 025's threat
+   model states this pass-through, Decision 025-020). A provider revision MUST declare `maxPromptClassification` and an
    external MCP server revision MUST declare `maxArgumentClassification` (`public`, `internal` or
    `pii`), each the domain's `EgressCeiling` of Architecture decision 0071 decision 8. Instructions and prompt are literals; run data enters only through context expressions and
    tool results. Publication MUST compute the agent's transcript level, the strictest of `internal`

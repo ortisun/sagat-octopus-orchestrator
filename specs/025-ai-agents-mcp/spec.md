@@ -18,8 +18,8 @@ tools (published scripts, activities, managed operations, child workflows, MCP t
 output, budgets (turns, tokens, cost, wall time) and human approval for sensitive tools; an MCP
 server exposing declared workflows, scripts and operations as tools with OAuth or scoped tokens,
 per-tool authorization, audit and declared result disclosure; an MCP client so agent steps can use
-external MCP servers (static bearer-token servers now; OAuth-authenticated servers once constitution 5.1.0, whose third
-declared set of Principle V the owner approved in Owner decision 2026-11-25-3, merges and design 047's token broker is built); token streaming through feature 026 Workflow Streams; and, at P3, a Studio
+external MCP servers (static bearer-token servers now; OAuth-authenticated servers once design 047's token broker is built, under the third
+declared set of Principle V of constitution 5.1.0, adopted in pull request 286); token streaming through feature 026 Workflow Streams; and, at P3, a Studio
 authoring assistant that drafts workflows and never publishes them.
 
 ## Context and delivery boundary
@@ -307,8 +307,8 @@ key; there is one run, one audited call and only the declared projection in the 
 ### US07 — Use tools of an external MCP server (Priority: P2)
 
 An administrator registers an external MCP server with a static bearer token and refreshes its
-tools; an author allows two of them in an agent node. (OAuth client credentials wait for constitution 5.1.0 to merge, approved by the owner in Owner
-decision 2026-11-25-3, and for design 047's broker, Gap 025-001.)
+tools; an author allows two of them in an agent node. (OAuth client credentials wait for design 047's broker under constitution 5.1.0's third declared
+set, adopted in pull request 286, Gap 025-001.)
 
 **Why this priority**: many tool providers publish MCP servers.
 
@@ -381,6 +381,10 @@ may apply.
 
 ### Edge Cases
 
+- An activity receives an agent's `result.summary` and returns it unchanged under an output annotated
+  `public`: the value is a new value under the activity's carrier and inherits nothing (feature 016),
+  so it can reach an MCP exposure at `public`; the inherited-level rule covers expressions and child
+  outputs only, and the documented threat model says so (Task 025-055, Decision 025-020).
 - A model requests 20 tools with a per-turn limit of 4: four run, sixteen get refusal results, all
   count toward `maxToolCalls`.
 - A lost model-call response is retried: the retry's lease is granted only if its own reservation
@@ -456,7 +460,11 @@ fails before work.
   revision's ceiling, and the pinned model must be in the current revision's allowlist as well as the
   pinned one; a failure refuses admission (`AI_DESTINATION_RESTRICTED`) or the call before dispatch
   (`CLASSIFICATION_EGRESS_REFUSED` for a ceiling, `AI_CAPABILITY_UNAVAILABLE` for a model). A later
-  revision never widens what a published version may send. Pause and deletion block new admission and
+  revision never widens what a published version may send. An `mcp` tool declared `effect: "read"`
+  without an approval policy is admitted and called only while both the pinned and the current
+  MCP-server revision classify it `read` (Requirement 025-010); when the current revision does not,
+  admission is refused (`AI_DESTINATION_RESTRICTED`) and a running agent's call is refused before
+  dispatch, so a reclassification to `write` applies at once without republication. Pause and deletion block new admission and
   resolution; current revocation stays authoritative for pinned runs (Decision 025-016).
 - **FR-025-003 — Credentials**: Credential values MUST live only in OpenBao behind the feature-017
   facade and be resolved per attempt. The modes offered are those that hand the runner a static API key
@@ -467,16 +475,24 @@ fails before work.
   `azure-entra-client-credentials` (an Entra client secret) are refused at save with
   `AI_CREDENTIAL_MODE_UNAVAILABLE` until design 047's broker issues access tokens to the runner (Gap
   025-001): no client secret or signing key ever reaches the agent runner (Owner question 025-001,
-  answered no by Owner decision 2026-11-27-400, Decision 025-017). Once the broker exists, both modes
-  are delivered through it and the runner receives only an access token: for
-  `azure-entra-client-credentials` the broker holds the client secret and runs the client-credentials
-  grant against the recorded Entra authority host (HTTPS, confirmed by the saving administrator, never
-  discovered), and the token request goes only there; for `aws-access-key` the broker holds the
-  long-lived key pair, calls AWS STS (`AssumeRole` when the revision records a role, `GetSessionToken`
-  otherwise; a session of 900 seconds by default and at most 3,600) and from that session mints an
-  Amazon Bedrock short-term API key, which the runner sends as a bearer token on the adapter's existing
-  `bearer` path, so the runner holds neither the long-lived key nor the session's signing key (Owner
-  decision 2026-11-27-401). Their disclosure fits Principle V's first declared set (ordinary task execution):
+  answered no by Owner decision 2026-11-27-400, Decision 025-017). Once the broker exists,
+  `azure-entra-client-credentials` is delivered through it and the runner receives only an access
+  token: the broker holds the client secret and runs the client-credentials grant against the recorded
+  Entra authority host (HTTPS, confirmed by the saving administrator, never discovered), and the token
+  request goes only there. `aws-access-key` stays refused at save (`AI_CREDENTIAL_MODE_UNAVAILABLE`)
+  even once the broker exists, until the owner answers Owner question 025-002 (Owner decision
+  2026-11-27-480): an AWS key pair is not an OAuth credential, and whether constitution 5.1.0's third
+  declared set admits a broker-derived bearer credential (an Amazon Bedrock short-term API key the
+  broker would mint from an AWS STS session, `AssumeRole` when the revision records a role,
+  `GetSessionToken` otherwise, a session of 900 seconds by default and at most 3,600, sent by the runner
+  on the adapter's existing `bearer` path) is a reading of a security exception that only the owner may
+  make. Credentials reach the runner by two paths, each with its own checks. The static credentials
+  (an API key or bearer token of a provider, the static bearer secret of an MCP server) follow
+  Principle V's first declared set (ordinary task execution), as below. A broker token (the Entra
+  access token, and an OAuth MCP server's token once enabled) follows the third declared set: only the
+  current access token, never a refresh token, client secret or signing key, under the checks below and
+  the resource's authorities and the secret-access rules of its slots, and it is never a first-set
+  secret. The static credentials' disclosure fits Principle V's first declared set:
   the immutable task definition of a model-call or MCP-call derived step is the agent node of the
   published version plus the provider revision and the MCP-server revision that version pins, so the
   logical secrets those pinned revisions name are the declared secrets of that task definition (a probe
@@ -484,7 +500,13 @@ fails before work.
   nothing, only to the lease-owning agent runner, and only while the caller's current membership, its
   worker/activity binding (`BindingProfile::Agent` for the reserved activity), the pool-delivery policy
   of every secret and the publisher's permission `secret:use` on every one of them authorize it; the
-  publisher's `secret:use` is checked at publication and again at delivery. No fallback; a deployment's
+  publisher's `secret:use` is checked at publication and again at delivery. On both paths the
+  resource's authorities are checked as constitution 5.1.0 requires of a declared resource: the
+  publisher's and, for a run a person started, the initiator's `resource:use` on every pinned provider
+  and MCP-server resource, and `resource:effect` on the MCP-server resource for every `write` `mcp`
+  tool (feature 021, FR-021-031), at publication, at admission and in both resolve phases; a missing
+  authority refuses publication (`FORBIDDEN`), admission (`AI_DESTINATION_RESTRICTED`) or disclosure
+  before dispatch (Decision 025-020). No fallback; a deployment's
   own cloud identity is never used for a tenant account; adapters use explicit static credentials only,
   never SDK default credential chains or instance-metadata lookups (D1299). These secrets are disclosed
   only by `ResolveModelCall` and `ResolveMcpCall`: the node the agent declaration materializes for every
@@ -566,7 +588,9 @@ fails before work.
   approval policy (the child workflow can write; `WRITE_TOOL_APPROVAL_REQUIRED`). An `mcp` tool names a
   server resource and a tool of its pinned snapshot, and may be declared `effect: "read"` without an
   approval policy only when the pinned MCP-server revision classifies that tool `read`
-  (`toolClassifications`, Requirement 025-034); a tool the revision does not classify is `write`. The
+  (`toolClassifications`, Requirement 025-034) for the description and input-schema digests of the
+  pinned snapshot, and the current revision still does at admission and at every call (Requirement
+  025-002); a tool the revision does not classify, or classified for other digests, is `write`. The
   snapshot's annotations (`readOnlyHint`, `destructiveHint`) are untrusted hints: they never turn a
   `write` into a `read` nor remove an approval requirement, and a disagreement between an annotation and
   the pinned classification is audited (Decision 025-018). A tool input field annotated `secret` is
@@ -639,12 +663,20 @@ fails before work.
   (the turns, the declared names of the tool calls and their outcomes, with every model-written text and
   every tool input and result value masked) and the tool input with each field the decider's current
   rights disclose shown and every other field masked (its path and level only, never its length, a
-  digest or a prefix). Revealing a masked field needs the namespace reveal grant and is audited
+  digest or a prefix). An array, and an optional member, is masked as one node at its closest
+  always-present ancestor, so the view never shows an array's length or which optional fields are
+  present; a pointer covers every descendant of the node it names, and array items are written `/-`.
+  Feature 014's eligibility refusal comes before any view or `APPROVAL_INPUT_WITHHELD`, so a caller who
+  is not eligible learns nothing about the request (Decision 025-020). Revealing a masked field needs the namespace reveal grant and is audited
   `payload.pii_revealed`. The deadline is clamped to the remaining agent wall time. The tool's approval
   policy names the fields a decider must see in clear (`decisionFields`, JSON pointers into the input
   schema; every input field by default). An author may narrow `decisionFields`, even to none, for a tool
   that may run with `approval: "none"`; for a tool that may not (`operation` tools, database `execute`
-  tools) narrowing is refused at publication (`DECISION_FIELDS_REQUIRED`). At decision time, a decider to
+  tools) narrowing is refused at publication (`DECISION_FIELDS_REQUIRED`). A `write` tool whose
+  `decisionFields` leave out any input field is approved blind for those fields, so it counts as
+  unattended exactly as `approval: "none"` does (Requirement 025-026): its version, and every version
+  that can start it as a child, cannot be exposed over MCP or a feature 026 public link, and a child
+  admission under a remote root refuses it (`UNATTENDED_WRITE_TOOL`). At decision time, a decider to
   whom a decision field would be withheld is refused with `FORBIDDEN` reason `APPROVAL_INPUT_WITHHELD`,
   nothing is applied, and the denial is audited (no tool input field is `secret`, Requirement 025-010).
   When the approval opens, after every `APPROVAL_INPUT_WITHHELD` refusal and on every pass of the
@@ -703,7 +735,12 @@ fails before work.
   (`crates/application/src/worker.rs`); for agent tool results and agent-runner outputs it is extended to
   the base64 (standard and URL-safe, all three byte alignments) and hexadecimal (both cases) forms of
   each value. A secret shorter than 8 bytes, or transformed any other way (compressed, encrypted,
-  split, re-encoded twice), is not detected: that is a stated bound of the guarantee, not a claim
+  split, re-encoded twice), is not detected; nor is a secret value that is not valid UTF-8, and an
+  output that is not valid UTF-8 is not scanned at all; and the base64 and hexadecimal forms are
+  looked for only among the values the scanned attempt itself received, so a secret resolved by another
+  step (a `child` tool's child activities, or an earlier step whose output enters through `context`)
+  is checked there only verbatim and JSON-escaped, at its own step, and only when that step declares
+  it: these are stated bounds of the guarantee, not claims
   (Gap 025-004, accepted by the owner as a documented known limit, Owner decision 2026-11-27-2). The
   limit is stated and not hidden, in the form of Architecture decision 0085 rule 12: the platform MUST
   NOT claim otherwise in its documentation, and the runbook MUST say how a run's agent content is purged
@@ -768,7 +805,8 @@ fails before work.
   `maxResultClassification`, and an optional daily token budget (`maxDailyTokens`). Nothing is exposed
   by default. An exposure, and a call at run time, MUST refuse an unattended target version
   (`UNATTENDED_WRITE_TOOL`). A version is unattended when it contains an agent `write` tool
-  acknowledged with `approval: "none"`, or when any child workflow it can start (child nodes and `child`
+  acknowledged with `approval: "none"`, or an agent `write` tool whose approval policy's
+  `decisionFields` leave out any input field (Requirement 025-017), or when any child workflow it can start (child nodes and `child`
   tools, at any depth, under their version policy) is unattended; publication records the flag for
   pinned children, and for a child under an active-version policy the flag of the version it resolves
   to is checked at save and call time and again at the child's admission. Every run whose root was
@@ -847,8 +885,10 @@ fails before work.
   revise, pause and delete external MCP servers (HTTPS URL, protocol preference, a required
   `maxArgumentClassification` of `public`, `internal` or `pii` (`pii` under the same reveal-grant rule as
   FR-025-005), authentication none or static bearer secret, limits, and `toolClassifications`: the
-  classification `read` or `write` of each tool by name, set by the saving `ai:manage` holder and pinned
-  with the revision; a tool it does not name is `write`), as a 021 resource type (Owner decision
+  classification `read` or `write` of each tool by name, with the description and input-schema digests
+  of the snapshot tool it was given for, set by the saving `ai:manage` holder and pinned with the
+  revision; a tool it does not name, or a snapshot tool whose digests differ, is `write`, Decision
+  025-020), as a 021 resource type (Owner decision
   2026-11-26-122). The classification, never the server's annotations, decides whether an `mcp` tool may
   run without approval (Requirement 025-010, Decision 025-018). The static bearer secret is a declared secret of the task definition as in
   Requirement 025-003. OAuth client credentials with a resource indicator rest on the third declared set of Principle V that the owner approved for constitution 5.1.0 (Owner decision 2026-11-25-3, pull request 286: a declared resource's settings and its current access token), and are refused at save until
@@ -990,8 +1030,10 @@ implemented opens the one consolidated amendment of FR-016-002 (coordinator C6);
   reservations never fall below the documented bound; unknown usage is charged its reservation.
 - **NFR-025-004 (privacy)**: no value above the declared level of its destination leaves toward a
   model provider or an external MCP server, under the destination's current ceiling; model-written
-  values are never classified below the transcript level in any output carrier they reach, through
-  workflow outputs and child outputs included; the transcript is disclosed only through its audited
+  values are never classified below the transcript level in an output carrier they reach through an
+  expression (`end.outputExpr`, a projection) or a child output; a value an activity or script returns
+  is a new value under that step's declared carrier and inherits nothing, which the threat model states
+  (Decision 025-020); the transcript is disclosed only through its audited
   endpoint, and no run-read surface carries a string the model or the provider wrote.
 - **NFR-025-005 (compatibility)**: existing definitions, runs, workers and protocol minors keep their
   semantics; the agent capability is advertised only after six-SDK conformance passes.
@@ -1103,8 +1145,14 @@ Owner question 025-001 (raised 2026-11-27 by the security review's Major 9) aske
 V's first declared set may cover the client secret or signing key of a declared feature-021 resource
 (an Entra client secret, an AWS secret access key), which constitution 5.1.0's third declared set
 excludes for resources. It is decided, under the owner's delegation, by Owner decision 2026-11-27-400:
-no. The two modes reach the runner only as access tokens issued by design 047's broker (Owner
-decisions 2026-11-27-400 and 2026-11-27-401, Decision 025-017), and until that broker exists they are
-refused (Gap 025-001). The one security residual risk the review left, the bound of the output secret
+no. The Entra mode reaches the runner only as an access token issued by design 047's broker (Owner
+decision 2026-11-27-400, Decision 025-017), refused until that broker exists (Gap 025-001).
+
+One question is open and is the owner's: Owner question 025-002 (raised 2026-11-27 by the security
+re-read's Major 3) asks whether constitution 5.1.0's third declared set may admit, for an AWS key pair
+resource, a broker-derived bearer credential with an expiry of at most one hour and never a signing key
+(an Amazon Bedrock short-term API key minted from an STS session), or whether Principle V must be
+amended. Until the owner answers, `aws-access-key` stays refused (Owner decision 2026-11-27-480,
+Decision 025-020). The one security residual risk the review left, the bound of the output secret
 scan (Gap 025-004), is accepted by the owner as a documented known limit (Owner decision
 2026-11-27-2).

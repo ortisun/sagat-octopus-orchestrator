@@ -581,9 +581,9 @@
           "items": {
             "type": "string",
             "maxLength": 256,
-            "pattern": "^(/[^/]+)*$"
+            "pattern": "^(/([^/]+|-))*$"
           },
-          "description": "JSON pointers into the tool's inputSchema naming the fields a decider must see in clear to decide; absent means every field of the input. A decider whose current rights withhold a named field is refused APPROVAL_INPUT_WITHHELD; the other fields are shown masked by path and level. May be narrowed, to the empty list included, only for a tool that may run with approval \"none\"; narrowing it on an operation tool or a database execute tool is refused at publication (DECISION_FIELDS_REQUIRED). A pointer outside the input schema is refused (INVALID_DECISION_FIELD). Decision 025-019."
+          "description": "JSON pointers into the tool's inputSchema naming the fields a decider must see in clear to decide; absent means every field of the input. A decider whose current rights withhold a named field is refused APPROVAL_INPUT_WITHHELD; the other fields are shown masked by path and level. May be narrowed, to the empty list included, only for a tool that may run with approval \"none\"; narrowing it on an operation tool or a database execute tool is refused at publication (DECISION_FIELDS_REQUIRED). A pointer outside the input schema is refused (INVALID_DECISION_FIELD). Decision 025-019. A pointer covers every descendant of the node it names, and array items are written /-; an array or an optional member is masked as one node at its closest always-present ancestor (Decision 025-020). A write tool whose decisionFields leave out any input field counts as unattended (UNATTENDED_WRITE_TOOL on remote surfaces, Decision 025-020)."
         },
         "escalation": {
           "$ref": "#/$defs/approvalPolicy",

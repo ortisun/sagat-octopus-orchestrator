@@ -10,8 +10,10 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
   credentials), a protocol preference (`2026-07-28` first, `2025-11-25` fallback), a required
   `maxArgumentClassification` (`public`, `internal` or `pii`: the most sensitive data the model may send
   to this third party as arguments), `toolClassifications` (the classification `read` or `write` of each
-  tool by name, set by the saving `ai:manage` holder and pinned with the revision; a tool it does not
-  name is `write`, Decision 025-018), an authentication mode and limits. Saving makes no network call.
+  tool by name, with the description and input-schema digests of the snapshot tool it was given for,
+  set by the saving `ai:manage` holder and pinned with the revision; a tool it does not name, or a
+  snapshot tool whose digests differ, is `write`, Decisions 025-018 and 025-020), an authentication
+  mode and limits. Saving makes no network call.
 - Refresh is a durable private run (origin `MCP_TOOL_REFRESH`): the runner calls `server/discover`
   (2026-07-28) or `initialize` (2025-11-25, then discards any session id after the refresh), then
   `tools/list` with pagination, bounded to 1,024 tools, 16 KiB per description and 64 KiB per input
@@ -43,7 +45,10 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
   the author reviewed nor the digests the drift check compares against. Publication copies the tool's
   input schema into the declaration it validates against, and requires `effect` (default `write`;
   a `write` tool needs `approval` or `approval: "none"`; `effect: "read"` without an approval policy is
-  accepted only when the pinned server revision classifies the tool `read`; the snapshot's annotations
+  accepted only when the pinned server revision classifies the tool `read` for the snapshot's
+description and input-schema digests, and at admission and at every call the current revision must
+classify it `read` too, else admission is refused `AI_DESTINATION_RESTRICTED` and a call before dispatch
+(Decision 025-020); the snapshot's annotations
   never decide it, so a server that falsely marks a tool read-only cannot remove a person's approval). At admission
   and at every resolution the transcript level is checked again against the stricter of the pinned and
   the current server revision's `maxArgumentClassification`, so a ceiling lowered after publication
@@ -66,7 +71,7 @@ connection to an external MCP server. ADR-0060 records the trust boundary.
 |---|---|
 | `none` | No credential; allowed only when the operator enables it for the namespace. |
 | `bearer` | Static token from an OpenBao-backed secret, sent only in `Authorization`, never in a URL. The secret is a declared secret of the task definition (the pinned server revision), delivered under Principle V's first declared set (agent-runner-protocol.md, "Credential delivery"). |
-| `oauth-client-credentials` | **Waits for constitution 5.1.0 (its third declared set of Principle V, approved by the owner in Owner decision 2026-11-25-3) to merge and for design 047's broker (Gap 025-001); refused at save with `MCP_AUTH_MODE_UNAVAILABLE` until then.** OAuth MCP servers will reach access tokens only through design 047's token broker; the text that follows is the intended behaviour, to be reconciled with that broker. Client id plus a client secret from OpenBao. The issuer and the HTTPS token endpoint are recorded in the server revision, confirmed by the saving `ai:manage` holder (a refresh proposes discovered values; it never replaces them). The client secret is sent only to the recorded token endpoint; the runner performs no discovery at call time. The token request carries `resource` (RFC 8707) and the declared scopes. Tokens are fetched per attempt and dropped with it; credentials are keyed by the recorded issuer and never used with another authorization server. |
+| `oauth-client-credentials` | **Waits for design 047's broker under constitution 5.1.0's third declared set of Principle V (adopted, pull request 286; Gap 025-001); refused at save with `MCP_AUTH_MODE_UNAVAILABLE` until then.** OAuth MCP servers will reach access tokens only through design 047's token broker; the text that follows is the intended behaviour, to be reconciled with that broker. Client id plus a client secret from OpenBao. The issuer and the HTTPS token endpoint are recorded in the server revision, confirmed by the saving `ai:manage` holder (a refresh proposes discovered values; it never replaces them). The client secret is sent only to the recorded token endpoint; the runner performs no discovery at call time. The token request carries `resource` (RFC 8707) and the declared scopes. Tokens are fetched per attempt and dropped with it; credentials are keyed by the recorded issuer and never used with another authorization server. |
 
 User-delegated authorization code flows, dynamic client registration and Client ID Metadata
 Documents are not used by the client in this feature (G1288).

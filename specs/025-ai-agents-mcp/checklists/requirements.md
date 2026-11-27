@@ -89,9 +89,10 @@ evidence named in them.
   the credential disclosure fits Principle V's first declared set (Decision 025-001) for static API keys
   and bearer tokens only; the materialized node of every AI kind has no `secrets` and `ResolveSecrets`
   refuses managed leases; no redirect is followed; OAuth MCP servers and the provider modes that need a
-  client secret or a signing key are refused until constitution 5.1.0, whose third declared set the
-  owner approved (Owner decision 2026-11-25-3), merges and design 047's broker issues access tokens
-  (Gap 025-001); once it does, the runner receives only the access token, never the client secret, the
+  client secret or a signing key are refused until design 047's broker issues access tokens under
+  constitution 5.1.0's third declared set (adopted, pull request 286; Gap 025-001); once it does, the
+  runner receives only the Entra access token, never the client secret, and `aws-access-key` stays
+  refused until the owner answers Owner question 025-002 (Decision 025-020), so never the
   long-lived AWS key or a session signing key (Owner question 025-001 answered no, Decision 025-017,
   Tasks 025-100 and 025-101).
 - [x] Tenant boundary, typed errors without new `Error.code`, managed-step codes in the SDK error
@@ -107,7 +108,9 @@ evidence named in them.
   of the output secret scan (G025-004, accepted by the owner as a documented known limit, Owner
   decision 2026-11-27-2, published in the form of Architecture decision 0085 rule 12 by Task 025-069).
 - [x] Model-written values never classified below the transcript level, in the agent's result and in
-  every workflow or child output carrier they reach (inherited output levels, Task 025-093);
+  every workflow or child output carrier they reach through an expression or a child output (inherited
+  output levels, Task 025-093); an activity or script that returns them creates a new value under its
+  own carrier, stated in the threat model (Decision 025-020);
   destination ceilings for providers and MCP servers (`EgressCeiling`) applied at publication and again
   at admission and every resolution against the current revision (Task 025-097); `write` tools need
   approval or an explicit acknowledgement, the unattended refusal is transitive over child workflows
@@ -129,3 +132,8 @@ evidence named in them.
 - `spec.md` is about 67 KB after the review and audit fixes, above the 15–35 KB target of the brief,
   because the feature combines four surfaces (agent step, MCP server, MCP client, assistant); splitting
   it would separate rules that share one execution and disclosure model.
+- Readiness (2026-11-27): the short security re-read of the fixes and of the round 3 decisions was
+  run (`reviews/2026-11-27-security-reread.md`; 4 Majors and 7 Nits) and every finding is fixed, none
+  accepted (Decision 025-020). Feature 025's readiness for the build is complete under Owner decision
+  2026-11-25-2, except Task 025-101 (the AWS broker route), which waits for the owner's answer to Owner
+  question 025-002; `aws-access-key` stays refused until then.
