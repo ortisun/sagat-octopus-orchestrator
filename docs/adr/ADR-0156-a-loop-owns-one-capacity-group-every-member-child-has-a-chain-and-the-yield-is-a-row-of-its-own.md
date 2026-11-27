@@ -131,3 +131,32 @@ with kind `SCOPED_PATH`; `capacity_path_transfer_receipts` holds only `VACATE` a
 `last_leased_at` is written once by the claim transaction after the first lease grant of that member is persisted,
 under the group lock it holds, last in the lock sequence. A child started at a non-root instance path is a member
 child like any other (Task 039-25).
+
+## Revision of 2026-11-27 (security re-read)
+
+Recorded after the security re-read of design 039 (`docs/designs/039-nested-collections.reviews/2026-11-27/reread/security.md`),
+under Owner decision 2026-11-24-4 (Owner decisions 2026-11-27-459 to 2026-11-27-463). The clauses above that this
+revision supersedes stay as written; where they differ, this revision rules.
+
+- **Decision 3.** "Inserted with `ON CONFLICT DO NOTHING`" is superseded: a yield row of an earlier epoch is replaced
+  (`ON CONFLICT (tenant_id, group_id) DO UPDATE ... WHERE epoch < excluded.epoch`); both side tables are inserted with
+  `INSERT ... SELECT ... WHERE EXISTS` a non-retired header of the same tenant and namespace; a join wait names its
+  waiting parent step and carries `last_busy_at`, and only a live wait (its parent step pending, its run neither paused
+  nor stopping, refreshed within two ticks) keeps a yield; the retiring `Finish` deletes its group's side rows.
+- **Decision 5.** The bound is recursive over pinned children and sums the branches of a `parallel` node; a member
+  child run carries `fan_out_share`, against which its own children are checked; the policy is tenant-scoped, its
+  default ceiling 256 and its maximum 4,096 under the operator's ceiling; every root admission rechecks the version's
+  bound against the effective policy; each group reserves its bound in `tenant_iteration_usage.nested_reserved`, under
+  the operator ceiling `nested_live_iterations` (16,000 by default, at most 20,000), so one tenant's nested work stays
+  under the 20,000 pending waits per replica of Owner decision 2026-11-04-6.
+- **Decision 6.** `nested_collections_required()` takes a mode (`new_use`, `continue`; any other raises), and the
+  insert triggers of the group and member tables call it in mode `continue`, so no writer can skip it. Phase 2 takes no
+  table lock: its `FOR UPDATE` of the requirement row waits for every fence caller.
+- **Decision 7.** The successor copy is an `AFTER INSERT` trigger on `chain_segments`, not a trigger on the run insert
+  (`runs` has no chain column); the relaxed slot check admits `ADMITTED AND NOT slot_held` only for a flagged run; the
+  header's `namespace_id` comes from its root run and `owns_unit` only when the root iteration or loop holds its slot;
+  the lease fence refuses only a new grant and compares its setting with the running transaction's id.
+- **Decision 8.** "Transfers are summarised by one audit record per group and hour" is superseded by the readiness
+  revision above (no hourly table; `transfer_count` on `capacity.group.retired`). `capacity_purge_retired` is revoked
+  from `PUBLIC`, executable by its owner only, and requires feature 020's purge authorization for its transaction and
+  run.

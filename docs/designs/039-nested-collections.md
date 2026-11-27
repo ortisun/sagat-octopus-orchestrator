@@ -148,8 +148,8 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
 - **Requirement 039-005** The sweeper MUST serve every member state that can occur: a holder or non-holder whose head
   or iteration is final, whatever its outcome (succeeded, failed, cancelled, compensated, timed out, partial or
   compensation failed), with the last finish retiring the group (finish), a root loop's member only once the loop scope
-  itself is final; a holder past its quantum while another member has runnable work, or while a join has waited for
-  the header for at least a quantum (yield request); a yield request whose waiting members are no longer runnable (cleared); a
+  itself is final; a holder past its quantum while another member has runnable work, or while a join that is still live has waited for
+  the header for at least a quantum (yield request); a join wait that is no longer live, and a yield request whose waiting members are no longer runnable and no live join waits (cleared); a
   quiescent holder whose yield was requested, or a holder with no runnable work while another member has runnable work
   (vacate); a vacant group with a member that has runnable work (acquire). A scoped-path member finishes by `FinishPath`
   (Technical Plan 4), which needs no certified success and serves a body that nests.
@@ -173,8 +173,12 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   the purge and the receipt trigger) and `shard smallint NOT NULL`. An insert trigger MUST force a new header to `HELD`
   with `revision`, `epoch` and `active_members` 1 and set its `shard` to `run_shard(root_run_id)` (the SQL function of
   `20261017000000_scheduler_shards`, the same computation as `Shard::of` in `crates/domain/src/sharding.rs`), never
-  taken from the caller, force a new member to `ACTIVE` with a null `finished_at`, and MUST refuse a member of a
-  `RETIRED` group.
+  taken from the caller, set its `namespace_id` from the root run's row (never the caller's value), and refuse a new
+  header with `owns_unit` true unless the root iteration or root loop it is created for holds its slot (the
+  `collection_iterations` or `loop_scopes` row of that run and owner node, read in the same transaction, `slot_held`
+  true and not yet released); it MUST force a new member to `ACTIVE` with a null `finished_at`, and MUST refuse a member
+  of a `RETIRED` group. Both insert triggers also call the fence in mode `continue` (Requirement 039-011) and raise
+  `nested_collections_fence` when it answers no, so no writer can insert a group or a member without the fence.
 - **Requirement 039-009** Transfer receipts MUST be bounded: per group, the latest 16 and every receipt younger than 15
   minutes are kept (the horizon in which a command's commit can still be uncertain to its caller, Decision 713); older
   ones are purged in batches of at most 1,000 by a bounded pass. A retired group's header, members and remaining
@@ -195,11 +199,14 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   pass all run with `SAGAT_NESTED_COLLECTIONS=on`; a control plane lists it when its definition service runs with the
   switch on. Every write of new state MUST first call the owner-owned definer function
   `nested_collections_required(mode)`, which takes the capability's requirement row `FOR KEY SHARE` (form (a) of
-  Requirement 053-006, with a mode): in mode `new_use` (a publication, an activation, the admission of a new run of a
-  nesting version) it answers yes only when the row is `active`; in mode `continue` (the creator's insert of a group or
-  a member for a run already started) it answers yes when the row is `active` or `draining`. When it answers no, the
-  creator refuses with `NESTED_COLLECTIONS_INACTIVE` and the admission waits like a busy join (Technical Plan 2), and the
-  alert of Technical Plan 10 fires. Member leases follow the same rule: the guard grants them while the requirement is
+  Requirement 053-006, with a mode) and raises on any mode other than `new_use` and `continue`: in mode `new_use` (a
+  publication, an activation, the admission of a new run of a nesting version, called by the application) it answers
+  yes only when the row is `active`; in mode `continue` (an insert of a group or a member for a run already started) it
+  answers yes when the row is `active` or `draining`, and it is called by the insert triggers of both tables
+  (Requirement 039-008), never left to the writer. When it answers no to an insert, the trigger raises
+  `nested_collections_fence`, the creator rolls back with `NESTED_COLLECTIONS_INACTIVE` and the admission waits like a
+  busy join (Technical Plan 2), and the alert of Technical Plan 10 fires; a run start refused by `new_use` is answered
+  `NESTED_COLLECTIONS_INACTIVE` on its own surface (Technical Plan 8). Member leases follow the same rule: the guard grants them while the requirement is
   `active` or `draining`. Removal takes the two phases of Requirement 053-007 (Technical Plan 9); rolling a binary back
   below the recorded requirement is unsupported.
 - **Requirement 039-012** Crash, duplicate, stale fence, lost broker hint, cancellation, unknown or failed compensation
@@ -207,29 +214,49 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   possession observer of Technical Plan 11 checked at the end of every race test.
 - **Requirement 039-013** Nested scopes MUST be offered in all six SDKs through the collection builders that exist, with
   conformance scenarios that build, publish and run them.
-- **Requirement 039-014** Publication MUST refuse a nesting version whose fan-out bound exceeds the tenant's policy
-  value `nested_group_fan_out` (256 by default, at most 4,096), with `NESTED_FAN_OUT_LIMIT`: the bound is the product of
-  the local `maxConcurrency` of every collection on a path from a root iteration down to its deepest level, a loop
-  counting 1, a pinned child counting its version's recorded bound, and an active-version child checked at its
-  admission against the bound left to it (the child admission is refused with the same code). Every version, nesting
-  or not, records its own bound at insert (`workflow_versions.fan_out_bound bigint`, nullable, computed from the parsed
-  document by `fan_out_of`, the companion of `nesting_of`; a version without collections records 1; the product
-  saturates at 4,097, one more than the policy's ceiling, so four levels of `maxConcurrency` 256 never overflow). A
-  version stored before the migration has a null bound, and a null bound counts as the product of its root
-  collections' `maxConcurrency` down its nest, computed from the parsed document when it is read (no backfill). The
-  bound left to a child is the policy value divided (rounding down) by the product of `maxConcurrency` on the path from
-  the root iteration to the child call. The policy is a column of `tenant_collection_policies`, `nested_group_fan_out
+- **Requirement 039-014** Publication MUST refuse a nesting version whose fan-out bound exceeds the tenant's effective
+  policy value `nested_group_fan_out`, with `NESTED_FAN_OUT_LIMIT`. The bound of a version is computed from its parsed
+  document by `fan_out_of`, the companion of `nesting_of`, recursively: the product of the local `maxConcurrency` of
+  every collection on a path from a root iteration down to its deepest level, a loop counting 1; the branches of a
+  `parallel` node adding up (they run at once); a pinned child counting its own version's recorded bound, so a pinned
+  child without collections still passes on the bound of the pinned children it calls; an active-version child
+  counting the share left to it (below). Every version, nesting or not, records its bound at insert
+  (`workflow_versions.fan_out_bound bigint`, nullable; a version that calls nothing and has no collection records 1;
+  the computation saturates at 4,097, one more than the policy's maximum, so it never overflows). A version stored
+  before the migration has a null bound, computed from its parsed document when it is read (no backfill). The share
+  left to a child is the effective policy value divided (rounding down) by the product of `maxConcurrency` on the path
+  from the root iteration to the child call, the parallel branches of that path counted by their number; it is stored on
+  the child run (`runs.fan_out_share integer NULL`, null on a run that is no member), and a grandchild's admission is
+  checked against its parent run's share divided the same way, so the check crosses every run boundary; an
+  active-version child whose current version's bound passes its share is refused with the same code. The policy is a
+  tenant setting only (a namespace value is refused): a column of `tenant_collection_policies`, `nested_group_fan_out
   integer NULL` (null and a missing row both mean 256), written through a new `QuotaResource::NestedGroupFanOut` on the
-  audited `put_setting` path (`crates/infra-postgres/src/quotas.rs`), with its API entry, its contract row and the audit
-  action of every quota setting; `put_setting`'s `None` branch for each of `IterationConcurrency` and
-  `NestedGroupFanOut` resets only its own column, and deletes the row only when both are null. So a tenant
-  at limit L runs at most L groups and, for groups admitted under the current policy, at most L ×
-  `nested_group_fan_out` iterations at once: a lowered policy applies to new publications and admissions only, and
-  compensation of finished members runs outside the unit (Technical Plan 4).
+  audited `put_setting` path (`crates/infra-postgres/src/quotas.rs`), whose default limit and default ceiling are 256
+  and whose maximum is 4,096: a tenant administrator may lower it, only an operator's ceiling raises what the tenant may
+  set above 256 (the ceiling model of `crates/domain/src/quota.rs`); it has its API entry, its contract row and the
+  audit action of every quota setting, and `put_setting`'s `None` branch for each of `IterationConcurrency` and
+  `NestedGroupFanOut` resets only its own column and deletes the row only when both are null. Every root admission of
+  a nesting version checks the version's bound against the effective policy at that moment, so lowering the policy
+  contains a tenant at its next admissions, not only at publication. **The tenant-wide ceiling.** Owner decision
+  2026-11-04-6 accepts 20,000 pending waits per scheduler replica, alerting above 16,000; L groups of bound F could pass
+  it alone (1,024 × 256 = 262,144). So each group reserves its bound when it is created: the group header records
+  `reserved_bound` (the version's bound, or the effective policy value when the version calls an active-version child),
+  and `tenant_iteration_usage` gains `nested_reserved bigint NOT NULL DEFAULT 0`, increased by the root admission that
+  creates the group and decreased by the `Finish` that retires it, both in the transactions that already lock that row
+  to charge and release the unit (Requirement 039-016), so the check adds no lock. A root admission of a nesting version
+  whose `nested_reserved + reserved_bound` would pass the tenant's ceiling `nested_live_iterations` waits as an admission
+  at its tenant limit does (not admitted, retried, no unit taken). `nested_live_iterations` is an operator ceiling only
+  (`QuotaResource::NestedLiveIterations`, 16,000 by default, at most 20,000; a tenant administrator cannot raise it).
+  So one tenant's nested work holds at most 16,000 live iterations by default, under the replica's 20,000; the
+  replica-wide sum over tenants stays governed by Owner decision 2026-11-04-6's metrics, its alert and the shard
+  spread. Compensation of finished members runs outside the unit (Technical Plan 4) and outside this reservation.
 - **Requirement 039-015** The run row's `capacity_member` flag MUST be enforced by the database: it is `NOT NULL`; a run
-  inserted as a successor of a chain copies the chain head's flag (a trigger, under the chain lock the successor path
-  already takes); a member insert is refused unless its run, or its chain's head, is flagged; the flag is never cleared
-  (a trigger refuses the update).
+  that becomes a successor of a chain takes its predecessor's flag through an `AFTER INSERT` trigger on `chain_segments`
+  (a segment row names its `predecessor_run_id` and is inserted after its run row, in the same transaction and under
+  the chain lock the successor path already takes; `runs` has no chain column, so a trigger on the run insert could
+  not know the chain), which sets the new run's flag when its predecessor's is set and also copies `fan_out_share`; a
+  member insert is refused unless its run, or its chain's head, is flagged; the flag is never cleared (a trigger
+  refuses the update).
 - **Requirement 039-016** The tenant unit MUST be released exactly once. A group created by a root admission records
   `owns_unit = true`; for a grouped iteration or loop none of today's decrement sites decrements (the collection
   checkpoint, the collection drain, the loop checkpoint at the loop's end or at a delay, the loop drain), and a grouped
@@ -237,7 +264,10 @@ Nesting that holds a tenant limit under a crash at any point is what this platfo
   `active_iterations > 0`, in its transaction. A descendant iteration (one admitted inside a member, which charges no
   unit) is recorded `ADMITTED` with `slot_held` false: the migration of Task 039-2 relaxes
   `collection_iterations_slot_consistent` and the matching check of `loop_iterations` to allow `ADMITTED AND NOT
-  slot_held` (today both force `slot_held` for every admitted iteration), and the creator marks a descendant so. The
+  slot_held` (today both force `slot_held` for every admitted iteration), and the creator marks a descendant so; a
+  `BEFORE INSERT OR UPDATE` trigger on both tables refuses a row `ADMITTED AND NOT slot_held` unless its run's
+  `capacity_member` flag is set, so the database still refuses a root iteration of any other run admitted without its
+  charge. The
   invariant MUST hold after every checkpoint, drain and cancellation, written as this check per tenant:
   `tenant_iteration_usage.active_iterations = (count of collection_iterations and loop_iterations with slot_held, whose
   run has no capacity group covering them) + (count of capacity_groups not RETIRED with owns_unit)`, where an iteration
@@ -339,7 +369,7 @@ None for the owner. Technical gaps (`specs/039-nested-collections/research.md`):
 None open. Under Owner decision 2026-11-24-4 the items ADR-0078 left open, the open question of this design's first
 draft and the confirmation of the delegated rows are decided as delegate rows (Owner decisions 2026-11-26-140 to
 2026-11-26-149, 2026-11-27-390 to 2026-11-27-395, 2026-11-27-436 to 2026-11-27-447 and 2026-11-27-449 to
-2026-11-27-455):
+2026-11-27-463):
 
 | Item | Decision | Why |
 |---|---|---|
@@ -419,9 +449,12 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   `fan_out_of(&Definition)` (Requirement 039-014). A root admission creates a group only for a nesting version; a version
   published without nesting, or a top-level child workflow outside every member, creates no group and charges what it
   charges today. Inside a member, admissions are descendants whatever their version (Requirement 039-002).
-- **The fence.** Before it inserts a group or a member, the creator calls `nested_collections_required('continue')` in
-  the admitting transaction; the admission of a new run of a nesting version, a publication and an activation call it
-  with `'new_use'` (Requirement 039-011). An answer of no refuses with `NESTED_COLLECTIONS_INACTIVE`: the admission
+- **The fence.** The insert triggers of `capacity_groups` and `capacity_group_members` call
+  `nested_collections_required('continue')` for every inserted row and raise `nested_collections_fence` when it answers
+  no, so no writer (the root collection admission, the root loop entry, the join in `PgRunTx::commit`) can insert a
+  group or a member without it; the application calls it with `'new_use'` for the admission of a new run of a nesting
+  version, a publication and an activation (Requirement 039-011); the function raises on any other mode. An answer of
+  no to an insert makes the creator roll back with `NESTED_COLLECTIONS_INACTIVE`: the admission
   rolls back and the step or iteration is retried by the next tick with no attempt consumed, counted
   (`capacity_member_join_total{outcome="inactive"}`), as a busy join is. While the requirement is `draining`, runs
   already started keep creating their groups and members, so phase 2's drain check can pass (Technical Plan 9). The
@@ -477,8 +510,15 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   codec refused nesting. A `Busy` answer rolls the
   creation back and the step that creates the child is retried by the next tick, with no attempt consumed, counted
   (`capacity_member_join_total{outcome="busy"}`); nothing waits on the group. In a second short transaction the creator
-  then records the wait, a row of `capacity_group_join_waits` inserted with `ON CONFLICT DO NOTHING` and no header lock;
-  the join that succeeds deletes the group's wait row in its own transaction. The two side tables are:
+  then records the wait, a row of `capacity_group_join_waits` naming the waiting parent step (its run, instance path
+  and node), inserted with `ON CONFLICT (tenant_id, group_id) DO UPDATE SET last_busy_at = now()` (and the waiting
+  parent, when the row named another) and no header lock; each busy retry refreshes `last_busy_at`; the join that
+  succeeds deletes the group's wait row in its own transaction. A wait is live only while its parent step is still
+  pending, its run is neither paused nor stopping, and `last_busy_at` is within two ticks; the sweeper ignores a wait
+  that is not live and deletes it (selection 4), so a member paused or cancelled after a busy join can never keep a
+  yield on the holder. Both side tables are written with `INSERT ... SELECT ... WHERE EXISTS` a non-`RETIRED` header of
+  the same tenant, namespace and group, read without a lock, so a side row is never inserted for a group that is gone
+  or belongs to another tenant. The two side tables are:
 
   ```sql
   CREATE TABLE capacity_group_yields (
@@ -489,10 +529,15 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
       requested_at timestamptz NOT NULL,
       PRIMARY KEY (tenant_id, group_id));
   CREATE TABLE capacity_group_join_waits (
-      tenant_id     uuid        NOT NULL,
-      namespace_id  uuid        NOT NULL,
-      group_id      uuid        NOT NULL,
-      first_busy_at timestamptz NOT NULL,
+      tenant_id          uuid        NOT NULL,
+      namespace_id       uuid        NOT NULL,
+      group_id           uuid        NOT NULL,
+      parent_run_id      uuid        NOT NULL,
+      parent_path_nodes  text[]      NOT NULL,
+      parent_path_indices integer[]  NOT NULL,
+      parent_node        text        NOT NULL,
+      first_busy_at      timestamptz NOT NULL,
+      last_busy_at       timestamptz NOT NULL,
       PRIMARY KEY (tenant_id, group_id));
   ```
 
@@ -500,8 +545,11 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   header, which waits behind the `FOR UPDATE` a holder's claim keeps until its lease commits (the wait ADR-0075 names),
   and these inserts exist so as never to wait on the header. One row per group: a yield row of an earlier epoch is
   replaced by selection 3 (`ON CONFLICT (tenant_id, group_id) DO UPDATE ... WHERE epoch < excluded.epoch`) and ignored by
-  the guard. Yield rows are deleted by `Vacate`, `Acquire` and selection 4; wait rows by the join that succeeds; both by
-  `capacity_purge_retired`, and a row whose group no longer exists is deleted by the sweeper's page when it meets it. A
+  the guard. Yield rows are deleted by `Vacate`, `Acquire` and selection 4; wait rows by the join that succeeds and, when
+  not live, by selection 4; both by `capacity_purge_retired`. The sweeper pages over groups that are not `RETIRED`, so it
+  never meets a side row of a retired group: the `Finish` (or `FinishPath`) that retires a group deletes its yield and
+  wait rows in its transaction, a row that an insert racing that retirement still adds is deleted by
+  `capacity_purge_retired` with its group, and the `WHERE EXISTS` insert keeps any later one from appearing. A
   held-header test inserts each while another connection holds the header `FOR UPDATE` and sees no wait. A holder whose claims keep the header locked therefore cannot starve a joining child: once a wait is a
   quantum old, the sweeper asks the holder to yield (Technical Plan 3, selection 3), the holder takes no new lease, and
   the header frees up for the join.
@@ -509,11 +557,14 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   `primitives.rs` at the collection checkpoint and the collection drain and `loop_progress.rs` at the loop checkpoint
   (its end or a delay) and the loop drain, skip the decrement for an iteration or loop whose group owns the unit; the
   `Finish` (or `FinishPath`) that retires a group with `owns_unit` true decrements once, takes `tenant_iteration_usage`
-  `FOR UPDATE` after the group (an amendment of ADR-0078 section 3, in ADR-0156), and refuses with an integrity error
-  when the counter is already 0. A cancelled or failed root iteration whose ChildRoot members still compensate keeps its
+  `FOR UPDATE` after the group (an amendment of ADR-0078 section 3, in ADR-0156), subtracts the group's
+  `reserved_bound` from `nested_reserved` in the same update, and refuses with an integrity error when either counter
+  would go below 0. A cancelled or failed root iteration whose ChildRoot members still compensate keeps its
   unit until they are final.
 - **Flags.** `runs.capacity_member` is `NOT NULL DEFAULT false`, set by the creator for every member run and copied to
-  a chain successor by a trigger on the run insert of a successor (under the chain lock that path already takes); a
+  a chain successor, with `fan_out_share`, by an `AFTER INSERT` trigger on `chain_segments` from the run its
+  `predecessor_run_id` names (the segment row is inserted after the successor's run row, under the chain lock that path
+  already takes, `crates/infra-postgres/src/chain_progress.rs`); a
   member insert is refused unless its run or its chain head is flagged; an update that clears the flag is refused. A
   child member's run is flagged at its own `INSERT` (above); the root run of a scoped-path member is flagged by an
   `UPDATE` in the transaction that creates its first group (it already holds the run row there), so every later lease of
@@ -524,14 +575,22 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
   039-008).
 - **New columns, with their types and defaults.** On `capacity_groups`: `namespace_id uuid NOT NULL`, `root_run_id uuid
   NOT NULL` (foreign key `(tenant_id, root_run_id)` to `runs`), `shard smallint NOT NULL`, `held_since timestamptz NULL`,
-  `owns_unit boolean NOT NULL DEFAULT false`, `transfer_count bigint NOT NULL DEFAULT 0`. On `capacity_group_members`:
-  `acquired_at timestamptz NULL`, `last_leased_at timestamptz NULL`, `last_vacated_unleased_at timestamptz NULL`. On
-  `runs`: `capacity_member boolean NOT NULL DEFAULT false`. On `workflow_versions`: `nesting boolean NOT NULL DEFAULT
-  false` and `fan_out_bound bigint NULL` (Requirement 039-014), so today's two version inserts keep working until Task
-  039-21 binds both. Every one is additive (design 053's expand rule).
+  `owns_unit boolean NOT NULL DEFAULT false`, `transfer_count bigint NOT NULL DEFAULT 0`, `reserved_bound bigint NOT
+  NULL DEFAULT 0`. On `capacity_group_members`: `acquired_at timestamptz NULL`, `last_leased_at timestamptz NULL`,
+  `last_vacated_unleased_at timestamptz NULL`. On `runs`: `capacity_member boolean NOT NULL DEFAULT false` and
+  `fan_out_share integer NULL`. On `tenant_iteration_usage`: `nested_reserved bigint NOT NULL DEFAULT 0`. On
+  `workflow_versions`: `nesting boolean NOT NULL DEFAULT false`, `fan_out_bound bigint NULL` and `fan_out_open boolean
+  NOT NULL DEFAULT false` (Requirement 039-014),
+  so today's two version inserts keep working until Task 039-21 binds both. Every one is additive (design 053's expand
+  rule).
 - **Grants.** The migration grants `sagat_app` exactly:
-  - `capacity_groups`: `INSERT (tenant_id, group_id, namespace_id, root_run_id, possession, holder_member_id, held_since,
-    owns_unit)` (the trigger forces the rest) and `UPDATE (revision, epoch, active_members, possession,
+  - `capacity_groups`: `INSERT (tenant_id, group_id, root_run_id, possession, holder_member_id, held_since, owns_unit)`
+    (the trigger forces the rest: `namespace_id` from the root run, `shard`, the counters, and `reserved_bound` from
+    the root run's version, its `fan_out_bound`, or the effective policy value when the version's `fan_out_open` is
+    true, a new `workflow_versions` column, `boolean NOT NULL DEFAULT false`, bound by `fan_out_of` when the version
+    calls an active-version child; the same trigger adds `reserved_bound` to the tenant's `nested_reserved`, on the
+    `tenant_iteration_usage` row the admission already holds, and raises `nested_live_limit` when the sum would pass
+    the ceiling, which the creator answers by waiting as at its tenant limit) and `UPDATE (revision, epoch, active_members, possession,
     holder_member_id, held_since, transfer_count)`, today's update list (`20261210000000_capacity_finish_storage`) plus
     the last two;
   - `capacity_group_members`: `INSERT` of today's binding columns (the trigger forces the state), `UPDATE (state,
@@ -540,8 +599,12 @@ worker guard (the port method `worker_capacity_available`, `crates/application/s
     first, `DELETE` on both;
   - `capacity_path_transfer_receipts`: `SELECT`, `INSERT`; the receipt tables: `DELETE` (the retention trigger decides,
     Technical Plan 7);
-  - `runs`: `UPDATE (capacity_member)`; `workflow_versions`: the `INSERT` it has, which now binds `nesting` and
-    `fan_out_bound`;
+  - `runs`: `UPDATE (capacity_member, fan_out_share)`, and `fan_out_share` bound at a member child run's `INSERT`;
+    `workflow_versions`: the `INSERT` it has, which now binds `nesting`, `fan_out_bound` and `fan_out_open`;
+    `tenant_iteration_usage`: no new grant, since `sagat_app` already holds `UPDATE` on the whole table
+    (`20261029000000_collection_progress`), which covers `nested_reserved` (the group's insert trigger, which runs with the writer's privileges, and the retiring `Finish` write it on the row
+    the transaction already holds; a check constraint keeps it at or above 0), the same trust the runtime role has
+    over `active_iterations` today;
   - no `DELETE` on the header or member tables;
   and adds the unique indexes of Requirement 039-008 (condition (k)) and the partial indexes the sweeper's selections
   read: `capacity_groups (tenant_id, shard, group_id) WHERE possession <> 'RETIRED'` (the page),
@@ -569,11 +632,14 @@ by `crates/scheduler/src/shards.rs`) through the scheduler's existing weighted h
 2. ACTIVE non-holder members whose head or iteration is final, in `HELD` or `VACANT` groups → `Finish` that member, the
    last one retiring the group;
 3. `HELD` groups with no yield request of the current epoch whose holder has held possession for at least the quantum
-   while another member has runnable work, or that have a join wait at least a quantum old → insert a row of
+   while another member has runnable work, or that have a live join wait (Technical Plan 2) at least a quantum old →
+   insert a row of
    `capacity_group_yields` (Technical Plan 2), `epoch` the header's, with `ON CONFLICT (tenant_id, group_id) DO UPDATE`
    only when the stored epoch is older; no header lock, no receipt, possession does not move;
-4. `HELD` groups with a yield request none of whose other members has runnable work any more and that have no join
-   wait, or whose yield row belongs to an earlier epoch → delete the yield row (the holder leases again);
+4. `HELD` groups with a join wait that is not live (its parent step no longer pending, its run paused or stopping, or
+   `last_busy_at` older than two ticks) → delete the wait row; `HELD` groups with a yield request none of whose other
+   members has runnable work any more and that have no live join wait, or whose yield row belongs to an earlier epoch →
+   delete the yield row (the holder leases again);
 5. `HELD` groups whose holder is quiescent (no leased or running step of its work) and either has a yield request of
    the current epoch or has no runnable work, while another member has runnable work → `Vacate` (which deletes the yield
    row and, when the holder's `last_leased_at` is older than its acquisition, sets its `last_vacated_unleased_at`);
@@ -696,16 +762,21 @@ A bounded pass deletes, per group, receipts older than 15 minutes that are not a
 1,000. The receipt tables carry `ENABLE ALWAYS` append-only triggers that refuse `DELETE`
 (`20261226000000_capacity_transfer_receipts`, `20261210000000_capacity_finish_storage`); the migration replaces them by
 triggers that allow a `DELETE` only of a receipt that the retention rule releases (older than 15 minutes and not among
-its group's latest 16, checked by the trigger itself, `SECURITY INVOKER`, `search_path` pinned to `pg_catalog, pg_temp`)
+its group's latest 16, checked by the trigger itself, `SECURITY INVOKER`, `search_path` pinned to `pg_catalog, pg_temp`,
+every relation in its body written with its schema, `public.`, so no temporary table of the caller can stand in for one)
 or made by the owner of the table, which the trigger tests as `current_user` equal to the table's owner
 (`pg_get_userbyid(relowner)` of its `pg_class` row); a delete by `capacity_purge_retired` is such a delete, since a
 `SECURITY DEFINER` function runs as its owner, the schema-owning role, and `sagat_app` can never be that role. The
 migration grants `sagat_app` `DELETE` on the receipt tables only. The header and member guards
 (`capacity_groups_guard`, `capacity_group_members_guard`) are replaced so that a `DELETE` is allowed only of a
 `RETIRED` group and its members, and only when made by the table's owner in the same way. `capacity_purge_retired(
-tenant, namespace, root_run)` (owner-owned, `SECURITY DEFINER`, `search_path` pinned to `pg_catalog, pg_temp`,
-executable by the role feature 020's purge runs as) finds the `RETIRED` groups whose `root_run_id` is that run and
-deletes, in this order, their transfer receipts and path transfer receipts, their finish receipts, their yield and
+tenant, namespace, root_run)` (owner-owned, `SECURITY DEFINER`, `search_path` pinned to `pg_catalog, pg_temp` with
+every relation written with its schema, `REVOKE ALL ... FROM PUBLIC` and executable by its owner only: it is called
+from inside feature 020's purge function, itself an owner-owned definer function, so its caller is the owner and no
+runtime role can call it directly) first requires the purge authorization feature 020 records for this transaction and
+run (a row `(pg_current_xact_id(), tenant, root_run)` of `retention_purge_authorizations`,
+`specs/020-visibility-analytics-archival/data-model.md`) and raises without it, then finds the `RETIRED` groups whose
+`root_run_id` is that run and deletes, in this order, their transfer receipts and path transfer receipts, their finish receipts, their yield and
 join-wait rows, their members, then the headers. Feature 020's purge turns the run row into a stub rather than
 deleting it (constitution, Principle I), so the header's foreign key to `runs` never blocks it, and the purge calls the
 function in its transaction before it writes the stub. A negative privilege test deletes a kept receipt and a retired
@@ -756,7 +827,8 @@ runtime refusal is a closed `FailureCode` of the step (`crates/domain/src/execut
 | `NESTED_FAN_OUT_LIMIT` | publication | 422 `VALIDATION_FAILED`, `details.reason` with the node and the bound | no | the version's bound passes the tenant's policy |
 | `NESTED_CHILD_DETACH` | publication | 422 `VALIDATION_FAILED`, `details.reason` with the node | no | a child inside a nested body declares `detach` |
 | `NESTED_FAN_OUT_LIMIT` | an active-version child's admission | the parent's child step fails with `FailureCode` `NESTED_FAN_OUT_LIMIT`, permanent (no retry, the parent's `onError` applies) | no | the child version's bound passes what is left to it |
-| `NESTED_COLLECTIONS_INACTIVE` | the creator and a join (scheduler) | never returned: the admission rolls back and is retried by the next tick, counted `inactive` | (internal) | the fence's `continue` answers no; after phase 2 a run cannot be admitted, so this only follows an operator's removal error |
+| `NESTED_COLLECTIONS_INACTIVE` | the creator and a join (scheduler) | never returned: the insert trigger raises `nested_collections_fence`, the admission rolls back and is retried by the next tick, counted `inactive` | (internal) | the fence's `continue` answers no; after phase 2 a run cannot be admitted, so this only follows an operator's removal error |
+| `NESTED_COLLECTIONS_INACTIVE` | the start of a new run of an active nesting version (API start, schedule action, batch start, a top-level child start) while the requirement is `draining` or absent | the API answers `409 CONFLICT` with `details.reason`; a schedule action and a batch item record it as their failure reason; a top-level child start fails the parent's child step with the permanent `FailureCode` `NESTED_COLLECTIONS_INACTIVE` | no | the fence's `new_use` answers no |
 
 A publication made while the requirement is `draining` therefore gets `NESTED_COLLECTIONS_DISABLED`; there is no
 separate code for `draining`.
@@ -777,11 +849,17 @@ nothing.
 
 **An older binary.** A binary from before this design runs no guard and asks no gate, and Requirement 053-006 lets a
 process not counted at the activation reconnect and serve for up to one heartbeat. So the database fences the lease
-itself: a trigger `BEFORE INSERT OR UPDATE OF status ON steps` (an insert can carry its status from a bind, the first
-`INSERT` of the step-status-writer inventory) refuses a row whose new status is `LEASED` when its run's
-`capacity_member` flag is set, unless the transaction set the local setting `sagat.capacity_guard` to `v1`. The trigger
+itself: a trigger `BEFORE INSERT OR UPDATE OF status, lease_token_hash ON steps` (an insert can carry its status from a
+bind, the first `INSERT` of the step-status-writer inventory) refuses only a new grant, a row with `NEW.status =
+'LEASED'` that is inserted, or updated with `OLD.status IS DISTINCT FROM 'LEASED' OR NEW.lease_token_hash IS DISTINCT
+FROM OLD.lease_token_hash`, when its run's `capacity_member` flag is set, unless the transaction set the local setting
+`sagat.capacity_guard` to `v1:` followed by its own `pg_current_xact_id()`, which the trigger compares with the running
+transaction's id. The generic step writer sets `status` in every update it makes (`crates/infra-postgres/src/execution.rs`),
+so a heartbeat's lease renewal or a cancellation of a step that stays `LEASED` with the same token fires the trigger
+and passes: it is no new grant. A value left in a pooled session by mistake, or set by `ALTER ROLE ... SET`, names
+another transaction and passes nothing. The trigger
 reads the flag from `runs` by primary key, the row the claim has already locked (copying it onto `steps` would need an
-update of every step when a root run is flagged later). The claim of a flagged run sets the setting (`SET LOCAL`, in
+update of every step when a root run is flagged later). The claim of a flagged run sets the setting (`SET LOCAL sagat.capacity_guard = 'v1:<pg_current_xact_id()>'`, in
 the claim transaction, before it grants) for every lease of that run, its top-level steps outside every member included,
 and only the guard's code path sets it. An older binary therefore cannot lease member work at all. The budget suite of
 design 038, `integration_claim_transition_efficiency` (`tests/integration/claim-transition-efficiency/work_budget.rs`),
@@ -795,10 +873,12 @@ member's step and be refused.
 `nested_collections_required('new_use')` then answers no, so no nesting version is published or activated and no new
 run of a nesting version is admitted; `nested_collections_required('continue')` still answers yes, so runs already
 started keep creating their groups and members, and the guard keeps granting member leases, so those runs reach a
-final state. Phase 2 takes `capacity_groups` and `capacity_group_members` `IN SHARE MODE`, runs the drain check (no
-group is not `RETIRED`, and no run of a nesting version is not final), refuses on any, and removes the row; a run
-admitted after phase 2 would be refused at its admission, never stranded half-grouped. The descriptor names fence
-form (a) with the "continues while draining" mode, the two tables and that check. Design 053 knows only the plain form
+final state. Phase 2 takes no table lock: as for every form (a) fence of design 053, it takes the requirement row
+`FOR UPDATE`, which waits for every transaction that called the fence (they hold the row `FOR KEY SHARE` until they
+end, and every group or member insert calls it through its trigger), runs the drain check (no group is not `RETIRED`,
+and no run of a nesting version is not final), refuses on any, and removes the row; an insert that calls the fence
+after that sees no row and is refused, so a run admitted after phase 2 is refused at its admission, never stranded
+half-grouped. The descriptor names fence form (a) with the "continues while draining" mode and that check. Design 053 knows only the plain form
 (a), which refuses every write once the row is `draining`, and a `ServingGate::uses` that answers no to a `draining`
 row; its follow-up Task 053-9 registers the "continues while draining" descriptor kind and the gate answer it needs,
 and Task 039-18 waits for it. A test drains with a nested run in flight and sees that run finish and phase 2 then
@@ -937,18 +1017,20 @@ computes, after it. **Slice 4, proof and activation** (both): Tasks 039-12 to
   record the delegate rows.
   Refs: Requirement 039-004, Requirement 039-005
 - [ ] T039-2 Migration: column-scoped `INSERT` grants on groups and members with the insert trigger of Requirement
-  039-008 (header `HELD` with counters 1 and `shard` from the root run, member `ACTIVE`, no member of a `RETIRED`
-  group); the unique index on ACTIVE ChildRoot memberships per chain and the partial unique index on ACTIVE scoped-path
+  039-008 (header `HELD` with counters 1, `shard` and `namespace_id` from the root run, `owns_unit` only when the root
+  iteration or loop holds its slot, `reserved_bound` from the version and added to `nested_reserved` under the
+  tenant's ceiling; member `ACTIVE`; no member of a `RETIRED` group; both calling the fence in mode `continue`); the unique index on ACTIVE ChildRoot memberships per chain and the partial unique index on ACTIVE scoped-path
   memberships per root iteration or root loop; the new columns of Technical Plan 2 with their types and defaults
   (`namespace_id`, `root_run_id` with its foreign key and index, `shard smallint NOT NULL` set by the trigger from
-  `run_shard(root_run_id)`, `held_since`, `owns_unit`, `transfer_count` on the header; `acquired_at`, `last_leased_at`,
-  `last_vacated_unleased_at` on the member) and the exact grant list of Technical Plan 2; `capacity_group_yields` and
+  `run_shard(root_run_id)`, `held_since`, `owns_unit`, `transfer_count`, `reserved_bound` on the header; `acquired_at`,
+  `last_leased_at`, `last_vacated_unleased_at` on the member; `fan_out_share` on runs; `nested_reserved` on
+  `tenant_iteration_usage` with its check constraint; `fan_out_open` on versions) and the exact grant list of Technical Plan 2; `capacity_group_yields` and
   `capacity_group_join_waits` with their keys and no foreign key to the header, and a held-header test of both inserts;
   `capacity_group_transfer_receipts.audit_id` made nullable; the relaxed `collection_iterations_slot_consistent` and
-  `loop_iterations` checks that allow a descendant `ADMITTED AND NOT slot_held` (Requirement 039-016); the lease fence
-  trigger on `steps` (Technical Plan 9);
-  `capacity_member` on runs (`NOT NULL`, the successor-copy, member-insert and never-cleared triggers of Requirement
-  039-015); the `nesting` flag and `fan_out_bound` on versions; `nested_group_fan_out` on
+  `loop_iterations` checks that allow a descendant `ADMITTED AND NOT slot_held`, with the trigger that allows it only for
+  a flagged run (Requirement 039-016); the lease fence trigger on `steps` (Technical Plan 9);
+  `capacity_member` on runs (`NOT NULL`, the successor-copy trigger on `chain_segments`, the member-insert and
+  never-cleared triggers of Requirement 039-015); the `nesting` flag and `fan_out_bound` on versions; `nested_group_fan_out` on
   `tenant_collection_policies` (`integer NULL`); `INSERT` grants on the scoped columns of the finish receipts, which
   `FinishPath` writes with kind `SCOPED_PATH`; `capacity_path_transfer_receipts` (only `VACATE` and `ACQUIRE`, mirroring
   `capacity_group_transfer_receipts` with the scoped binding and a nullable `audit_id`); the retention triggers on the
@@ -958,7 +1040,7 @@ computes, after it. **Slice 4, proof and activation** (both): Tasks 039-12 to
   migration's refusal while any group or member exists;
   with the migration checklist and negative privilege tests for each grant, trigger and function.
   Refs: Requirement 039-008, Requirement 039-009, Requirement 039-011, Requirement 039-015
-  Owner-gate: OD-2026-11-26-141
+  Owner-gate: OD-2026-11-26-141, OD-2026-11-27-462
 - [ ] T039-3 Write `worker-lock-sequence.json` with the guarded-claim sequence in the code's order (Technical Plan 6;
   the other sequences are added by the lane-A tasks that write their code) and extend
   `scripts/check-capacity-activation.py` with the `// lock-seq: <sequence id>/<step>` marker check (a sequence whose
@@ -1027,11 +1109,13 @@ computes, after it. **Slice 4, proof and activation** (both): Tasks 039-12 to
   Owner-gate: OD-2026-11-26-142, OD-2026-11-26-143, OD-2026-11-27-443
 - [ ] T039-9 Receipt retention pass (15 minutes and the latest 16) and the retirement record's transfer count, with
   their tests;
-  `capacity_purge_retired` (receipts, side rows, members, then headers; the receipt and guard triggers exempting a
-  delete by the table's owner) and its tests, run as the owner and refused as `sagat_app`, called by feature 020's
+  `capacity_purge_retired` (revoked from `PUBLIC`, executable by its owner only; it requires feature 020's
+  `retention_purge_authorizations` row for this transaction and run; receipts, side rows, members, then headers; the
+  receipt and guard triggers exempting a delete by the table's owner, every relation written with its schema) and its
+  tests: run as the owner with the authorization, refused without it, refused as `sagat_app`; called by feature 020's
   purge before it writes the run's stub, when it exists (Gap 039-008).
   Refs: Requirement 039-009
-  Owner-gate: OD-2026-11-27-438, OD-2026-11-27-447, OD-2026-11-27-453
+  Owner-gate: OD-2026-11-27-438, OD-2026-11-27-447, OD-2026-11-27-453, OD-2026-11-27-463
 - [ ] T039-10 Open the codec to the shapes of Technical Plan 8 under the registry requirement; `nesting_of` and
   `fan_out_of` computed from the parsed document, the bound stored for every version; `NESTED_CHILD_DETACH` and `NESTED_FAN_OUT_LIMIT`; a `parse_stored`
   test with the requirement removed; refusals of every unlisted shape.
@@ -1067,17 +1151,23 @@ computes, after it. **Slice 4, proof and activation** (both): Tasks 039-12 to
 - [ ] T039-18 The fence function `nested_collections_required(mode)` (`FOR KEY SHARE` on the requirement row,
   owner-owned, `search_path` pinned; `new_use` yes only when `active`, `continue` yes when `active` or `draining`) called
   by the creator, a new run's admission, publication and activation; the guard's gate answering yes while `draining`;
-  phase 2's drain check under `IN SHARE MODE`; held-lock tests of a creator racing each phase in both orders; a drain
+  phase 2's drain check after its `FOR UPDATE` on the requirement row, with no table lock; the insert triggers of both
+tables calling the function in mode `continue` and raising `nested_collections_fence`; an unknown mode raising; the
+run-start refusal `NESTED_COLLECTIONS_INACTIVE` on each surface of Technical Plan 8; held-lock tests of a creator racing each phase in both orders; a drain
   with a nested run in flight that finishes, after which phase 2 passes; the function created by this task alone, in a
   migration of its own, after Task 053-5 (the requirement row's state and `ServingGate::uses`) and Task 053-9; a test in `apps/execution-engine/tests/registry.rs`
   that an engine with the guard off and the passes on does not list the capability; a test that a silent engine's poll
   of a member's step grants nothing.
   Refs: Requirement 039-011, Requirement 039-003
-  Owner-gate: OD-2026-11-27-442, OD-2026-11-27-449
-- [ ] T039-19 The `capacity_member` triggers of Requirement 039-015, with a continue-as-new successor of a member child
-  that is refused a lease while not the holder, and a member insert refused for an unflagged run.
+  Owner-gate: OD-2026-11-27-442, OD-2026-11-27-449, OD-2026-11-27-462
+- [ ] T039-19 The `capacity_member` triggers of Requirement 039-015: the `AFTER INSERT` trigger on `chain_segments`
+  that copies the predecessor run's flag and `fan_out_share` onto the successor run, the member-insert refusal and the
+  never-cleared rule; tests: a continue-as-new successor of a member child, flagged by the segment trigger, refused a
+  lease while not the holder; a member insert refused for an unflagged run; the trigger on `collection_iterations` and
+  `loop_iterations` that allows `ADMITTED AND NOT slot_held` only for a flagged run, with a test that a root iteration
+  of an unflagged run admitted without its charge is refused.
   Refs: Requirement 039-015
-  Owner-gate: OD-2026-11-27-446
+  Owner-gate: OD-2026-11-27-446, OD-2026-11-27-462
 - [ ] T039-20 The invariant of Requirement 039-016 as a consistency check run by the integration suites after every
   checkpoint, drain and cancellation test of Tasks 039-5 and 039-7, per tenant: `active_iterations` of
   `tenant_iteration_usage` equals the count of `collection_iterations` and `loop_iterations` rows with `slot_held` whose
@@ -1096,24 +1186,37 @@ computes, after it. **Slice 4, proof and activation** (both): Tasks 039-12 to
   wrapped-collection test (a one-item outer `forEach` around a `forEach` of concurrency above the policy value refused
   at publication; one within it runs at most the bound at once); the bound left to an active-version child as the
   policy divided by the product down to the child call; a version with a null bound counted as its computed product;
-  `QuotaResource::NestedGroupFanOut` on the audited `put_setting` path with its API and contract entries, the `None`
-  branch of each resource resetting only its own column, 256 when no row; tests that a write is audited, that clearing
-  one setting keeps the other, and that a lowered value refuses only new admissions; the child-admission refusal as
+  `QuotaResource::NestedGroupFanOut` on the audited `put_setting` path with its API and contract entries (tenant scope
+  only, a namespace value refused; default limit and default ceiling 256, maximum 4,096), the `None` branch of each
+  resource resetting only its own column, 256 when no row; `QuotaResource::NestedLiveIterations` as an operator ceiling
+  only (16,000 by default, at most 20,000); `runs.fan_out_share` bound at a member child's insert and the grandchild
+  check against it; `fan_out_of` recursive over pinned children and summing `parallel` branches, and `fan_out_open`;
+  `reserved_bound` and `nested_reserved` written by the group's insert trigger and the retiring `Finish`; tests that a
+  write is audited, that clearing one setting keeps the other, that a lowered value refuses the next root admission of
+  an existing version, that a pinned grandchild's bound counts through a pinned child without collections, that a
+  `parallel` of children counts each branch, that a grandchild of an active-version child is checked against its
+  parent's share, and that a root admission passing `nested_live_iterations` waits; the child-admission refusal as
   the permanent step failure `NESTED_FAN_OUT_LIMIT`.
   Refs: Requirement 039-014
-  Owner-gate: OD-2026-11-27-437, OD-2026-11-27-454
-- [ ] T039-23 The lease fence: the trigger `BEFORE INSERT OR UPDATE OF status ON steps` that refuses a row becoming
-  `LEASED` for a run whose `capacity_member` flag (read from `runs`) is set unless `sagat.capacity_guard` is `v1` in the
-  transaction; after Task 053-6; a test that a top-level step of a flagged root run leases through the guard's setting
-  and is refused without it; a test that a claim without the guard is refused; the
+  Owner-gate: OD-2026-11-27-437, OD-2026-11-27-454, OD-2026-11-27-459
+- [ ] T039-23 The lease fence: the trigger `BEFORE INSERT OR UPDATE OF status, lease_token_hash ON steps` that refuses
+  only a new grant (Technical Plan 9) for a run whose `capacity_member` flag (read from `runs`) is set unless
+  `sagat.capacity_guard` is `v1:` with this transaction's `pg_current_xact_id()`; after Task 053-6; a test that a
+  top-level step of a flagged root run leases through the guard's setting and is refused without it; tests that a lease
+  renewal and a cancellation of a flagged run's leased step pass without the setting; a test that a value set for
+  another transaction (session level, or by `ALTER ROLE ... SET`) passes nothing; a test that a claim without the guard is refused; the
   mixed-writer test of design 053 (Task 053-6) in which an N-1 engine polls a member's step and is refused.
   Refs: Requirement 039-003
-  Owner-gate: OD-2026-11-27-455
-- [ ] T039-24 Join waits: `capacity_group_join_waits` written after a busy join and deleted by the join that succeeds;
-  selection 3 on a wait a quantum old; a held-load test with 64 holder pollers on one group and a child that joins
+  Owner-gate: OD-2026-11-27-455, OD-2026-11-27-460
+- [ ] T039-24 Join waits: `capacity_group_join_waits` written after a busy join (with the waiting parent and
+  `last_busy_at`, refreshed on each busy retry, through `INSERT ... SELECT ... WHERE EXISTS` a non-retired header of the
+  same tenant and namespace) and deleted by the join that succeeds; selection 3 on a live wait a quantum old; selection 4
+  deleting a wait that is not live; a pause-after-busy-join test (the waiting member's run paused after its busy join:
+  the wait goes stale, the yield is cleared and the holder leases again); a test that a side row for a retired or
+  another tenant's group is never inserted; a held-load test with 64 holder pollers on one group and a child that joins
   within two quanta plus the longest holder step.
   Refs: Requirement 039-005, Requirement 039-006
-  Owner-gate: OD-2026-11-27-451
+  Owner-gate: OD-2026-11-27-451, OD-2026-11-27-461
 - [ ] T039-25 (lane A) Children and scopes at non-root paths: `pending_children` returns children at any instance
   path; `PendingChild` and the child run's parent reference carry the parent instance path; `start_child`,
   `child_started`, the child's finish and its cancel key the parent step by (run, instance path, node); in
@@ -1170,3 +1273,11 @@ by a named test.
   lease is persisted; the null fan-out bound and the policy's quota resource; descendants without a slot and the
   invariant's query; the error-code table; the two predicate texts and the cursor's home; the lease fence's trigger
   events, flag source and budget (Decisions 039-023 to 039-025).
+- **2026-11-27, security re-read** (`docs/designs/039-nested-collections.reviews/2026-11-27/reread/security.md`): the
+  fan-out bound recursive over pinned children and `parallel` branches, the share carried on member child runs, the
+  tenant-scoped policy rechecked at every root admission and the operator ceiling `nested_live_iterations` reserved
+  per group; the lease fence on new grants only, its setting bound to the transaction; live join waits; the successor
+  copy on `chain_segments`; the fence called by the insert triggers, phase 2 without table locks, the run-start
+  refusal; the relaxed slot check for flagged runs only; the purge function revoked from `PUBLIC` and gated on
+  feature 020's authorization; the header's `namespace_id` and `owns_unit` checked by its trigger; side rows inserted
+  only for a live header; ADR-0156 and the registers aligned (Decisions 039-026 to 039-031).
