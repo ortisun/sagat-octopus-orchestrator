@@ -22,6 +22,7 @@ impl CommandDigester for Sha256CommandDigester {
             body_hex.push(char::from(HEX[usize::from(byte >> 4)]));
             body_hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
+        // Every member is a string but `seq`, a u32 well inside I-JSON, so the total serializer is exact here.
         rfc8785(&json!({"seq": seq, "kind": kind, "target": target, "body": body_hex}))
     }
 }

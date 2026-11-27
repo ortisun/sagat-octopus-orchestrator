@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use sagat_domain::execution::code::{ChainedCommand, CommandChain, CommandDigester, CommandKind};
 use sagat_infra_ir::Sha256CommandDigester;
-use sagat_infra_ir::canonical::rfc8785;
+use sagat_infra_ir::canonical::{NotIJson, rfc8785, rfc8785_i_json};
 use serde_json::Value;
 
 fn goldens() -> PathBuf {
@@ -103,6 +103,51 @@ fn rfc8785_reprints_numbers_that_need_correct_rounding() {
         let expected = text.as_bytes().to_vec();
         assert_eq!(rfc8785(&parsed), expected, "{text}");
     }
+}
+
+/// Values that I-JSON cannot hold exactly are refused where a command's value is serialized, so two values the server
+/// tells apart never print the same (`9007199254740993` would print as `9007199254740992`).
+#[test]
+fn rfc8785_i_json_refuses_what_i_json_cannot_hold() {
+    let refused = |text: &str| {
+        let value: Value = serde_json::from_str(text).expect("JSON");
+        rfc8785_i_json(&value)
+            .err()
+            .map(|error: NotIJson| error.pointer)
+    };
+    assert_eq!(
+        refused(r#"{"durationMs":9007199254740993}"#).as_deref(),
+        Some("/durationMs")
+    );
+    assert_eq!(
+        refused(r#"{"a":[1,-9007199254740992]}"#).as_deref(),
+        Some("/a/1")
+    );
+    assert_eq!(
+        refused(r#"{"a/b":{"~":1e21}}"#).as_deref(),
+        Some("/a~1b/~0")
+    );
+    assert_eq!(refused("18446744073709551615").as_deref(), Some(""));
+    assert_eq!(
+        refused("9007199254740992.0").as_deref(),
+        Some(""),
+        "2^53 as a double"
+    );
+    for held in [
+        "9007199254740991",
+        "-9007199254740991",
+        "9007199254740991.0",
+        "0.5",
+        "1e-300",
+        "-0",
+        "[]",
+    ] {
+        let value: Value = serde_json::from_str(held).expect("JSON");
+        assert_eq!(rfc8785_i_json(&value), Ok(rfc8785(&value)), "{held}");
+    }
+    // A number beyond the doubles does not even parse in this build: `arbitrary_precision`, which would let one
+    // through, is off (the total serializer would print it `null`).
+    assert!(serde_json::from_str::<Value>("1e400").is_err());
 }
 
 /// The chain vectors and every scenario run of the corpus: each body's digest is the SHA-256 of its RFC 8785 bytes,

@@ -72,6 +72,82 @@ pub fn rfc8785(value: &Value) -> Vec<u8> {
     out
 }
 
+/// The RFC 8785 bytes of a value that I-JSON (RFC 7493, which RFC 8785 assumes) can hold: every number a finite double
+/// below 2^53 in magnitude when it is an integer, so that no two values the server tells apart print the same (the
+/// corpus README: a command whose body holds a larger integer is `COMMAND_INVALID`). Every value a command carries or
+/// hashes goes through this one, never through [`rfc8785`], which prints any JSON as ECMAScript would.
+///
+/// # Errors
+/// [`NotIJson`] at the first number outside I-JSON, with its JSON pointer.
+pub fn rfc8785_i_json(value: &Value) -> Result<Vec<u8>, NotIJson> {
+    check_i_json(value, &mut String::new())?;
+    Ok(rfc8785(value))
+}
+
+/// A number that I-JSON cannot hold exactly, at a JSON pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotIJson {
+    pub pointer: String,
+}
+
+impl std::fmt::Display for NotIJson {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the number at {:?} is outside I-JSON (an integer beyond 2^53 - 1 in magnitude, or not a finite double)",
+            self.pointer
+        )
+    }
+}
+
+impl std::error::Error for NotIJson {}
+
+/// The largest integer every I-JSON reader holds exactly: 2^53 - 1.
+const SAFE_INTEGER: u64 = (1 << 53) - 1;
+/// 2^53 as a double, exactly.
+const TWO_TO_THE_53: f64 = 9_007_199_254_740_992.0;
+
+fn check_i_json(value: &Value, pointer: &mut String) -> Result<(), NotIJson> {
+    match value {
+        Value::Number(number) => {
+            let safe = if let Some(unsigned) = number.as_u64() {
+                unsigned <= SAFE_INTEGER
+            } else if let Some(signed) = number.as_i64() {
+                signed.unsigned_abs() <= SAFE_INTEGER
+            } else {
+                // Every double of magnitude 2^53 or more is an integer, so a finite double below it is the only kind.
+                number
+                    .as_f64()
+                    .is_some_and(|double| double.is_finite() && double.abs() < TWO_TO_THE_53)
+            };
+            if safe {
+                Ok(())
+            } else {
+                Err(NotIJson {
+                    pointer: pointer.clone(),
+                })
+            }
+        }
+        Value::Array(items) => items.iter().enumerate().try_for_each(|(index, item)| {
+            let length = pointer.len();
+            pointer.push('/');
+            pointer.push_str(&index.to_string());
+            let result = check_i_json(item, pointer);
+            pointer.truncate(length);
+            result
+        }),
+        Value::Object(map) => map.iter().try_for_each(|(key, item)| {
+            let length = pointer.len();
+            pointer.push('/');
+            pointer.push_str(&key.replace('~', "~0").replace('/', "~1"));
+            let result = check_i_json(item, pointer);
+            pointer.truncate(length);
+            result
+        }),
+        Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),
+    }
+}
+
 fn write_rfc8785(value: &Value, out: &mut Vec<u8>) {
     match value {
         Value::Null => out.extend_from_slice(b"null"),

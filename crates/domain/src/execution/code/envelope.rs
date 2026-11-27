@@ -68,6 +68,17 @@ impl EntryName {
         }
     }
 
+    /// Whether this is a prefix entry covering every name `other` covers, other than `other` itself.
+    fn is_broader_than(&self, other: &Self) -> bool {
+        let Self::Prefix(prefix) = self else {
+            return false;
+        };
+        match other {
+            Self::Exact(exact) => exact.as_str().starts_with(prefix.as_str()),
+            Self::Prefix(narrower) => narrower != prefix && narrower.starts_with(prefix.as_str()),
+        }
+    }
+
     /// The order of precedence among the entries that cover one name: an exact entry first, then the longer prefix.
     fn precedence(&self) -> (bool, usize) {
         match self {
@@ -168,11 +179,20 @@ pub struct ActivityEnvelope {
 }
 
 impl ActivityEnvelope {
+    /// The envelope of `entries`, whose `requiresApproval` must name one of `approval_policies` (the keys of
+    /// `envelope.approvalPolicies`).
+    ///
     /// # Errors
     /// [`EnvelopeError::TooManyEntries`] beyond [`MAX_ACTIVITY_ENTRIES`], [`EnvelopeError::DuplicateEntry`] for a name
-    /// listed twice, and [`EnvelopeError::RiskNameNotAnEntry`] for a `compensateWith` or `reconcileWith` that no entry
-    /// covers (its own entry gives the derived step its secrets).
-    pub fn new(entries: Vec<ActivityEntry>) -> Result<Self, EnvelopeError> {
+    /// listed twice, [`EnvelopeError::RiskNameNotAnEntry`] for a `compensateWith` or `reconcileWith` that no entry
+    /// covers (its own entry gives the derived step its secrets), [`EnvelopeError::UnknownApprovalPolicy`] for a
+    /// `requiresApproval` that names no policy, and [`EnvelopeError::DropsBroaderGate`] for an entry that would
+    /// silently lose the approval gate, `highRisk` or `irreversible` of a broader entry covering its names: entries do
+    /// not inherit, so a narrower entry must restate them (Decision 044-253).
+    pub fn new(
+        entries: Vec<ActivityEntry>,
+        approval_policies: &BTreeSet<ApprovalPolicyName>,
+    ) -> Result<Self, EnvelopeError> {
         if entries.len() > MAX_ACTIVITY_ENTRIES {
             return Err(EnvelopeError::TooManyEntries(entries.len()));
         }
@@ -184,6 +204,44 @@ impl ActivityEnvelope {
         }
         let envelope = Self { entries };
         for entry in &envelope.entries {
+            if let Some(policy) = &entry.fields.requires_approval
+                && !approval_policies.contains(policy)
+            {
+                return Err(EnvelopeError::UnknownApprovalPolicy {
+                    entry: entry.name.as_text(),
+                    policy: policy.as_str().to_owned(),
+                });
+            }
+            for broader in envelope
+                .entries
+                .iter()
+                .filter(|broader| broader.name.is_broader_than(&entry.name))
+            {
+                let gates = [
+                    (
+                        "requiresApproval",
+                        broader.fields.requires_approval.is_some()
+                            && broader.fields.requires_approval != entry.fields.requires_approval,
+                    ),
+                    (
+                        "highRisk",
+                        broader.fields.high_risk == Some(true)
+                            && entry.fields.high_risk != Some(true),
+                    ),
+                    (
+                        "irreversible",
+                        broader.fields.irreversible == Some(true)
+                            && entry.fields.irreversible != Some(true),
+                    ),
+                ];
+                if let Some((member, _)) = gates.iter().find(|(_, dropped)| *dropped) {
+                    return Err(EnvelopeError::DropsBroaderGate {
+                        entry: entry.name.as_text(),
+                        broader: broader.name.as_text(),
+                        member,
+                    });
+                }
+            }
             for (member, name) in [
                 ("compensateWith", &entry.fields.compensate_with),
                 ("reconcileWith", &entry.fields.reconcile_with),
@@ -283,7 +341,8 @@ impl ActivityEnvelope {
     }
 }
 
-/// An admitted activity command: the entry it runs under and the entries of its derived steps.
+/// An admitted activity command: the entry it runs under and the entries of its derived steps. Its effective publisher
+/// fields are `entry.fields()`; the fields the fragment repeated are never used past the check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdmittedActivity<'a> {
     pub entry: &'a ActivityEntry,
@@ -308,6 +367,16 @@ pub enum EnvelopeError {
     TooManyEntries(usize),
     #[error("the envelope lists {0} twice")]
     DuplicateEntry(String),
+    #[error(
+        "requiresApproval of the envelope entry {entry} names {policy}, which approvalPolicies does not declare"
+    )]
+    UnknownApprovalPolicy { entry: String, policy: String },
+    #[error("the envelope entry {entry} drops {member} of the broader entry {broader}: restate it")]
+    DropsBroaderGate {
+        entry: String,
+        broader: String,
+        member: &'static str,
+    },
     #[error("{member} of the envelope entry {entry} names {activity}, which no entry covers")]
     RiskNameNotAnEntry {
         entry: String,
@@ -363,6 +432,19 @@ mod tests {
         )
     }
 
+    fn policies() -> BTreeSet<ApprovalPolicyName> {
+        ["large-payments", "small-payments"]
+            .into_iter()
+            .map(|name| ApprovalPolicyName::parse(name).expect("a policy"))
+            .collect()
+    }
+
+    impl ActivityEnvelope {
+        fn new_for_tests(entries: Vec<ActivityEntry>) -> Result<Self, EnvelopeError> {
+            Self::new(entries, &policies())
+        }
+    }
+
     fn entry(text: &str, fields: PublisherFields) -> ActivityEntry {
         ActivityEntry::new(EntryName::parse(text).expect("an entry name"), fields)
             .expect("an entry")
@@ -370,7 +452,7 @@ mod tests {
 
     /// The envelope of Technical Plan 3.1's example.
     fn envelope() -> ActivityEnvelope {
-        ActivityEnvelope::new(vec![
+        ActivityEnvelope::new_for_tests(vec![
             entry("inventory.*", PublisherFields::default()),
             entry(
                 "inventory.reserve",
@@ -451,8 +533,9 @@ mod tests {
             covering("payments.charge").as_deref(),
             Some("payments.charge")
         );
-        let reversed = ActivityEnvelope::new(envelope.entries().iter().rev().cloned().collect())
-            .expect("the same entries in another order");
+        let reversed =
+            ActivityEnvelope::new_for_tests(envelope.entries().iter().rev().cloned().collect())
+                .expect("the same entries in another order");
         assert_eq!(
             reversed
                 .covering(&name("inventory.bulk.reserve"))
@@ -603,6 +686,82 @@ mod tests {
     }
 
     #[test]
+    fn a_narrower_entry_restates_the_gates_of_a_broader_one() {
+        let gated = PublisherFields {
+            high_risk: Some(true),
+            irreversible: Some(true),
+            requires_approval: Some(ApprovalPolicyName::parse("large-payments").expect("a policy")),
+            ..PublisherFields::default()
+        };
+        for (narrower, dropped, member) in [
+            (
+                "payments.charge",
+                PublisherFields {
+                    secrets: secrets(&["payments-api"]),
+                    ..gated.clone()
+                },
+                None,
+            ),
+            (
+                "payments.charge",
+                PublisherFields::default(),
+                Some("requiresApproval"),
+            ),
+            (
+                "payments.bulk.*",
+                PublisherFields {
+                    high_risk: Some(false),
+                    ..gated.clone()
+                },
+                Some("highRisk"),
+            ),
+            (
+                "payments.charge",
+                PublisherFields {
+                    irreversible: None,
+                    ..gated.clone()
+                },
+                Some("irreversible"),
+            ),
+            (
+                "payments.charge",
+                PublisherFields {
+                    requires_approval: Some(
+                        ApprovalPolicyName::parse("small-payments").expect("a policy"),
+                    ),
+                    ..gated.clone()
+                },
+                Some("requiresApproval"),
+            ),
+        ] {
+            let envelope = ActivityEnvelope::new_for_tests(vec![
+                entry("payments.*", gated.clone()),
+                entry(narrower, dropped),
+            ]);
+            match member {
+                None => assert!(envelope.is_ok(), "{narrower} restates every gate"),
+                Some(member) => assert_eq!(
+                    envelope,
+                    Err(EnvelopeError::DropsBroaderGate {
+                        entry: narrower.to_owned(),
+                        broader: "payments.*".to_owned(),
+                        member,
+                    }),
+                    "{narrower} drops {member}"
+                ),
+            }
+        }
+        let unrelated = ActivityEnvelope::new_for_tests(vec![
+            entry("payments.*", gated),
+            entry("paymentsx.charge", PublisherFields::default()),
+        ]);
+        assert!(
+            unrelated.is_ok(),
+            "an entry outside the prefix is not narrower"
+        );
+    }
+
+    #[test]
     fn an_envelope_that_breaks_its_rules_is_refused() {
         assert_eq!(
             ActivityEntry::new(
@@ -655,7 +814,7 @@ mod tests {
                 "{invalid:?} is not an entry name"
             );
         }
-        let dangling = ActivityEnvelope::new(vec![entry(
+        let dangling = ActivityEnvelope::new_for_tests(vec![entry(
             "orders.place",
             PublisherFields {
                 compensate_with: Some(name("orders.cancel")),
@@ -670,7 +829,7 @@ mod tests {
                 activity: "orders.cancel".to_owned(),
             })
         );
-        let covered_by_a_prefix = ActivityEnvelope::new(vec![
+        let covered_by_a_prefix = ActivityEnvelope::new_for_tests(vec![
             entry(
                 "orders.place",
                 PublisherFields {
@@ -697,7 +856,23 @@ mod tests {
                 .is_some_and(|entry| entry.secrets().is_empty()),
             "and it runs with no secret"
         );
-        let twice = ActivityEnvelope::new(vec![
+        let unknown_policy = ActivityEnvelope::new_for_tests(vec![entry(
+            "orders.place",
+            PublisherFields {
+                requires_approval: Some(
+                    ApprovalPolicyName::parse("large-paymnts").expect("a name"),
+                ),
+                ..PublisherFields::default()
+            },
+        )]);
+        assert_eq!(
+            unknown_policy,
+            Err(EnvelopeError::UnknownApprovalPolicy {
+                entry: "orders.place".to_owned(),
+                policy: "large-paymnts".to_owned(),
+            })
+        );
+        let twice = ActivityEnvelope::new_for_tests(vec![
             entry("orders.place", PublisherFields::default()),
             entry("orders.place", PublisherFields::default()),
         ]);
@@ -709,7 +884,7 @@ mod tests {
             .map(|index| entry(&format!("a{index}"), PublisherFields::default()))
             .collect();
         assert_eq!(
-            ActivityEnvelope::new(many),
+            ActivityEnvelope::new_for_tests(many),
             Err(EnvelopeError::TooManyEntries(MAX_ACTIVITY_ENTRIES + 1))
         );
     }

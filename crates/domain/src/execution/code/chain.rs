@@ -262,17 +262,12 @@ impl CommandChain {
     }
 }
 
+/// The plain digest is never returned on a read (Technical Plan 6.2), so a chain's debug form shows its count only.
 impl fmt::Debug for CommandChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut hex = String::with_capacity(64);
-        for byte in self.hash {
-            hex.push(char::from(b"0123456789abcdef"[usize::from(byte >> 4)]));
-            hex.push(char::from(b"0123456789abcdef"[usize::from(byte & 0x0f)]));
-        }
         f.debug_struct("CommandChain")
-            .field("hash", &hex)
             .field("count", &self.count)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -412,6 +407,14 @@ mod tests {
             digester.sha_inputs.borrow().is_empty(),
             "nothing is hashed for a refused command"
         );
+    }
+
+    #[test]
+    fn a_chains_debug_form_shows_no_digest() {
+        let chain = CommandChain::restore([0xab; 32], 3).expect("a chain of three commands");
+        let shown = format!("{chain:?}");
+        assert!(!shown.contains("ab"), "{shown}");
+        assert!(shown.contains("count: 3"), "{shown}");
     }
 
     #[test]
