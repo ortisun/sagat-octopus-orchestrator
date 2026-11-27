@@ -82,3 +82,40 @@ of retired groups waits for feature 020's purge (design 039, Gap 039-008).
 
 Design 039, Technical Plans 2 to 9 and 11 (`docs/designs/039-nested-collections.md`); research Decisions 039-012 to
 039-018 (`specs/039-nested-collections/research.md`); the reports cited above.
+
+## Revision of 2026-11-27 (design 039, EGM design critique)
+
+Recorded under Owner decision 2026-11-24-4 after `docs/designs/039-nested-collections.reviews/2026-11-27/round-1/egm-design.md`
+(Owner decisions 2026-11-27-449 to 2026-11-27-456).
+
+- **Decision 1, amended.** A root loop has one scoped-path member for the whole loop, keyed by (run, the loop's owner
+  node) with the fixed index 0, holding possession across its iterations and delays; the guard gates loop work on
+  (run, root node). The member is finished, and the group retired, only when the loop scope's lifecycle is final
+  (`SUCCEEDED`, `FAILED` or `CANCELLED`), never while it is `RUNNING`, `DELAYING` or `DRAINING`.
+- **Decision 3, extended.** A join that finds the header busy records a join wait (`capacity_group_join_waits`); a wait
+  a quantum old makes the sweeper insert the yield row. The yield row carries the header's epoch, and the guard and
+  the sweeper act only on a row of the current epoch. The guard sets the holder's `last_leased_at` when it grants a
+  lease, under the `SKIP LOCKED` header lock it holds; `Acquire` sets `acquired_at`; `Vacate` sets
+  `last_vacated_unleased_at` when `last_leased_at` is older than `acquired_at`.
+- **Decision 4, extended: the write set of the built commands.** ADR-0078 section 3 and feature 014's Decision 710
+  limit `Vacate` and `Acquire` to the header, one audit row, one outbox row and one receipt. They now write the header
+  (with `transfer_count`, `held_since`), the member row (`acquired_at` or `last_vacated_unleased_at`), the deletion of
+  the yield row, one outbox row and one receipt, and no audit row; `capacity_group_transfer_receipts.audit_id` becomes
+  nullable, and the `capacity.group.retired` record carries the transfer count. No hourly audit table.
+- **Decision 5, extended.** Every version stores its fan-out bound at insert (`fan_out_bound`, computed by
+  `fan_out_of`); a child's share is the policy value divided by the product of `maxConcurrency` down to its call;
+  `nested_group_fan_out` is a column of `tenant_collection_policies`, written through its audited path. Whether an
+  admission is a descendant depends only on the run's `capacity_member` flag, whatever its version.
+- **Decision 6, amended: the drain rule.** `nested_collections_required(mode)`: `new_use` (a publication, an activation,
+  the admission of a new run of a nesting version) answers yes only when the requirement is `active`; `continue` (the
+  creator's group or member for a run already started) answers yes when it is `active` or `draining`; the guard grants
+  member leases while it is `active` or `draining`. Phase 1 therefore stops new nesting work without halting the runs
+  phase 2 waits for. Design 053 knows only the plain form (a); its follow-up Task 053-9 registers this "continues while
+  draining" descriptor kind. The header gains `namespace_id` and `root_run_id`, its shard derived by `Shard::of`.
+- **Decision 9, added: a version fence on the lease.** A trigger on `steps` refuses a step of a run whose
+  `capacity_member` flag is set moving to `LEASED` unless the transaction set `sagat.capacity_guard` to `v1`, which only
+  the guard sets, so a binary that does not run the guard (an older one not yet counted by the registry) cannot lease
+  member work. It is a version fence, not a boundary against the platform's own role.
+
+Possession is kept over joining without it, bounded only by the fan-out bound, because Owner question 706 and ADR-0075
+keep the tenant limit on leased work; its visible cost is that the members of one group lease one at a time.

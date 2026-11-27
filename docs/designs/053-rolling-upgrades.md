@@ -645,6 +645,13 @@ Each task names its files and tests.
   Refs: Requirement 053-001, Requirement 053-003, Requirement 053-004, Requirement 053-005, Requirement 053-007, Requirement 053-008
 - [ ] T053-8 Build to design 052 as its review revised it (2026-11-26), which withdrew its Requirements 052-001, 052-004 and 052-005 that Requirement 053-006 cites: 0.3.0 builds no queue of ready steps, so Requirement 053-006's sentence on design 052's ready queue applies to the queue's own design if Success criterion 052-005 calls for it; 0.3.0's hot-path remedies (a bounded and spread poll, wake on commit) are server settings that write no state N-1 cannot process, and the descriptor test marks no capability for them.
   Refs: Requirement 053-006
+- [ ] T053-9 Register a third descriptor kind beside form (a) and form (b), "continues while draining", for a
+  capability whose in-flight runs must finish during phase 1 (design 039, `nested-collections-v1`, Owner decision
+  2026-11-27-449): its fence function takes a mode, refusing a new use unless the capability's row is `active` and
+  allowing the continuation of work already started while it is `active` or `draining`, and `ServingGate` answers a
+  continuation query yes while the row is `draining`; phase 2 is unchanged. The descriptor test lists the capabilities
+  of this kind by name, and a test drains such a capability with a run in flight that finishes before phase 2 passes.
+  Refs: Requirement 053-006, Requirement 053-007
 
 ### Verification Plan
 
