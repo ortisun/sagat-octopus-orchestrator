@@ -119,3 +119,15 @@ Recorded under Owner decision 2026-11-24-4 after `docs/designs/039-nested-collec
 
 Possession is kept over joining without it, bounded only by the fan-out bound, because Owner question 706 and ADR-0075
 keep the tenant limit on leased work; its visible cost is that the members of one group lease one at a time.
+
+## Revision of 2026-11-27 (implementation-readiness review)
+
+Recorded without changing the decisions above, under Owner decision 2026-11-24-4 (Owner decisions 2026-11-27-457 and
+2026-11-27-458; design 039, Decisions 039-023 to 039-025). The yield row (decision 3) and the join wait are keyed by
+(tenant, group) and carry no foreign key to `capacity_groups`, whose check would wait behind a holder's claim. The
+deletion of retired groups is allowed only when made by the tables' owner, which is how `capacity_purge_retired`
+runs; it deletes receipts, side rows, members, then headers. `FinishPath` writes `capacity_group_finish_receipts`
+with kind `SCOPED_PATH`; `capacity_path_transfer_receipts` holds only `VACATE` and `ACQUIRE`. The member's
+`last_leased_at` is written once by the claim transaction after the first lease grant of that member is persisted,
+under the group lock it holds, last in the lock sequence. A child started at a non-root instance path is a member
+child like any other (Task 039-25).
