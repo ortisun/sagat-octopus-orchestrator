@@ -209,6 +209,11 @@ const ALLOWED: &[Allowed] = &[
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",
     },
+    Allowed {
+        file: CONTENT_USAGE,
+        need: "UNRESOLVED placeholder {}",
+        reason: "admission_policies (design 041 section 2, T3): the select list is the literal calls of pg_advisory_xact_lock_shared and pg_advisory_xact_lock right above, one per bound key, so the statement takes advisory locks and reads no table; nothing the runtime role lacks",
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -1194,5 +1199,62 @@ async fn every_statement_the_handover_job_issues_is_within_sagat_handovers_privi
     assert!(
         stale.is_empty(),
         "HANDOVER_ALLOWED entries that excuse nothing: {stale:?}"
+    );
+}
+
+/// A function of the carry as the catalog shows it: its signature, whether it is a definer, its settings, whether the
+/// runtime role and `PUBLIC` may execute it, and its body.
+type CarryFunction = (String, bool, Option<Vec<String>>, bool, bool, String);
+
+/// The step-log carry's functions (design 041 section 2a, task T041-36): `SECURITY INVOKER`, so that the carry runs with
+/// the runtime role's grants on the step-log tables and no definer's; each pins its `search_path`, is executable by
+/// `sagat_app` and not by `PUBLIC`; and every table and function their bodies name is within the runtime role's
+/// privileges (a statement the extractor reads from the Rust sources is not one of them: they live in the migration).
+#[tokio::test]
+async fn the_step_log_carrys_functions_are_invokers_only_the_runtime_role_may_execute() {
+    let db = migrated_db().await;
+    let functions: Vec<CarryFunction> = sqlx::query_as(
+        "SELECT p.oid::regprocedure::text, p.prosecdef, p.proconfig, has_function_privilege($1, p.oid, 'EXECUTE'), \
+                EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a \
+                         WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'), \
+                p.prosrc \
+           FROM pg_proc p \
+          WHERE p.proname IN ('sagat_step_log_carry', 'sagat_step_log_carry_write', 'sagat_step_log_carry_plan', \
+                              'sagat_step_log_policies', 'sagat_step_log_policy_fence_keys', \
+                              'sagat_step_log_stream_lock_key') \
+          ORDER BY 1",
+    )
+    .bind(RUNTIME_ROLE)
+    .fetch_all(&db.pool)
+    .await
+    .expect("the carry's functions");
+    assert_eq!(
+        functions.len(),
+        6,
+        "the carry's six functions: {functions:?}"
+    );
+    let mut gaps = Vec::new();
+    for (signature, definer, config, executable, public, body) in &functions {
+        assert!(!definer, "{signature} is SECURITY INVOKER");
+        assert_eq!(
+            config.as_deref(),
+            Some(&["search_path=pg_catalog, pg_temp".to_owned()][..]),
+            "{signature} pins its search_path"
+        );
+        assert!(executable, "{RUNTIME_ROLE} may execute {signature}");
+        assert!(!public, "PUBLIC may not execute {signature}");
+        for need in sql_needs::needs(body) {
+            if matches!(&need, sql_needs::Need::Execute(name) if name.starts_with("pg_")) {
+                continue;
+            }
+            if let Err(why) = catalog_as(&db.pool, RUNTIME_ROLE, &need).await {
+                gaps.push(format!("{signature}: {need}: {why}"));
+            }
+        }
+    }
+    assert!(
+        gaps.is_empty(),
+        "what the carry's functions ask of {RUNTIME_ROLE} and it lacks:\n{}",
+        gaps.join("\n")
     );
 }

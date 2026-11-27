@@ -465,6 +465,146 @@ pub fn validate_carry(
     }
 }
 
+/// One record as the worker sent it (`StepLogRecord`), in a batch or in a carry. Its `Debug` prints its sequence and
+/// sizes only: the text is what a step's code logged (FR-041-007 (d)).
+#[derive(Clone, PartialEq)]
+pub struct StepLogRecordIn {
+    pub sequence: u64,
+    /// `None` when the wire value names no level (unspecified or unknown): refused by P4 and C2.
+    pub level: Option<StepLogLevel>,
+    pub worker_time: Option<time::OffsetDateTime>,
+    pub message: String,
+    /// Empty when none.
+    pub exception: String,
+    pub fields: Vec<(String, FieldValue)>,
+    /// The worker already cut the message, the exception or the fields.
+    pub truncated: bool,
+}
+
+impl fmt::Debug for StepLogRecordIn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StepLogRecordIn")
+            .field("sequence", &self.sequence)
+            .field("level", &self.level)
+            .field("message_bytes", &self.message.len())
+            .field("exception_bytes", &self.exception.len())
+            .field("fields", &self.fields.len())
+            .field("truncated", &self.truncated)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StepLogRecordIn {
+    /// What P4 and C2 check of this record.
+    #[must_use]
+    pub const fn shape(&self) -> RecordShape {
+        RecordShape {
+            sequence: self.sequence,
+            level: self.level,
+        }
+    }
+}
+
+/// The last records of an attempt as its report carries them (field 13 of `CompleteStep` and `FailStep`, design
+/// section 2a, ADR-0095), before C2. Its `Debug` prints counts only.
+#[derive(Clone, PartialEq)]
+pub struct Carry {
+    pub records: Vec<StepLogRecordIn>,
+    /// The highest sequence the attempt's logger assigned, sent or not.
+    pub highest_sequence: u64,
+    /// The encoded size of the `StepLogCarry` message, for C2's bound of 16 KiB.
+    pub encoded_len: usize,
+}
+
+impl fmt::Debug for Carry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Carry")
+            .field("records", &self.records.len())
+            .field("highest_sequence", &self.highest_sequence)
+            .field("encoded_len", &self.encoded_len)
+            .finish()
+    }
+}
+
+impl Carry {
+    /// C2 on this carry ([`validate_carry`]).
+    #[must_use]
+    pub fn shape(&self) -> CarryShape {
+        let shapes: Vec<RecordShape> = self.records.iter().map(StepLogRecordIn::shape).collect();
+        validate_carry(&shapes, self.encoded_len, self.highest_sequence)
+    }
+
+    /// What C2 makes of this carry as the plan of the report's first transaction: a full carry, a mark-only carry
+    /// whose reason is `invalid` (its `highest_sequence` alone is valid), or none (ignored).
+    #[must_use]
+    pub fn plan(&self) -> CarryPlan {
+        match self.shape() {
+            CarryShape::Full => CarryPlan::Full,
+            CarryShape::MarkOnly => CarryPlan::MarkOnly(MarkOnlyReason::Invalid),
+            CarryShape::Ignored => CarryPlan::None,
+        }
+    }
+}
+
+/// Why the transaction that wrote a carry failed because of it (ADR-0095 decision 5, design section 2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarryFailure {
+    /// A guard of the step-log quota raised (an underflow, a quota lease `CHECK`): the re-run carries a mark-only
+    /// carry whose reason is `failed`, which charges nothing.
+    GuardRaised,
+    /// The carry's call failed otherwise (a lost connection, a deadlock, a statement timeout, a bug): the re-run
+    /// carries none.
+    CallFailed,
+}
+
+/// What a transaction that records an attempt writes of its carry (design section 2a, "Which transaction writes what"):
+/// an explicit argument of every function that records an attempt and commits, so that each site says what it writes.
+/// A plan only goes down, `Full` → `MarkOnly` → `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarryPlan {
+    /// The carry's records, planned by the carry function against the stream (T5 and T6 of a carry).
+    Full,
+    /// No record kept and no marker planned: each sequence the carry sent above the stream's last is counted dropped
+    /// by the server with this reason, one of [`MarkOnlyReason::PLANNED`], and the stream gets its final mark.
+    MarkOnly(MarkOnlyReason),
+    /// Nothing written: the report is recorded as without a carry.
+    None,
+}
+
+impl CarryPlan {
+    /// The plan of a transaction that records a report whose output or failure code held a declared secret
+    /// ([`MarkOnlyReason::Secret`]) or that a content-quota fallback records ([`MarkOnlyReason::ContentFallback`]): a
+    /// full carry becomes mark-only with `reason`; a mark-only carry keeps its reason and none stays none, so that the
+    /// plan never goes up.
+    #[must_use]
+    pub const fn mark_only(self, reason: MarkOnlyReason) -> Self {
+        match self {
+            Self::Full => Self::MarkOnly(reason),
+            other => other,
+        }
+    }
+
+    /// The plan of the re-run after the carry made the transaction fail (ADR-0095 decision 5): a guard's raise turns a
+    /// full carry into a mark-only one whose reason is `failed`; any other failure, or any failure of a carry that is
+    /// not full, turns it into none. The plan is always strictly lower than before, so that the re-runs end.
+    #[must_use]
+    pub const fn after(self, failure: CarryFailure) -> Self {
+        match (self, failure) {
+            (Self::Full, CarryFailure::GuardRaised) => Self::MarkOnly(MarkOnlyReason::Failed),
+            _ => Self::None,
+        }
+    }
+
+    /// The `p_mark_reason` of the carry function: the reason of a mark-only carry, none for a full carry or none.
+    #[must_use]
+    pub const fn mark_reason(self) -> Option<MarkOnlyReason> {
+        match self {
+            Self::MarkOnly(reason) => Some(reason),
+            Self::Full | Self::None => None,
+        }
+    }
+}
+
 /// What the stream row holds when a batch reads it (T4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StreamCounters {
@@ -1012,6 +1152,125 @@ mod tests {
             ),
             Err(BatchInvalid::UnknownLevel)
         );
+    }
+
+    fn carried(sequences: &[u64], highest_sequence: u64, encoded_len: usize) -> Carry {
+        Carry {
+            records: sequences
+                .iter()
+                .map(|&sequence| StepLogRecordIn {
+                    sequence,
+                    level: Some(StepLogLevel::Info),
+                    worker_time: None,
+                    message: "m".to_owned(),
+                    exception: String::new(),
+                    fields: Vec::new(),
+                    truncated: false,
+                })
+                .collect(),
+            highest_sequence,
+            encoded_len,
+        }
+    }
+
+    /// C2 as the first transaction's plan (design section 2a): a carry within its bounds is full; one outside them whose
+    /// `highest_sequence` alone is valid is mark-only with the reason `invalid`; one whose `highest_sequence` is not
+    /// valid either is ignored, the report recorded as without it.
+    #[test]
+    fn c2_makes_a_carry_full_mark_only_invalid_or_none() {
+        assert_eq!(carried(&[1, 2, 3], 5, 100).plan(), CarryPlan::Full);
+        assert_eq!(
+            carried(&[2, 1], 5, 100).plan(),
+            CarryPlan::MarkOnly(MarkOnlyReason::Invalid)
+        );
+        assert_eq!(
+            carried(&[1], 1, MAX_CARRY_BYTES + 1).plan(),
+            CarryPlan::MarkOnly(MarkOnlyReason::Invalid)
+        );
+        assert_eq!(
+            carried(&[1], MAX_WORKER_SEQUENCE + 1, 100).plan(),
+            CarryPlan::None
+        );
+        let mut unknown = carried(&[1], 1, 100);
+        unknown.records[0].level = None;
+        assert_eq!(unknown.shape(), CarryShape::MarkOnly);
+        assert_eq!(
+            format!("{:?}", carried(&[1, 2], 2, 10)),
+            "Carry { records: 2, highest_sequence: 2, encoded_len: 10 }",
+            "a carry's Debug prints counts, never its text"
+        );
+    }
+
+    /// The table of design section 2a: a report that held a secret, or that a content fallback records, writes a
+    /// mark-only carry; a mark-only carry keeps its reason and none stays none.
+    #[test]
+    fn a_secret_or_a_content_fallback_makes_a_full_carry_mark_only_and_never_raises_one() {
+        for reason in [MarkOnlyReason::Secret, MarkOnlyReason::ContentFallback] {
+            assert_eq!(
+                CarryPlan::Full.mark_only(reason),
+                CarryPlan::MarkOnly(reason)
+            );
+            assert_eq!(
+                CarryPlan::MarkOnly(MarkOnlyReason::Failed).mark_only(reason),
+                CarryPlan::MarkOnly(MarkOnlyReason::Failed),
+                "a content fallback keeps the downgraded carry"
+            );
+            assert_eq!(CarryPlan::None.mark_only(reason), CarryPlan::None);
+        }
+        assert_eq!(CarryPlan::Full.mark_reason(), None);
+        assert_eq!(CarryPlan::None.mark_reason(), None);
+        assert_eq!(
+            CarryPlan::MarkOnly(MarkOnlyReason::Secret).mark_reason(),
+            Some(MarkOnlyReason::Secret)
+        );
+    }
+
+    fn rank(plan: CarryPlan) -> u8 {
+        match plan {
+            CarryPlan::Full => 2,
+            CarryPlan::MarkOnly(_) => 1,
+            CarryPlan::None => 0,
+        }
+    }
+
+    /// ADR-0095 decision 5: a guard's raise downgrades a full carry to mark-only `failed`, any other failure to none;
+    /// every failure lowers the plan strictly, so that a report runs a carry-failing transaction at most twice before
+    /// one whose carry is none, which cannot fail because of it (with the content fallback once per level: four
+    /// transactions at most).
+    #[test]
+    fn a_carry_failure_lowers_the_plan_strictly() {
+        assert_eq!(
+            CarryPlan::Full.after(CarryFailure::GuardRaised),
+            CarryPlan::MarkOnly(MarkOnlyReason::Failed)
+        );
+        assert_eq!(
+            CarryPlan::Full.after(CarryFailure::CallFailed),
+            CarryPlan::None
+        );
+        let plans = [
+            CarryPlan::Full,
+            CarryPlan::MarkOnly(MarkOnlyReason::Invalid),
+            CarryPlan::MarkOnly(MarkOnlyReason::Failed),
+            CarryPlan::None,
+        ];
+        for plan in plans {
+            for failure in [CarryFailure::GuardRaised, CarryFailure::CallFailed] {
+                if plan != CarryPlan::None {
+                    assert!(
+                        rank(plan.after(failure)) < rank(plan),
+                        "{plan:?} after {failure:?}"
+                    );
+                }
+            }
+        }
+        // The longest chain of failures: Full, then mark-only, then none: two failing transactions.
+        let mut plan = CarryPlan::Full;
+        let mut failing = 0;
+        while plan != CarryPlan::None {
+            plan = plan.after(CarryFailure::GuardRaised);
+            failing += 1;
+        }
+        assert_eq!(failing, 2);
     }
 
     #[test]

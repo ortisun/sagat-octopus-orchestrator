@@ -51,34 +51,9 @@ const LOCK_NOT_AVAILABLE: &str = "55P03";
 
 // ---------------------------------------------------------------------------------- the request
 
-/// One record as the worker sent it (`StepLogRecord`). Its `Debug` prints its sequence and sizes only: the text is
-/// what a step's code logged (FR-041-007 (d)).
-#[derive(Clone, PartialEq)]
-pub struct StepLogRecordIn {
-    pub sequence: u64,
-    /// `None` when the wire value names no level (unspecified or unknown): refused by P4.
-    pub level: Option<StepLogLevel>,
-    pub worker_time: Option<OffsetDateTime>,
-    pub message: String,
-    /// Empty when none.
-    pub exception: String,
-    pub fields: Vec<(String, FieldValue)>,
-    /// The worker already cut the message, the exception or the fields.
-    pub truncated: bool,
-}
-
-impl std::fmt::Debug for StepLogRecordIn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StepLogRecordIn")
-            .field("sequence", &self.sequence)
-            .field("level", &self.level)
-            .field("message_bytes", &self.message.len())
-            .field("exception_bytes", &self.exception.len())
-            .field("fields", &self.fields.len())
-            .field("truncated", &self.truncated)
-            .finish_non_exhaustive()
-    }
-}
+/// One record as the worker sent it, in a batch or a carry: the domain's type, shared at this boundary (no semantics
+/// of its own here).
+pub use sagat_domain::step_logs::StepLogRecordIn;
 
 /// One `AppendStepLogs` call: the attempt, named and fenced as a heartbeat names and fences it, the session that
 /// registered the worker, and the records. Its `Debug` hides the tokens and the text.
