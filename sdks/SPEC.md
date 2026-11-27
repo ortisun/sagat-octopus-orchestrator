@@ -647,11 +647,14 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 **The process's secret set** (design 041, Owner decision 2026-11-15-7). Every value `ResolveSecrets` returns in the
 process is also added, before the handler can see it, to one set kept for the life of the process, which step-log
 capture redacts every captured line with (§6.9). Only distinct values of at least 6 UTF-8 bytes are added (a shorter one
-is never replaced); the set holds at most 1,024 values or 256 KiB of them. The set is the SDK's own: it is never logged,
-never printed by a string, `Debug`, `inspect` or debugger form, never reachable from activity code, and wiped when the
-last running host of the process stops (`stop()`, §6.8). The per-attempt rule above is unchanged: the copies handed to
-a handler are still wiped when it returns. A value that does not fit the set stops capture for the whole process
-(§6.9).
+is never replaced); a value that is not valid UTF-8 is added as the text the SDK's text accessor hands out for it
+(each invalid sequence replaced by U+FFFD), since that is the text an activity can log. The set holds at most 1,024
+values or 256 KiB of them. The set is the SDK's own: it is never logged, never printed by a string, `Debug`, `inspect`
+or debugger form, and nothing of the SDK reachable from activity code reads it or redacts with it (not even an internal
+module imported by its file path: the SDK exposes only a way to add to it). It is not wiped when a host stops: a host
+that is started again in the same process, or a second host, still redacts the values an earlier attempt resolved, which
+an activity may keep in memory (decision D041-164). The per-attempt rule above is unchanged: the copies handed to a
+handler are still wiped when it returns. A value that does not fit the set stops capture for the whole process (§6.9).
 
 ### 6.8 Lifecycle
 
@@ -700,8 +703,11 @@ logger's enabled check, nor installs a handler, sink, appender or `tracing` laye
 
 The message is formatted as the language formats it for its host (Python `msg % args`, C# the formatter's result) before
 it is redacted. A field value is a string, an integer (a language integer that fits 64 bits; a larger one is captured as
-its decimal string), a double, or a boolean; a null or absent value is dropped; any other value is captured as a string:
-its compact JSON text (no insignificant whitespace) where the language has a JSON encoder for it, else its string form.
+its decimal string), a double, or a boolean; a null or absent value is dropped; a byte buffer is captured as its UTF-8
+text (each invalid sequence replaced by U+FFFD), never as numbers or base64; any other value is captured as a string:
+its compact JSON text (no insignificant whitespace) where the language has a JSON encoder for it, else its string form,
+built from a copy in which every string and every key was redacted before it was encoded (an encoder's escaping of `"`,
+`\` or a control character would otherwise hide a value from redaction), and the text is then redacted again.
 
 **When an attempt captures.** An attempt captures when, at its dispatch, all of these hold: the session was accepted at
 `1.7` or later; the `StepLogPolicy` of the registration that made the session says `enabled` (an absent policy is
@@ -720,13 +726,15 @@ activity):
    locally: the attempt was answered `FINAL_ONLY` (`after_ceiling`); the process's capture stopped (`secret_set_full`);
    the attempt's buffer holds 1,000 records or at least 256 KiB (`buffer_full`); the process holds at least 16 MiB of
    records (`process_bound`). A dropped record leaves a gap in the sequences, which is the server's evidence;
-3. format the message, the exception text and the fields (the tables above); replace NUL (U+0000) and any lone
-   surrogate by U+FFFD in the message, the exception text, every field key and every string value; a double that is not
-   finite becomes the string `NaN`, `Infinity` or `-Infinity`;
-4. redact with the whole process's secret set (§6.7; the rule below);
-5. cut to the line ceilings: the message and the exception text each to 8,192 UTF-8 bytes, at a character boundary;
+3. format the message, the exception text and the fields (the tables above); a double that is not finite becomes the
+   string `NaN`, `Infinity` or `-Infinity`;
+4. redact with the whole process's secret set (§6.7; the rule below), on the text as formatted, so that a value holding
+   a NUL or any other character step 5 replaces is still found;
+5. replace NUL (U+0000), any lone surrogate and any invalid UTF-8 sequence by U+FFFD in the message, the exception text,
+   every field key and every string value;
+6. cut to the line ceilings: the message and the exception text each to 8,192 UTF-8 bytes, at a character boundary;
    the fields by data-model.md §5 (below); anything cut sets `truncated`;
-6. append the record to the attempt's buffer.
+7. append the record to the attempt's buffer.
 
 The buffers count each record's encoded `StepLogRecord` size (protobuf bytes). The attempt's buffer and the process's
 bound admit a record while they are below their bound, so either can pass it by one record at most; the process's bound
@@ -776,7 +784,9 @@ records fit one carry) makes no `AppendStepLogs` call. The answers (contracts.md
 | `UNIMPLEMENTED` | sends no more batches for the attempt (an older API replica); its report still carries the newest records | no |
 
 A session whose capture stops writes one local line per process, at the warning level; a stopped attempt or session
-sends no carry. A re-registration replaces the session id and token the next batch sends, and brings a new policy for the
+sends no carry. Once the process's capture stopped (the secret set is full), no record is sent at all, by a batch, a
+tick or a shutdown flush: what an attempt buffered is dropped (`secret_set_full`) and its report carries the final mark
+with no record. An attempt dispatched after `stop` began does not capture. A re-registration replaces the session id and token the next batch sends, and brings a new policy for the
 attempts dispatched after it.
 
 **The carry** (Owner decision 2026-11-19-1). When the handler has returned or raised and the host is about to report
