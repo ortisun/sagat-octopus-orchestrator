@@ -7,6 +7,7 @@
 mod approval;
 mod capacity;
 mod capacity_transfer;
+pub mod code;
 mod command;
 mod continuation;
 mod error;
