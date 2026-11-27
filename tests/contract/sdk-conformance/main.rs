@@ -304,3 +304,53 @@ fn held_answers_and_exceptions_are_compared_by_what_every_language_shares() {
         json!([{"exception": ["failure [REDACTED]"]}, {"exception": null}])
     );
 }
+
+/// Design 041, decision D041-164: a text the encoder escapes is found in its escaped form too, the report names no
+/// character of it, and a scenario cannot leave one of its secrets out of `mustNotStore`.
+#[test]
+fn must_not_store_finds_an_escaped_canary_and_every_secret_is_listed() {
+    use serde_json::json;
+    let canary = "quote\"and\nnewline-7Qw".to_owned();
+    let markers = harness::step_logs::with_escaped_forms(std::slice::from_ref(&canary));
+    assert_eq!(
+        markers,
+        vec![canary.clone(), "quote\\\"and\\nnewline-7Qw".to_owned()]
+    );
+    let stored = json!({"fields": format!("{{\"k\":{}}}", json!(canary))}).to_string();
+    let found = harness::step_logs::stored_appearances(
+        &[("the platform's database".to_owned(), stored)],
+        &markers,
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        !found[0].contains("quote") && !found[0].contains("newline"),
+        "{found:?}"
+    );
+    assert!(
+        harness::step_logs::every_secret_is_listed(&json!({
+            "secrets": {"a": "value-a-123", "b": "value-b-456"}, "mustNotStore": ["value-a-123"]
+        }))
+        .is_err()
+    );
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contract/sdk-conformance/scenarios");
+    for name in [
+        "step-logs-capture",
+        "step-logs-redaction",
+        "step-logs-limits",
+        "step-logs-transport-faults",
+        "step-logs-negotiation",
+    ] {
+        let scenario: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(format!("{name}.json"))).expect("scenario"),
+        )
+        .expect("scenario JSON");
+        if scenario.get("mustNotStore").is_some() {
+            assert_eq!(
+                harness::step_logs::every_secret_is_listed(&scenario),
+                Ok(()),
+                "{name}"
+            );
+        }
+    }
+}

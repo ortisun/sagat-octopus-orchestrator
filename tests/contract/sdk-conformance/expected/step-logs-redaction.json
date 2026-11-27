@@ -745,16 +745,72 @@
           {
             "attempt": 1,
             "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "[REDACTED]",
+            "node": "third",
+            "sequence": "16",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "before [REDACTED] after",
+            "node": "third",
+            "sequence": "17",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
             "fields": {
-              "number": "[REDACTED]"
+              "[REDACTED]": "key"
             },
             "instancePath": [],
             "kind": "line",
             "level": "info",
             "marker": null,
-            "message": "number",
+            "message": "field key",
             "node": "third",
-            "sequence": "16",
+            "sequence": "18",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "value": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "field value",
+            "node": "third",
+            "sequence": "19",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": [
+              "failure [REDACTED]"
+            ],
+            "fields": null,
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "exception",
+            "node": "third",
+            "sequence": "20",
             "truncated": false
           },
           {
@@ -769,7 +825,22 @@
             "marker": null,
             "message": "number",
             "node": "third",
-            "sequence": "17",
+            "sequence": "21",
+            "truncated": false
+          },
+          {
+            "attempt": 1,
+            "exception": null,
+            "fields": {
+              "number": "[REDACTED]"
+            },
+            "instancePath": [],
+            "kind": "line",
+            "level": "info",
+            "marker": null,
+            "message": "number",
+            "node": "third",
+            "sequence": "22",
             "truncated": false
           }
         ],
@@ -782,7 +853,7 @@
             "instancePath": [],
             "node": "third",
             "notStoredReason": null,
-            "records": 17,
+            "records": 22,
             "source": "worker",
             "state": "ended"
           }

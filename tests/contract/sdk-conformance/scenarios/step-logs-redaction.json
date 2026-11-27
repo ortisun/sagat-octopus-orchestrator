@@ -1,6 +1,6 @@
 {
   "name": "step-logs-redaction",
-  "description": "Design 041, Success criterion 041-004, sdks/SPEC.md sections 6.7 and 6.9: every captured line is redacted with the process's whole secret set. Two attempts are in flight at once with different secrets, each resolving its own and waiting until the other's are resolved before it logs; the second returns only once the first has ended, so the worker's log has one order; a third starts after both ended. Each logs the secrets it may know whole, inside a message, as a field key, as a field value and inside an exception, and the numbers 12345678 and 1e15 equal to two numeric secrets: every position is stored as [REDACTED], and no secret value appears in the stored lines, the routes' bodies, the platform's state, the audit trail or the server's output.",
+  "description": "Design 041, Success criterion 041-004, sdks/SPEC.md sections 6.7 and 6.9: every captured line is redacted with the process's whole secret set. Two attempts are in flight at once with different secrets, each resolving its own and waiting until the other's are resolved before it logs; the second returns only once the first has ended, so the worker's log has one order; a third starts after both ended. Each logs the secrets it may know whole, inside a message, as a field key, as a field value and inside an exception, a secret holding a quote and a newline among them (stored escaped in JSON, searched in that form too), and the numbers 12345678 and 1e15 equal to two numeric secrets: every position is stored as [REDACTED], and no secret value appears in the stored lines, the routes' bodies, the platform's state, the audit trail or the server's output.",
   "server": {
     "stepLogs": true
   },
@@ -17,14 +17,16 @@
     "red-b": "canary-bravo-9Wz4",
     "red-c": "canary-charlie-3Xv8",
     "red-int": "12345678",
-    "red-dbl": "1000000000000000"
+    "red-dbl": "1000000000000000",
+    "red-q": "canary\"quote\nline-5Zp"
   },
   "mustNotStore": [
     "canary-alpha-7Kq2",
     "canary-bravo-9Wz4",
     "canary-charlie-3Xv8",
     "12345678",
-    "1000000000000000"
+    "1000000000000000",
+    "canary\"quote\nline-5Zp"
   ],
   "exceptionTexts": [
     "failure [REDACTED]"
@@ -71,7 +73,8 @@
           "activity": "red.third",
           "options": {
             "secrets": [
-              "red-c"
+              "red-c",
+              "red-q"
             ]
           }
         }
@@ -140,13 +143,15 @@
           "behavior": {
             "logsSecret": {
               "resolve": [
-                "red-c"
+                "red-c",
+                "red-q"
               ],
               "afterResolved": [],
               "values": [
                 "red-a",
                 "red-b",
-                "red-c"
+                "red-c",
+                "red-q"
               ],
               "numbers": [
                 12345678,
