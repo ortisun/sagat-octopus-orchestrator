@@ -352,14 +352,167 @@ public sealed class StepLogFormatTests
         Assert.Equal(
             new StepLogField[]
             {
-                new StepLogField { Key = "cycle", StringValue = "a node" },
+                new StepLogField { Key = "cycle", StringValue = "{\"Self\":\"" + typeof(Node).FullName + "\"}" },
                 new StepLogField { Key = "getter", StringValue = typeof(ThrowingGetter).FullName },
                 new StepLogField { Key = "throwing", StringValue = typeof(ThrowingString).FullName },
             },
             fields);
     }
 
+    [Fact]
+    public void EveryByteOrCharacterCollectionIsCapturedAsItsTextAtAnyDepthNeverAsNumbersOrBase64()
+    {
+        const string secret = "bytes-secret-77";
+        var secrets = StepLogInternals.NewSecretSet();
+        secrets.Add(Bytes(secret));
+        static IEnumerable<byte> Generated(string text)
+        {
+            foreach (var one in Encoding.UTF8.GetBytes(text))
+            {
+                yield return one;
+            }
+        }
+
+        var (fields, _) = StepLogInternals.Fields(
+        [
+            F("list", new List<byte>(Bytes(secret))),
+            F("chars", secret.ToCharArray()),
+            F("generated", Generated(secret)),
+            F("holder", new Holder { Raw = Bytes(secret), Listed = [.. Bytes("plain")], Characters = "chars".ToCharArray(), Segment = new ArraySegment<byte>(Bytes("xx" + secret), 2, secret.Length) }),
+            F("nested", new Dictionary<string, object?> { ["deep"] = new object[] { new List<byte>(Bytes(secret)), new ReadOnlyMemory<char>("text".ToCharArray()) } }),
+        ],
+            secrets.Redact);
+        var text = string.Join('\n', fields.Select(field => field.ToString()));
+        Assert.DoesNotContain(secret, text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Convert.ToBase64String(Bytes(secret)), text, StringComparison.Ordinal);
+        Assert.DoesNotContain("98,121", text, StringComparison.Ordinal);
+        Assert.Equal(
+            new[]
+            {
+                new StepLogField { Key = "chars", StringValue = "[REDACTED]" },
+                new StepLogField { Key = "generated", StringValue = "[REDACTED]" },
+                new StepLogField { Key = "holder", StringValue = "{\"Raw\":\"[REDACTED]\",\"Listed\":\"plain\",\"Characters\":\"chars\",\"Segment\":\"[REDACTED]\"}" },
+                new StepLogField { Key = "list", StringValue = "[REDACTED]" },
+                new StepLogField { Key = "nested", StringValue = "{\"deep\":[\"[REDACTED]\",\"text\"]}" },
+            },
+            fields);
+    }
+
+    [Fact]
+    public void ANonUtf8SecretIsFoundWhereverItWasLoggedFromItsRawBytesOrMadeWellFormedFirst()
+    {
+        var secrets = StepLogInternals.NewSecretSet();
+        byte[] raw = [0xff, .. Bytes("abcde-token")];
+        secrets.Add(raw);
+
+        // Logged from its raw bytes, nested in an object, the one lenient decoding finds it.
+        var (fields, _) = StepLogInternals.Fields([F("inside", new { blob = raw }), F("bytes", raw)], secrets.Redact);
+        Assert.Equal(
+            new[] { new StepLogField { Key = "bytes", StringValue = "[REDACTED]" }, new StepLogField { Key = "inside", StringValue = "{\"blob\":\"[REDACTED]\"}" } },
+            fields);
+
+        // Logged with a lone surrogate where the invalid byte was: made well formed, it is the value the set holds, and is redacted again.
+        var record = StepLogInternals.BuildRecord("key \ud800abcde-token", [F("k", "\udc00abcde-token")], "\ud800abcde-token", secrets.Redact);
+        Assert.Equal("key [REDACTED]", record.Message);
+        Assert.Equal("[REDACTED]", record.Exception);
+        Assert.Equal(new[] { new StepLogField { Key = "k", StringValue = "[REDACTED]" } }, record.Fields);
+    }
+
+    [Fact]
+    public void AValueTheCopyCannotOpenOrThatThrowsOrIsNestedDeeperThan64IsItsTypesNameNeverItsOwnText()
+    {
+        const string secret = "line\"one\\two";
+        var secrets = StepLogInternals.NewSecretSet();
+        secrets.Add(Bytes(secret));
+        var chain = new Chain("leaf", null);
+        for (var n = 0; n < 70; n++)
+        {
+            chain = new Chain("link", chain);
+        }
+
+        var (fields, _) = StepLogInternals.Fields(
+            [F("escaping", new EscapingThrower(secret)), F("callback", (Func<int>)(() => 1)), F("map", new Dictionary<object, int> { [new object()] = 1 })],
+            secrets.Redact);
+        var text = string.Join('\n', fields.Select(field => field.ToString()));
+        Assert.DoesNotContain("line", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("printed", text, StringComparison.Ordinal);
+        Assert.Equal(typeof(EscapingThrower).FullName, fields.Single(field => field.Key == "escaping").StringValue);
+        Assert.Equal(typeof(Func<int>).ToString(), fields.Single(field => field.Key == "callback").StringValue);
+        Assert.Equal("System.Collections.Generic.Dictionary`2[System.Object,System.Int32]", fields.Single(field => field.Key == "map").StringValue);
+
+        // The chain is copied 64 levels deep (its text is cut by the field bound, so its depth is read from the copy's own text).
+        var copied = StepLogInternals.CopyText(chain, secrets.Redact);
+        Assert.Contains("\"Next\":\"" + typeof(Chain).FullName + "\"", copied, StringComparison.Ordinal);
+        Assert.Equal(64, CountOf("\"Next\":{", copied));
+    }
+
+    [Fact]
+    public void AStructureSharedAlongManyPathsIsWalkedOnceAndOneThatWouldPrintTooMuchIsItsTypesName()
+    {
+        var secrets = StepLogInternals.NewSecretSet();
+        secrets.Add(Bytes("shared-secret"));
+        var leaf = new Dictionary<string, object?> { ["a"] = "shared-secret" };
+        Assert.Equal(
+            "[{\"a\":\"[REDACTED]\"},{\"a\":\"[REDACTED]\"}]",
+            StepLogInternals.Fields([F("pair", new object[] { leaf, leaf })], secrets.Redact).Fields[0].StringValue);
+
+        // 2^40 paths through 40 levels of a node shared twice: walked once per node, and refused once it would print more than 4,096 values.
+        object node = "end";
+        for (var n = 0; n < 40; n++)
+        {
+            node = new object[] { node, node };
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var (fields, _) = StepLogInternals.Fields([F("shared", node)], secrets.Redact);
+        Assert.Equal("System.Object[]", fields[0].StringValue);
+        Assert.True(Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(1), "the shared structure was walked along its paths");
+    }
+
+    [Fact]
+    public void AValueOf256KiBJoinsTheSetAndIsFound()
+    {
+        var secrets = StepLogInternals.NewSecretSet();
+        var value = string.Concat(Enumerable.Range(0, 256 * 1024 / 8).Select(n => $"{n % 10000000:D8}"));
+        Assert.False(secrets.Add(Bytes(value)));
+        Assert.False(secrets.Full);
+        Assert.Equal("a [REDACTED] b", secrets.Redact("a " + value + " b"));
+        Assert.Equal("a " + value[..^1] + " b", secrets.Redact("a " + value[..^1] + " b"));
+    }
+
+    private static int CountOf(string part, string text)
+    {
+        var count = 0;
+        for (var at = text.IndexOf(part, StringComparison.Ordinal); at >= 0; at = text.IndexOf(part, at + 1, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     internal static byte[] Bytes(string text) => Encoding.UTF8.GetBytes(text);
+
+    internal sealed record Chain(string Name, Chain? Next);
+
+    internal sealed class Holder
+    {
+        public byte[]? Raw { get; init; }
+
+        public List<byte>? Listed { get; init; }
+
+        public char[]? Characters { get; init; }
+
+        public ArraySegment<byte> Segment { get; init; }
+    }
+
+    /// <summary>A value whose copy throws and whose own text shows a secret escaped: printing it would hide the secret from redaction.</summary>
+    internal sealed class EscapingThrower(string secret)
+    {
+        public string Value => throw new InvalidOperationException(GetType().Name);
+
+        public override string ToString() => "printed " + secret.Replace("\"", "\\\"", StringComparison.Ordinal);
+    }
 
     private static string DebuggerDisplayOf(object value)
     {

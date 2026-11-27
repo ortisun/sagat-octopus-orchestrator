@@ -43,6 +43,14 @@ internal static class StepLogInternals
         return ([.. record.Fields], record.Truncated);
     }
 
+    /// <summary>The compact JSON text of a value's redacted copy, before the field bound cuts it.</summary>
+    internal static string CopyText(object value, Func<string, string> redact)
+    {
+        var copier = Sdk.GetType("SagatOctopusOrchestrator.Sdk.Workers.StepLogFormat+RedactedCopy", throwOnError: true)!;
+        var instance = Activator.CreateInstance(copier, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public, null, [redact], null)!;
+        return (string)copier.GetMethod("Text", Instance)!.Invoke(instance, [value])!;
+    }
+
     internal static int CarrySize(IEnumerable<int> recordSizes, ulong highest) => (int)Call("StepLogText", "CarrySize", recordSizes, highest)!;
 
     internal static int RequestSize(AppendStepLogsRequest withoutRecords, IEnumerable<int> recordSizes) =>

@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace SagatOctopusOrchestrator.Sdk.Workers;
 
 /// <summary>
@@ -21,8 +19,8 @@ public sealed class ActivitySecrets : IDisposable
     /// </summary>
     public byte[] Get(string name) => (byte[])Find(name).Clone();
 
-    /// <summary>A secret as UTF-8 text.</summary>
-    public string GetText(string name) => Encoding.UTF8.GetString(Find(name));
+    /// <summary>A secret as UTF-8 text, each invalid sequence replaced by U+FFFD: the text the step-log redaction knows it by.</summary>
+    public string GetText(string name) => StepLogText.Lenient(Find(name));
 
     /// <summary>Clears the values.</summary>
     public void Dispose()

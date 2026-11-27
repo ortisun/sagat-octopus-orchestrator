@@ -178,22 +178,31 @@ public sealed class StepLogHostTests : IAsyncLifetime
     [Fact]
     public async Task ALongStepSendsTheBatchIts256thCallCutWaitsForItsAnswerAndCarriesTheRest()
     {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        State.AppendAnswers.Enqueue(new AppendAnswer(Hold: handlerDone.Task));
-        var carry = await RunOneAsync(260, end: _ =>
+        State.AppendAnswers.Enqueue(new AppendAnswer(Hold: release.Task));
+        var (host, _) = Host();
+        host.RegisterActivity("charge", Lines(260, _ =>
         {
             handlerDone.TrySetResult();
             return Task.FromResult(1);
-        });
+        }));
+        await host.StartAsync();
+        State.Lease(Lease());
+        await handlerDone.Task;
+
+        // While the answer is held, within the 2 seconds from the handler's end, no report leaves.
+        Assert.False(await Eventually.ReachedAsync(() => State.Of("CompleteStep").Count > 0, 500), "the report did not wait for the batch in flight");
+        release.TrySetResult();
+        var carry = await ReportAsync();
         var batch = Assert.Single(Appends());
         Assert.Equal(Span(1, 256), Sequences(batch.Records));
         Assert.Equal(("w-1", "session-1", "run-1/charge/1", "run-1", "charge", 1, 1L, "lt-secret-lease-token"), (batch.WorkerId, batch.SessionToken, batch.TaskId, batch.RunId, batch.StepId, batch.Attempt, batch.Generation, batch.LeaseToken));
         Assert.NotNull(carry);
         Assert.Equal(Span(257, 260), Sequences(carry.Records));
         Assert.Equal(260UL, carry.HighestSequence);
-
-        // The report waited for the answer of the batch, which was held until the handler had returned.
         Assert.True(State.Of("AppendStepLogs answered")[0].At < State.Of("CompleteStep")[0].At, "the report left before the answer of the batch");
+        Assert.Equal(string.Empty, drops.ToString());
     }
 
     [Fact]
@@ -802,6 +811,119 @@ public sealed class StepLogHostTests : IAsyncLifetime
         Assert.Equal(Span(29, 30), Sequences(report.StepLogs.Records));
         Assert.Equal(30UL, report.StepLogs.HighestSequence);
         Assert.True(report.StepLogs.CalculateSize() <= 16 * 1024);
+    }
+
+    [Fact]
+    public async Task AShutdownBatchTheServerTakesIsNotCountedThoughTheHandlerEndedBeforeItsAnswer()
+    {
+        var answer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        State.AppendAnswers.Enqueue(new AppendAnswer(Hold: answer.Task));
+        var (host, _) = Host();
+        var logged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.RegisterActivity<JsonNode?, int>("charge", async (_, context, cancellationToken) =>
+        {
+            for (var n = 1; n <= 10; n++)
+            {
+                Say(context.Logger, $"line {n}");
+            }
+
+            logged.TrySetResult();
+            using var honoured = cancellationToken.Register(() => cancelled.TrySetResult());
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 1;
+        });
+        await host.StartAsync();
+        State.Lease(Lease());
+        await logged.Task;
+        var stopping = host.StopAsync(TimeSpan.FromMilliseconds(50));
+
+        // The handler honours the cancel after the flush left, and has ended before the server answers CONTINUE.
+        await cancelled.Task;
+        Assert.True(await Until(() => !host.IsRunning || State.Of("AppendStepLogs").Count == 1), "the shutdown batch");
+        answer.TrySetResult();
+        await stopping;
+        Assert.Equal(Span(1, 10), Sequences(Assert.Single(Appends()).Records));
+        Assert.Empty(State.Of("CompleteStep"));
+        Assert.Equal(string.Empty, drops.ToString());
+    }
+
+    [Fact]
+    public async Task UnauthenticatedCountsItsBatchAsNotSentAndStopsCaptureForTheSession()
+    {
+        // Answered once the handler has written its 260 lines: 256 in the batch, 4 buffered.
+        var handlerDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        State.AppendAnswers.Enqueue(new AppendAnswer(Code: StatusCode.Unauthenticated, Hold: handlerDone.Task));
+        var (host, _) = Host();
+        host.RegisterActivity("charge", Lines(260, _ =>
+        {
+            handlerDone.TrySetResult();
+            return Task.FromResult(1);
+        }));
+        await host.StartAsync();
+        State.Lease(Lease(1));
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the first report");
+        State.Lease(Lease(2));
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 2, "both reports");
+        Assert.Single(State.Of("AppendStepLogs"));
+        Assert.All(State.Of("CompleteStep"), report => Assert.Null(((CompleteStepRequest)report.Request).StepLogs));
+        await DropsAsync("send_failed:260");
+    }
+
+    [Fact]
+    public async Task ALateAnswerToABatchTheReportsWaitGaveUpChangesNothing()
+    {
+        // PERMISSION_DENIED, held past the 2 seconds of the first attempt's wait: the session's next attempt still captures.
+        State.AppendAnswers.Enqueue(new AppendAnswer(Code: StatusCode.PermissionDenied, Hold: Until(() => State.Of("CompleteStep").Count > 0)));
+        var (host, _) = Host();
+        host.RegisterActivity("charge", Lines(260));
+        await host.StartAsync();
+        State.Lease(Lease(1));
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the first report", 15_000);
+        Assert.Equal(Span(257, 260), Sequences(((CompleteStepRequest)State.Of("CompleteStep")[0].Request).StepLogs.Records));
+        State.Lease(Lease(2));
+        await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 2, "both reports", 15_000);
+        Assert.NotNull(((CompleteStepRequest)State.Of("CompleteStep")[1].Request).StepLogs);
+        Assert.Equal(2, State.Of("AppendStepLogs").Count);
+        await DropsAsync("report_deadline:256");
+    }
+
+    [Fact]
+    public async Task ConcurrentCallsDoNotPassTheAttemptBufferByMoreThanOneRecord()
+    {
+        // The first batch is held in flight, so 999 records stay buffered; then 16 threads, released together, write one long line each.
+        const int threads = 16;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        State.AppendAnswers.Enqueue(new AppendAnswer(Hold: release.Task));
+        var (host, _) = Host();
+        var line = new string('m', 8000);
+        host.RegisterActivity<JsonNode?, int>("charge", async (_, context, _) =>
+        {
+            for (var n = 1; n <= 256 + 999; n++)
+            {
+                Say(context.Logger, $"line {n}");
+            }
+
+            using var start = new Barrier(threads);
+            var racing = Enumerable.Range(0, threads).Select(n => Task.Factory.StartNew(
+                () =>
+                {
+                    start.SignalAndWait();
+                    Say(context.Logger, $"{n} {line}");
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)).ToArray();
+            await Task.WhenAll(racing);
+            release.TrySetResult();
+            return 1;
+        });
+        await host.StartAsync();
+        State.Lease(Lease());
+        var carry = await ReportAsync();
+        Assert.NotNull(carry);
+        Assert.Equal(256UL + 999 + threads, carry.HighestSequence);
+        await DropsAsync($"buffer_full:{threads - 1}");
     }
 
     private sealed class ThrowingException : Exception

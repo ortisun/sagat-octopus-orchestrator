@@ -6,7 +6,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Google.Protobuf;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
@@ -110,6 +110,23 @@ internal static class StepLogText
         return builder.ToString();
     }
 
+    /// <summary>
+    /// The one lenient UTF-8 decoding of the SDK (each invalid sequence replaced by U+FFFD): of a secret joining the set, of a secret's text
+    /// handed to an activity and of a captured byte buffer, so that a value is found in the form it was logged in.
+    /// </summary>
+    internal static string Lenient(ReadOnlySpan<byte> bytes) => Encoding.UTF8.GetString(bytes);
+
+    /// <summary>
+    /// Steps 4 and 5 for one text: redacted as formatted (a value holding a NUL or a lone surrogate is still found), made well formed, and
+    /// redacted again when that changed it (a value the set holds in its lenient form is found in that form too).
+    /// </summary>
+    internal static string Clean(string text, Func<string, string> redact)
+    {
+        var redacted = redact(text);
+        var formed = WellFormed(redacted);
+        return ReferenceEquals(formed, redacted) ? formed : redact(formed);
+    }
+
     /// <summary>The longest prefix of a well-formed <paramref name="text"/> of at most <paramref name="max"/> UTF-8 bytes that ends at a character boundary, and whether it cut.</summary>
     internal static (string Text, bool Cut) CutUtf8(string text, int max)
     {
@@ -196,27 +213,41 @@ internal static class StepLogText
 
 /// <summary>
 /// An Aho–Corasick automaton over UTF-16 code units: it tells whether any value occurs in a text in one pass, so that a text holding none
-/// (the usual case) costs one scan whatever the size of the set. Immutable once built.
+/// (the usual case) costs one scan whatever the size of the set. Immutable once built. Its memory is linear in the code units of the set
+/// (one state and one edge each, in one table, whatever the length of a value), which the set bounds at 256 KiB.
 /// </summary>
 internal sealed class StepLogMatcher
 {
     private readonly int[] root = new int[char.MaxValue + 1];
-    private readonly List<Dictionary<char, int>> next = [];
-    private readonly List<int> fail = [];
-    private readonly List<bool> output = [];
+    private readonly Dictionary<long, int> edges;
+    private readonly int[] fail;
+    private readonly bool[] output;
 
-    internal StepLogMatcher(IEnumerable<string> values)
+    internal StepLogMatcher(IReadOnlyCollection<string> values)
     {
-        AddState();
+        var units = 1;
+        foreach (var value in values)
+        {
+            units += value.Length;
+        }
+
+        edges = new Dictionary<long, int>(units);
+        fail = new int[units];
+        output = new bool[units];
+        var states = 1;
         foreach (var value in values)
         {
             var state = 0;
             foreach (var unit in value)
             {
-                if (!next[state].TryGetValue(unit, out var to))
+                if (!edges.TryGetValue(Edge(state, unit), out var to))
                 {
-                    to = AddState();
-                    next[state][unit] = to;
+                    to = states++;
+                    edges[Edge(state, unit)] = to;
+                    if (state == 0)
+                    {
+                        root[unit] = to;
+                    }
                 }
 
                 state = to;
@@ -225,24 +256,27 @@ internal sealed class StepLogMatcher
             output[state] = true;
         }
 
-        var queue = new Queue<int>();
-        foreach (var (unit, to) in next[0])
+        // Breadth first, so that a state's failure is known before its children's: the edges are grouped by their source state.
+        var children = new List<(char Unit, int To)>[states];
+        foreach (var (edge, to) in edges)
         {
-            root[unit] = to;
+            var from = (int)(edge >> 16);
+            (children[from] ??= []).Add(((char)(edge & 0xFFFF), to));
+        }
+
+        var queue = new Queue<int>();
+        foreach (var (_, to) in children[0] ?? [])
+        {
             queue.Enqueue(to);
         }
 
         while (queue.Count > 0)
         {
             var state = queue.Dequeue();
-            foreach (var (unit, to) in next[state])
+            foreach (var (unit, to) in children[state] ?? [])
             {
                 fail[to] = Step(fail[state], unit);
-                if (output[fail[to]])
-                {
-                    output[to] = true;
-                }
-
+                output[to] |= output[fail[to]];
                 queue.Enqueue(to);
             }
         }
@@ -263,19 +297,13 @@ internal sealed class StepLogMatcher
         return false;
     }
 
-    private int AddState()
-    {
-        next.Add([]);
-        fail.Add(0);
-        output.Add(false);
-        return next.Count - 1;
-    }
+    private static long Edge(int state, char unit) => ((long)state << 16) | unit;
 
     private int Step(int state, char unit)
     {
         while (state != 0)
         {
-            if (next[state].TryGetValue(unit, out var to))
+            if (edges.TryGetValue(Edge(state, unit), out var to))
             {
                 return to;
             }
@@ -290,76 +318,93 @@ internal sealed class StepLogMatcher
 /// <summary>
 /// The values <c>ResolveSecrets</c> returned in the process (SPEC section 6.7): distinct values of at least 6 UTF-8 bytes, at most 1,024 of
 /// them or 256 KiB. Never printed (its string and debugger forms show a count), never handed to activity code; when a value does not fit,
-/// capture stops for the process.
+/// capture stops for the process. An addition builds the new automaton outside anything a logger call reads under, and publishes it with
+/// its values at once, before it returns; an addition that fails commits nothing and stops capture for the process.
 /// </summary>
 [DebuggerDisplay("{ToString(),nq}")]
 internal sealed class StepLogSecretSet
 {
-    private readonly object gate = new();
-    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-    private readonly List<string> values = [];
-    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-    private readonly HashSet<string> distinct = new(StringComparer.Ordinal);
+    private readonly object adding = new();
     private int bytes;
     private volatile bool full;
 
-    // The automaton and the values longest first (equal lengths in the order they joined), rebuilt when the set changed.
+    // The values in the order they joined, the automaton and the values longest first (equal lengths in the order they joined): one immutable
+    // snapshot, replaced whole by an addition.
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-    private volatile Snapshot? snapshot;
+    private volatile Snapshot current = Snapshot.Empty;
 
     internal bool Full => full;
 
     /// <summary>Adds what one resolution returned; true when the set stopped capture with it (once).</summary>
     internal bool Add(IEnumerable<ReadOnlyMemory<byte>> resolved)
     {
-        var stopped = false;
-        lock (gate)
+        lock (adding)
         {
+            var wasFull = full;
+            var held = current;
+            var values = new List<string>(held.Values);
+            var distinct = new HashSet<string>(held.Values, StringComparer.Ordinal);
+            var size = bytes;
+            var overflow = false;
             foreach (var raw in resolved)
             {
                 // A value that is not UTF-8 joins as the text the accessor hands out for it (each invalid sequence replaced by U+FFFD): that is
                 // the text an activity can log. The minimum and the bound count that text (SPEC section 6.7).
-                var text = Encoding.UTF8.GetString(raw.Span);
-                var size = Encoding.UTF8.GetByteCount(text);
-                if (size < StepLogLimits.SecretMinBytes || distinct.Contains(text))
+                var text = StepLogText.Lenient(raw.Span);
+                var length = Encoding.UTF8.GetByteCount(text);
+                if (length < StepLogLimits.SecretMinBytes || distinct.Contains(text))
                 {
                     continue;
                 }
 
-                if (full || values.Count + 1 > StepLogLimits.SecretValues || bytes + size > StepLogLimits.SecretBytes)
+                if (wasFull || overflow || values.Count + 1 > StepLogLimits.SecretValues || size + length > StepLogLimits.SecretBytes)
                 {
-                    stopped |= !full;
-                    full = true;
+                    overflow = true;
                     continue;
                 }
 
                 values.Add(text);
                 distinct.Add(text);
-                bytes += size;
-                snapshot = null;
+                size += length;
             }
-        }
 
-        return stopped;
+            if (values.Count != held.Values.Length)
+            {
+#pragma warning disable CA1031 // An addition that cannot be built commits nothing: capture stops for the process rather than let a value through.
+                try
+                {
+                    current = Snapshot.Of(values);
+                    bytes = size;
+                }
+                catch (Exception)
+                {
+                    overflow = true;
+                }
+#pragma warning restore CA1031
+            }
+
+            if (overflow)
+            {
+                full = true;
+            }
+
+            return overflow && !wasFull;
+        }
     }
 
     /// <summary>The rule of <c>sagat_domain::scripts::redact</c> without its credential shapes, equal to it on every text (SPEC section 6.9).</summary>
     internal string Redact(string text)
     {
-        // A value has at least 6 UTF-8 bytes, so at least 2 UTF-16 code units.
-        if (text.Length < 2)
-        {
-            return text;
-        }
+        var snapshot = current;
 
-        var current = snapshot ?? Build();
-        if (current is null || !current.Matcher.OccursIn(text))
+        // A value has at least 6 UTF-8 bytes, so at least 2 UTF-16 code units.
+        if (text.Length < 2 || snapshot.Matcher is not { } matcher || !matcher.OccursIn(text))
         {
             return text;
         }
 
         var result = text;
-        foreach (var value in current.Ordered)
+        foreach (var value in snapshot.Ordered)
         {
             if (result.Contains(value, StringComparison.Ordinal))
             {
@@ -371,31 +416,21 @@ internal sealed class StepLogSecretSet
     }
 
     /// <summary>How many values it holds, and nothing of them.</summary>
-    public override string ToString()
-    {
-        lock (gate)
-        {
-            return $"StepLogSecretSet({values.Count.ToString(CultureInfo.InvariantCulture)} values)";
-        }
-    }
+    public override string ToString() => $"StepLogSecretSet({current.Values.Length.ToString(CultureInfo.InvariantCulture)} values)";
 
-    private Snapshot? Build()
+    private sealed class Snapshot(string[] values, StepLogMatcher? matcher, string[] ordered)
     {
-        lock (gate)
-        {
-            if (values.Count == 0)
-            {
-                return null;
-            }
+        internal static Snapshot Empty { get; } = new([], null, []);
 
-            return snapshot ??= new Snapshot(
-                new StepLogMatcher(values),
-                [.. values.OrderByDescending(value => Encoding.UTF8.GetByteCount(value))]);
-        }
-    }
+        internal string[] Values { get; } = values;
 
-    private sealed record Snapshot(StepLogMatcher Matcher, string[] Ordered)
-    {
+        internal StepLogMatcher? Matcher { get; } = matcher;
+
+        internal string[] Ordered { get; } = ordered;
+
+        internal static Snapshot Of(List<string> values) =>
+            new([.. values], new StepLogMatcher(values), [.. values.OrderByDescending(value => Encoding.UTF8.GetByteCount(value))]);
+
         public override string ToString() => "StepLogSecretSet.Snapshot";
     }
 }
@@ -435,20 +470,15 @@ internal static class StepLogFormat
 {
     private const string OriginalFormat = "{OriginalFormat}";
 
-    // The JSON of a value that is not a scalar is written from a copy whose strings and keys were redacted, so the encoder escapes nothing
-    // that could hide a secret from redaction; a byte buffer, at any depth, is its UTF-8 text, never numbers or base64 (decision D041-164).
-    private static readonly JsonSerializerOptions CopyOptions = new()
-    {
-        Converters = { new BytesAsText(), new MemoryAsText(), new ReadOnlyMemoryAsText(), new SegmentAsText() },
-        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
-        MaxDepth = 64,
-    };
+    // The JSON of a value that is not a scalar is written from a copy whose strings and keys were redacted first, never from the value's own
+    // text (decisions D041-164 and D041-166): the copy reads the members System.Text.Json would write, through its contracts.
+    private static readonly JsonSerializerOptions Contracts = new() { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
 
-    private static readonly JsonSerializerOptions CompactOptions = new()
-    {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        WriteIndented = false,
-    };
+    // Deep enough to write a copy of 64 levels, its type names and the brackets around them.
+    private static readonly JsonSerializerOptions Compact = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping, MaxDepth = 128 };
+
+    // A byte or character sequence that is not a collection (a generator) is read up to this many items.
+    private const int SequenceItems = 1 << 20;
 
     /// <summary>The five levels of a step log: <c>Information</c> is info, <c>Warning</c> warn, <c>Error</c> and <c>Critical</c> error.</summary>
     internal static StepLogLevel WireLevel(LogLevel level) => level switch
@@ -493,8 +523,8 @@ internal static class StepLogFormat
         string exception,
         Func<string, string> redact)
     {
-        var (cutMessage, messageCut) = StepLogText.CutUtf8(StepLogText.WellFormed(redact(message)), StepLogLimits.MessageBytes);
-        var (cutException, exceptionCut) = StepLogText.CutUtf8(StepLogText.WellFormed(redact(exception)), StepLogLimits.MessageBytes);
+        var (cutMessage, messageCut) = StepLogText.CutUtf8(StepLogText.Clean(message, redact), StepLogLimits.MessageBytes);
+        var (cutException, exceptionCut) = StepLogText.CutUtf8(StepLogText.Clean(exception, redact), StepLogLimits.MessageBytes);
         var (built, fieldsCut) = BuildFields(fields, redact);
         var record = new StepLogRecord
         {
@@ -539,7 +569,7 @@ internal static class StepLogFormat
         foreach (var (original, field) in ordered)
         {
             // Redacted on the text as given, then made well formed (SPEC section 6.9, steps 4 and 5).
-            var redactedKey = StepLogText.WellFormed(redact(original));
+            var redactedKey = StepLogText.Clean(original, redact);
             var key = redactedKey;
             for (var n = 2; used.Contains(key); n++)
             {
@@ -551,7 +581,7 @@ internal static class StepLogFormat
             switch (field.ValueCase)
             {
                 case StepLogField.ValueOneofCase.StringValue:
-                    field.StringValue = StepLogText.WellFormed(redact(field.StringValue));
+                    field.StringValue = StepLogText.Clean(field.StringValue, redact);
                     break;
                 case StepLogField.ValueOneofCase.IntValue:
                 case StepLogField.ValueOneofCase.DoubleValue:
@@ -635,16 +665,10 @@ internal static class StepLogFormat
                 return DoubleField(f);
             case Half h:
                 return DoubleField((double)h);
-            case byte[] buffer:
-                return new StepLogField { StringValue = Encoding.UTF8.GetString(buffer) };
-            case ReadOnlyMemory<byte> memory:
-                return new StepLogField { StringValue = Encoding.UTF8.GetString(memory.Span) };
-            case Memory<byte> memory:
-                return new StepLogField { StringValue = Encoding.UTF8.GetString(memory.Span) };
-            case ArraySegment<byte> segment:
-                return new StepLogField { StringValue = Encoding.UTF8.GetString(segment) };
             default:
-                return new StepLogField { StringValue = OtherText(value, redact) };
+                // A byte collection is its UTF-8 text and a character collection its text, never numbers or base64; anything else is the
+                // compact JSON of its redacted copy.
+                return new StepLogField { StringValue = TextOf(value) ?? new RedactedCopy(redact).Text(value) };
         }
     }
 
@@ -653,59 +677,6 @@ internal static class StepLogFormat
         : double.IsPositiveInfinity(value) ? new StepLogField { StringValue = "Infinity" }
         : double.IsNegativeInfinity(value) ? new StepLogField { StringValue = "-Infinity" }
         : new StepLogField { DoubleValue = value };
-
-    /// <summary>The compact JSON text of a value from a copy whose every string and key was redacted; its string form when it has none; its type when that throws too.</summary>
-    private static string OtherText(object value, Func<string, string> redact)
-    {
-#pragma warning disable CA1031 // A value's serialization and ToString are the application's code: whatever they raise costs the form, never the activity.
-        try
-        {
-            var node = JsonSerializer.SerializeToNode(value, value.GetType(), CopyOptions);
-            return node is null ? "null" : Redacted(node, redact)?.ToJsonString(CompactOptions) ?? "null";
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            // A cycle, a getter that throws, a type the encoder refuses.
-        }
-
-        try
-        {
-            return value.ToString() ?? TypeName(value);
-        }
-        catch (Exception error) when (error is not OutOfMemoryException)
-        {
-            return TypeName(value);
-        }
-#pragma warning restore CA1031
-    }
-
-    /// <summary>A copy of a JSON tree in which every string and every key is redacted (a key that collides after redaction keeps the last value).</summary>
-    private static JsonNode? Redacted(JsonNode? node, Func<string, string> redact)
-    {
-        switch (node)
-        {
-            case JsonObject members:
-                var copied = new JsonObject();
-                foreach (var (key, member) in members)
-                {
-                    copied[redact(key)] = Redacted(member, redact);
-                }
-
-                return copied;
-            case JsonArray items:
-                var list = new JsonArray();
-                foreach (var item in items)
-                {
-                    list.Add(Redacted(item, redact));
-                }
-
-                return list;
-            case JsonValue scalar when scalar.TryGetValue<string>(out var text):
-                return JsonValue.Create(redact(text));
-            default:
-                return node?.DeepClone();
-        }
-    }
 
     private static string NumberText(StepLogField field) => field.ValueCase == StepLogField.ValueOneofCase.IntValue
         ? field.IntValue.ToString(CultureInfo.InvariantCulture)
@@ -738,12 +709,30 @@ internal static class StepLogFormat
         _ => 4,
     };
 
+    /// <summary>A byte collection as its lenient UTF-8 text, a character collection as its text; null for any other value.</summary>
+    private static string? TextOf(object value) => value switch
+    {
+        string => null,
+        byte[] buffer => StepLogText.Lenient(buffer),
+        ReadOnlyMemory<byte> memory => StepLogText.Lenient(memory.Span),
+        Memory<byte> memory => StepLogText.Lenient(memory.Span),
+        ArraySegment<byte> segment => StepLogText.Lenient(segment),
+        char[] characters => new string(characters),
+        ReadOnlyMemory<char> memory => new string(memory.Span),
+        Memory<char> memory => new string(memory.Span),
+        ArraySegment<char> segment => new string(segment),
+        IEnumerable<byte> sequence => StepLogText.Lenient([.. sequence is ICollection<byte> ? sequence : sequence.Take(SequenceItems)]),
+        IEnumerable<char> sequence => new string([.. sequence is ICollection<char> ? sequence : sequence.Take(SequenceItems)]),
+        _ => null,
+    };
+
+    /// <summary>The name of a value's type: what stands for a value the copy cannot open, never its own text.</summary>
     private static string TypeName(object value)
     {
-#pragma warning disable CA1031 // see OtherText
+#pragma warning disable CA1031 // see ExceptionText
         try
         {
-            return value.GetType().FullName ?? "object";
+            return value.GetType().ToString();
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -752,32 +741,225 @@ internal static class StepLogFormat
 #pragma warning restore CA1031
     }
 
-    private sealed class BytesAsText : JsonConverter<byte[]>
+    /// <summary>
+    /// The copy of a value that is not a scalar, in which every string and every key is redacted, written as compact JSON (decision D041-166).
+    /// It fails closed: a value it cannot open, a member that throws, a cycle and a value nested deeper than 64 stand for their type's name, and
+    /// nothing uncopied is ever printed (no <c>ToString()</c>). Each object is walked once and its copy reused where it is shared; a copy that
+    /// would print more than 4,096 values, counted along every path, is the type's name of the whole value.
+    /// </summary>
+    private sealed class RedactedCopy(Func<string, string> redact)
     {
-        public override byte[] Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => throw new NotSupportedException();
+        private const int MaxDepth = 64;
+        private const int MaxNodes = 4096;
+        private readonly Dictionary<object, (JsonNode? Node, int Size)> copied = new(ReferenceEqualityComparer.Instance);
+        private readonly HashSet<object> open = new(ReferenceEqualityComparer.Instance);
+        private int spent;
 
-        public override void Write(Utf8JsonWriter writer, byte[] value, JsonSerializerOptions options) => writer.WriteStringValue(Encoding.UTF8.GetString(value));
+        internal string Text(object value)
+        {
+#pragma warning disable CA1031 // A copy over its bound, or a writer that fails, is the value's type's name.
+            try
+            {
+                var node = Copy(value, 0).Node;
+
+                // A value closed as a whole is its type's name, as text, not as a JSON string.
+                return node is JsonValue closed && closed.TryGetValue<string>(out var name) && name == TypeName(value)
+                    ? name
+                    : node?.ToJsonString(Compact) ?? "null";
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                return TypeName(value);
+            }
+#pragma warning restore CA1031
+        }
+
+        private static JsonValue Closed(object value) => JsonValue.Create(TypeName(value));
+
+        private void Spend(int nodes)
+        {
+            spent += nodes;
+            if (spent > MaxNodes)
+            {
+                throw new OverBoundException();
+            }
+        }
+
+        private (JsonNode? Node, int Size) Copy(object? value, int depth)
+        {
+            Spend(1);
+            if (value is null)
+            {
+                return (null, 1);
+            }
+
+            if (value is string text)
+            {
+                return (JsonValue.Create(redact(text)), 1);
+            }
+
+            if ((value is double d && !double.IsFinite(d)) || (value is float f && !float.IsFinite(f)) || (value is Half h && !Half.IsFinite(h)))
+            {
+                // A number that is not finite is written null, as JavaScript's JSON.stringify writes it.
+                return (null, 1);
+            }
+
+            if (Scalar(value) is { } scalar)
+            {
+                return (scalar, 1);
+            }
+
+            if (TextOf(value) is { } bytes)
+            {
+                return (JsonValue.Create(redact(bytes)), 1);
+            }
+
+            if (depth > MaxDepth)
+            {
+                return (Closed(value), 1);
+            }
+
+            var reference = !value.GetType().IsValueType;
+            if (reference)
+            {
+                if (copied.TryGetValue(value, out var known))
+                {
+                    // Shared: its copy is reused, and counted again, since its text is printed again.
+                    Spend(known.Size - 1);
+                    return (known.Node?.DeepClone(), known.Size);
+                }
+
+                if (!open.Add(value))
+                {
+                    // A cycle: the value already being copied stands for its type's name here.
+                    return (Closed(value), 1);
+                }
+            }
+
+            (JsonNode? Node, int Size) made;
+#pragma warning disable CA1031 // A member of the application's object that throws closes that object, never the activity.
+            try
+            {
+                made = Open(value, depth);
+            }
+            catch (OverBoundException)
+            {
+                throw;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                made = (Closed(value), 1);
+            }
+            finally
+            {
+                if (reference)
+                {
+                    open.Remove(value);
+                }
+            }
+#pragma warning restore CA1031
+
+            if (reference)
+            {
+                copied[value] = made;
+            }
+
+            return made;
+        }
+
+        /// <summary>A number, a boolean, a character or a plain value whose JSON System.Text.Json writes itself (a date, a GUID, an enumeration's number, a URI).</summary>
+        private JsonNode? Scalar(object value) => value switch
+        {
+            bool flag => JsonValue.Create(flag),
+            char unit => JsonValue.Create(redact(unit.ToString())),
+            sbyte or byte or short or ushort or int or uint or long or ulong or nint or nuint or decimal
+                or Int128 or UInt128 or BigInteger => JsonNode.Parse(Convert.ToString(value, CultureInfo.InvariantCulture)!),
+            double d => JsonValue.Create(d),
+            float f => JsonValue.Create(f),
+            Half h => JsonValue.Create((double)h),
+            Enum or DateTime or DateTimeOffset or DateOnly or TimeOnly or TimeSpan or Guid or Uri or Version =>
+                Redacted(JsonSerializer.SerializeToNode(value, value.GetType(), Contracts)),
+            _ => null,
+        };
+
+        private JsonNode? Redacted(JsonNode? node) =>
+            node is JsonValue plain && plain.TryGetValue<string>(out var text) ? JsonValue.Create(redact(text)) : node;
+
+        private (JsonNode? Node, int Size) Open(object value, int depth)
+        {
+            switch (value)
+            {
+                case Delegate or Type or System.Reflection.MemberInfo or System.Reflection.Assembly or Stream or Task:
+                    return (Closed(value), 1);
+                case System.Collections.IDictionary map:
+                    {
+                        var members = new JsonObject();
+                        var size = 1;
+                        foreach (System.Collections.DictionaryEntry entry in map)
+                        {
+                            var key = KeyText(entry.Key);
+                            var (node, nodes) = Copy(entry.Value, depth + 1);
+                            members[redact(key)] = node;
+                            size += nodes;
+                        }
+
+                        return (members, size);
+                    }
+
+                case System.Collections.IEnumerable items:
+                    {
+                        var list = new JsonArray();
+                        var size = 1;
+                        foreach (var item in items)
+                        {
+                            var (node, nodes) = Copy(item, depth + 1);
+                            list.Add(node);
+                            size += nodes;
+                        }
+
+                        return (list, size);
+                    }
+
+                default:
+                    {
+                        var contract = Contracts.GetTypeInfo(value.GetType());
+                        if (contract.Kind != JsonTypeInfoKind.Object)
+                        {
+                            // A type with a converter of its own, or one System.Text.Json cannot write: not opened.
+                            return (Closed(value), 1);
+                        }
+
+                        var members = new JsonObject();
+                        var size = 1;
+                        foreach (var property in contract.Properties)
+                        {
+                            if (property.Get is null)
+                            {
+                                continue;
+                            }
+
+                            var (node, nodes) = Copy(property.Get(value), depth + 1);
+                            members[redact(property.Name)] = node;
+                            size += nodes;
+                        }
+
+                        return (members, size);
+                    }
+            }
+        }
+
+        /// <summary>The text of a dictionary key: a string, or a plain value's invariant text; any other key closes the dictionary.</summary>
+        private static string KeyText(object key) => key switch
+        {
+            string text => text,
+            bool or char or sbyte or byte or short or ushort or int or uint or long or ulong or decimal or Enum or Guid =>
+                Convert.ToString(key, CultureInfo.InvariantCulture)!,
+            _ => throw new NotSupportedException("a key that is not a plain value"),
+        };
     }
 
-    private sealed class MemoryAsText : JsonConverter<Memory<byte>>
+    private sealed class OverBoundException : Exception
     {
-        public override Memory<byte> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => throw new NotSupportedException();
-
-        public override void Write(Utf8JsonWriter writer, Memory<byte> value, JsonSerializerOptions options) => writer.WriteStringValue(Encoding.UTF8.GetString(value.Span));
-    }
-
-    private sealed class ReadOnlyMemoryAsText : JsonConverter<ReadOnlyMemory<byte>>
-    {
-        public override ReadOnlyMemory<byte> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => throw new NotSupportedException();
-
-        public override void Write(Utf8JsonWriter writer, ReadOnlyMemory<byte> value, JsonSerializerOptions options) => writer.WriteStringValue(Encoding.UTF8.GetString(value.Span));
-    }
-
-    private sealed class SegmentAsText : JsonConverter<ArraySegment<byte>>
-    {
-        public override ArraySegment<byte> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => throw new NotSupportedException();
-
-        public override void Write(Utf8JsonWriter writer, ArraySegment<byte> value, JsonSerializerOptions options) => writer.WriteStringValue(Encoding.UTF8.GetString(value));
     }
 }
 
@@ -966,6 +1148,19 @@ internal sealed class AttemptCapture
             {
                 // The state changed while the record was formatted: it is let go as the buffer was.
                 Count(state == State.FinalOnly ? StepLogDrops.AfterCeiling : StepLogDrops.SendFailed, 1);
+                return;
+            }
+
+            // The bounds again where the record joins: concurrent calls that all passed step 2 pass a bound by one record at most.
+            if (buffer.Count >= StepLogLimits.AttemptRecords || bufferBytes >= StepLogLimits.AttemptBytes)
+            {
+                Count(StepLogDrops.BufferFull, 1);
+                return;
+            }
+
+            if (ProcessStepLogs.Held >= StepLogLimits.ProcessBytes)
+            {
+                Count(StepLogDrops.ProcessBound, 1);
                 return;
             }
 
@@ -1237,16 +1432,23 @@ internal sealed class AttemptCapture
                             return;
                         case StatusCode.Unauthenticated:
                         case StatusCode.PermissionDenied:
-                            LetGo(batch, StepLogDrops.SendFailed);
-                            StopSession();
+                            // A batch the server refused is one the attempt gave up on; a late answer to a batch given up changes nothing.
+                            if (LetGo(batch, StepLogDrops.SendFailed))
+                            {
+                                StopSession();
+                            }
+
                             return;
                         case StatusCode.Unimplemented:
                             // An older API replica: no more batches, and from now on only the newest records that fit one carry are kept.
                             lock (gate)
                             {
-                                LetGoLocked(batch, StepLogDrops.SendFailed);
-                                batchesStopped = true;
-                                KeepOneCarryLocked();
+                                if (!batch.Settled)
+                                {
+                                    LetGoLocked(batch, StepLogDrops.SendFailed);
+                                    batchesStopped = true;
+                                    KeepOneCarryLocked();
+                                }
                             }
 
                             return;
@@ -1321,21 +1523,24 @@ internal sealed class AttemptCapture
         }
     }
 
-    /// <summary>Counts a batch's records once, for the reason it was given up.</summary>
-    private void LetGoLocked(Batch batch, string reason)
+    /// <summary>Counts a batch's records once, for the reason it was given up; false when its fate was decided before.</summary>
+    private bool LetGoLocked(Batch batch, string reason)
     {
-        if (!batch.Settled)
+        if (batch.Settled)
         {
-            batch.Settled = true;
-            Count(reason, batch.Held.Count);
+            return false;
         }
+
+        batch.Settled = true;
+        Count(reason, batch.Held.Count);
+        return true;
     }
 
-    private void LetGo(Batch batch, string reason)
+    private bool LetGo(Batch batch, string reason)
     {
         lock (gate)
         {
-            LetGoLocked(batch, reason);
+            return LetGoLocked(batch, reason);
         }
     }
 
@@ -1546,6 +1751,12 @@ internal sealed class AttemptCapture
 
             lock (gate)
             {
+                if (closed)
+                {
+                    // The attempt was closed while its report waited (the host stopped): it carries nothing.
+                    return null;
+                }
+
                 if (ReferenceEquals(inFlight, waitFor))
                 {
                     // The 2 seconds ended with the batch on its way: it is given up, its answer ignored.
@@ -1568,6 +1779,11 @@ internal sealed class AttemptCapture
 
         lock (gate)
         {
+            if (closed)
+            {
+                return null;
+            }
+
             KeepOneCarryLocked();
             var carry = new StepLogCarry { HighestSequence = last };
             carry.Records.AddRange(buffer.Select(one => one.Record));
