@@ -1,0 +1,38 @@
+{
+  "canonical": {
+    "off": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"off\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-negotiation-off\"},\"nodes\":[{\"activity\":\"neg.off\",\"id\":\"off\",\"type\":\"activity\"}]}",
+    "old": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"old\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-negotiation-old\"},\"nodes\":[{\"activity\":\"neg.old\",\"id\":\"old\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "off": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "off",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-negotiation-off"
+      },
+      "nodes": [
+        {
+          "activity": "neg.off",
+          "id": "off",
+          "type": "activity"
+        }
+      ]
+    },
+    "old": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "old",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-negotiation-old"
+      },
+      "nodes": [
+        {
+          "activity": "neg.old",
+          "id": "old",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

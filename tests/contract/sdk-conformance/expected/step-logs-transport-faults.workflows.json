@@ -1,0 +1,198 @@
+{
+  "canonical": {
+    "complete-lost": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-complete-lost\"},\"nodes\":[{\"activity\":\"faults.complete-lost\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "down": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-down\"},\"nodes\":[{\"activity\":\"faults.down\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "exhausted": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-exhausted\"},\"nodes\":[{\"activity\":\"faults.exhausted\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "fail-lost": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-fail-lost\"},\"nodes\":[{\"activity\":\"faults.fail-lost\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "final-only": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-final-only\"},\"nodes\":[{\"activity\":\"faults.final-only\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "hold-expire": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-hold-expire\"},\"nodes\":[{\"activity\":\"faults.hold-expire\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "hold-release": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-hold-release\"},\"nodes\":[{\"activity\":\"faults.hold-release\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "invalid": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-invalid\"},\"nodes\":[{\"activity\":\"faults.invalid\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "lost": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-lost\"},\"nodes\":[{\"activity\":\"faults.lost\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "retry-later": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-retry-later\"},\"nodes\":[{\"activity\":\"faults.retry-later\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "session": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-session\"},\"nodes\":[{\"activity\":\"faults.session\",\"id\":\"work\",\"type\":\"activity\"}]}",
+    "unimplemented": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-fault-unimplemented\"},\"nodes\":[{\"activity\":\"faults.unimplemented\",\"id\":\"work\",\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "complete-lost": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-complete-lost"
+      },
+      "nodes": [
+        {
+          "activity": "faults.complete-lost",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "down": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-down"
+      },
+      "nodes": [
+        {
+          "activity": "faults.down",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "exhausted": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-exhausted"
+      },
+      "nodes": [
+        {
+          "activity": "faults.exhausted",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "fail-lost": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-fail-lost"
+      },
+      "nodes": [
+        {
+          "activity": "faults.fail-lost",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "final-only": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-final-only"
+      },
+      "nodes": [
+        {
+          "activity": "faults.final-only",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "hold-expire": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-hold-expire"
+      },
+      "nodes": [
+        {
+          "activity": "faults.hold-expire",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "hold-release": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-hold-release"
+      },
+      "nodes": [
+        {
+          "activity": "faults.hold-release",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "invalid": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-invalid"
+      },
+      "nodes": [
+        {
+          "activity": "faults.invalid",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "lost": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-lost"
+      },
+      "nodes": [
+        {
+          "activity": "faults.lost",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "retry-later": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-retry-later"
+      },
+      "nodes": [
+        {
+          "activity": "faults.retry-later",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "session": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-session"
+      },
+      "nodes": [
+        {
+          "activity": "faults.session",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    },
+    "unimplemented": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-fault-unimplemented"
+      },
+      "nodes": [
+        {
+          "activity": "faults.unimplemented",
+          "id": "work",
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

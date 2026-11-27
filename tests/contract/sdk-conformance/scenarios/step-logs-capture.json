@@ -1,0 +1,313 @@
+{
+  "name": "step-logs-capture",
+  "description": "Design 041, sdks/SPEC.md section 6.9: what an activity writes to its logger is stored per attempt, in sequence order. The worker captures at debug while its host logger writes only errors, so capture does not depend on the host's enabled check: the trace call takes no sequence, the four others are stored. Fields of each type are kept (a null dropped, an array as its compact JSON text), a NUL becomes U+FFFD and the non-finite doubles their names, the language context is captured as fields, a map of 40 keys keeps its first 32 and one over 2,048 bytes stops before the field that would pass it, both flagged truncated. A step that fails once and then succeeds has two attempts, two streams; an iteration of a root collection carries its instance path. Every step is short, so each attempt's lines travel in its report's carry.",
+  "server": {
+    "stepLogs": true,
+    "iterationConcurrency": 1
+  },
+  "pendingLanguages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java",
+    "rust"
+  ],
+  "exceptionTexts": [
+    "the payment provider refused"
+  ],
+  "workflows": {
+    "capture": {
+      "name": "step-logs-capture-flow",
+      "program": [
+        {
+          "op": "step",
+          "id": "levels",
+          "activity": "logs.levels"
+        },
+        {
+          "op": "step",
+          "id": "fields",
+          "activity": "logs.fields"
+        },
+        {
+          "op": "step",
+          "id": "flaky",
+          "activity": "logs.flaky",
+          "options": {
+            "retry": {
+              "maxAttempts": 2,
+              "initialDelayMs": 50,
+              "maxDelayMs": 50,
+              "strategy": "fixed",
+              "jitter": false
+            }
+          }
+        }
+      ]
+    },
+    "collection": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "step-logs-collection-flow",
+      "bodies": {
+        "item": {
+          "program": [
+            {
+              "op": "step",
+              "id": "each",
+              "activity": "logs.item"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "steps.each.output"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "items",
+          "items": "input.items",
+          "body": "item",
+          "result": "bodyResult.n",
+          "maxItems": 1,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.items.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "step-logs-capture",
+      "protocolVersion": "1.7",
+      "transport": "poll",
+      "maxInflight": 1,
+      "stepLogs": {
+        "capture": true,
+        "level": "debug"
+      },
+      "hostLogLevel": "error",
+      "activities": {
+        "logs.levels": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "trace",
+                "message": "trace line"
+              },
+              {
+                "level": "debug",
+                "message": "debug line"
+              },
+              {
+                "level": "info",
+                "message": "info line"
+              },
+              {
+                "level": "warn",
+                "message": "warn line"
+              },
+              {
+                "level": "error",
+                "message": "error line",
+                "exception": "the payment provider refused"
+              }
+            ],
+            "returns": {
+              "levels": true
+            }
+          }
+        },
+        "logs.fields": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "typed fields",
+                "fields": {
+                  "text": "plain",
+                  "count": 42,
+                  "ratio": 0.25,
+                  "flag": true,
+                  "nothing": null,
+                  "list": [
+                    1,
+                    "two",
+                    true
+                  ]
+                }
+              },
+              {
+                "level": "info",
+                "message": "nul\u0000inside",
+                "fields": {
+                  "nan": {
+                    "$double": "NaN"
+                  },
+                  "inf": {
+                    "$double": "Infinity"
+                  },
+                  "minf": {
+                    "$double": "-Infinity"
+                  },
+                  "nul": "a\u0000b"
+                }
+              },
+              {
+                "level": "info",
+                "message": "context",
+                "context": {
+                  "request": "r-1"
+                },
+                "fields": {
+                  "local": 1
+                }
+              },
+              {
+                "level": "info",
+                "message": "many keys",
+                "fields": {
+                  "k01": 1,
+                  "k02": 2,
+                  "k03": 3,
+                  "k04": 4,
+                  "k05": 5,
+                  "k06": 6,
+                  "k07": 7,
+                  "k08": 8,
+                  "k09": 9,
+                  "k10": 10,
+                  "k11": 11,
+                  "k12": 12,
+                  "k13": 13,
+                  "k14": 14,
+                  "k15": 15,
+                  "k16": 16,
+                  "k17": 17,
+                  "k18": 18,
+                  "k19": 19,
+                  "k20": 20,
+                  "k21": 21,
+                  "k22": 22,
+                  "k23": 23,
+                  "k24": 24,
+                  "k25": 25,
+                  "k26": 26,
+                  "k27": 27,
+                  "k28": 28,
+                  "k29": 29,
+                  "k30": 30,
+                  "k31": 31,
+                  "k32": 32,
+                  "k33": 33,
+                  "k34": 34,
+                  "k35": 35,
+                  "k36": 36,
+                  "k37": 37,
+                  "k38": 38,
+                  "k39": 39,
+                  "k40": 40
+                }
+              },
+              {
+                "level": "info",
+                "message": "big fields",
+                "fields": {
+                  "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                  "b": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                  "c": true
+                }
+              }
+            ],
+            "returns": {
+              "fields": true
+            }
+          }
+        },
+        "logs.flaky": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "attempt line"
+              }
+            ],
+            "failsUntilAttempt": 2,
+            "fails": {
+              "code": "FLAKY",
+              "message": "try again",
+              "retryable": true
+            },
+            "returns": {
+              "flaky": true
+            }
+          }
+        },
+        "logs.item": {
+          "behavior": {
+            "logs": [
+              {
+                "level": "info",
+                "message": "item line"
+              }
+            ],
+            "returns": {
+              "n": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "capture",
+      "op": "start",
+      "workflow": "capture",
+      "input": {
+        "case": "capture"
+      }
+    },
+    {
+      "id": "capture-done",
+      "op": "waitForCompletion",
+      "run": "capture",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "capture-logs",
+      "op": "stepLogs",
+      "run": "capture"
+    },
+    {
+      "id": "collection",
+      "op": "start",
+      "workflow": "collection",
+      "input": {
+        "items": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "collection-done",
+      "op": "waitForCompletion",
+      "run": "collection",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "collection-logs",
+      "op": "stepLogs",
+      "run": "collection"
+    }
+  ]
+}

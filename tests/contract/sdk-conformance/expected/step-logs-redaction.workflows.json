@@ -1,0 +1,65 @@
+{
+  "canonical": {
+    "first": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"first\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-redaction-first\"},\"nodes\":[{\"activity\":\"red.first\",\"id\":\"first\",\"secrets\":[\"red-a\",\"red-int\"],\"type\":\"activity\"}]}",
+    "second": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"second\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-redaction-second\"},\"nodes\":[{\"activity\":\"red.second\",\"id\":\"second\",\"secrets\":[\"red-b\",\"red-dbl\"],\"type\":\"activity\"}]}",
+    "third": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"third\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"step-logs-redaction-third\"},\"nodes\":[{\"activity\":\"red.third\",\"id\":\"third\",\"secrets\":[\"red-c\"],\"type\":\"activity\"}]}"
+  },
+  "workflows": {
+    "first": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "first",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-redaction-first"
+      },
+      "nodes": [
+        {
+          "activity": "red.first",
+          "id": "first",
+          "secrets": [
+            "red-a",
+            "red-int"
+          ],
+          "type": "activity"
+        }
+      ]
+    },
+    "second": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "second",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-redaction-second"
+      },
+      "nodes": [
+        {
+          "activity": "red.second",
+          "id": "second",
+          "secrets": [
+            "red-b",
+            "red-dbl"
+          ],
+          "type": "activity"
+        }
+      ]
+    },
+    "third": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "third",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "step-logs-redaction-third"
+      },
+      "nodes": [
+        {
+          "activity": "red.third",
+          "id": "third",
+          "secrets": [
+            "red-c"
+          ],
+          "type": "activity"
+        }
+      ]
+    }
+  }
+}

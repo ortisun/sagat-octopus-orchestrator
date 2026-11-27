@@ -1,0 +1,223 @@
+{
+  "name": "step-logs-redaction",
+  "description": "Design 041, Success criterion 041-004, sdks/SPEC.md sections 6.7 and 6.9: every captured line is redacted with the process's whole secret set. Two attempts are in flight at once with different secrets, each resolving its own and waiting until the other's are resolved before it logs; the second returns only once the first has ended, so the worker's log has one order; a third starts after both ended. Each logs the secrets it may know whole, inside a message, as a field key, as a field value and inside an exception, and the numbers 12345678 and 1e15 equal to two numeric secrets: every position is stored as [REDACTED], and no secret value appears in the stored lines, the routes' bodies, the platform's state, the audit trail or the server's output.",
+  "server": {
+    "stepLogs": true
+  },
+  "pendingLanguages": [
+    "typescript",
+    "go",
+    "python",
+    "dotnet",
+    "java",
+    "rust"
+  ],
+  "secrets": {
+    "red-a": "canary-alpha-7Kq2",
+    "red-b": "canary-bravo-9Wz4",
+    "red-c": "canary-charlie-3Xv8",
+    "red-int": "12345678",
+    "red-dbl": "1000000000000000"
+  },
+  "mustNotStore": [
+    "canary-alpha-7Kq2",
+    "canary-bravo-9Wz4",
+    "canary-charlie-3Xv8",
+    "12345678",
+    "1000000000000000"
+  ],
+  "exceptionTexts": [
+    "failure [REDACTED]"
+  ],
+  "workflows": {
+    "first": {
+      "name": "step-logs-redaction-first",
+      "program": [
+        {
+          "op": "step",
+          "id": "first",
+          "activity": "red.first",
+          "options": {
+            "secrets": [
+              "red-a",
+              "red-int"
+            ]
+          }
+        }
+      ]
+    },
+    "second": {
+      "name": "step-logs-redaction-second",
+      "program": [
+        {
+          "op": "step",
+          "id": "second",
+          "activity": "red.second",
+          "options": {
+            "secrets": [
+              "red-b",
+              "red-dbl"
+            ]
+          }
+        }
+      ]
+    },
+    "third": {
+      "name": "step-logs-redaction-third",
+      "program": [
+        {
+          "op": "step",
+          "id": "third",
+          "activity": "red.third",
+          "options": {
+            "secrets": [
+              "red-c"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "step-logs-redaction",
+      "protocolVersion": "1.7",
+      "transport": "poll",
+      "maxInflight": 3,
+      "activities": {
+        "red.first": {
+          "behavior": {
+            "logsSecret": {
+              "resolve": [
+                "red-a",
+                "red-int"
+              ],
+              "afterResolved": [
+                "red-b",
+                "red-dbl"
+              ],
+              "values": [
+                "red-a",
+                "red-b"
+              ],
+              "numbers": [
+                12345678,
+                1000000000000000.0
+              ]
+            },
+            "returns": {
+              "logged": true
+            }
+          }
+        },
+        "red.second": {
+          "behavior": {
+            "logsSecret": {
+              "resolve": [
+                "red-b",
+                "red-dbl"
+              ],
+              "afterResolved": [
+                "red-a",
+                "red-int"
+              ],
+              "values": [
+                "red-a",
+                "red-b"
+              ],
+              "numbers": [
+                12345678,
+                1000000000000000.0
+              ],
+              "returnAfterLogged": 1
+            },
+            "returns": {
+              "logged": true
+            }
+          }
+        },
+        "red.third": {
+          "behavior": {
+            "logsSecret": {
+              "resolve": [
+                "red-c"
+              ],
+              "afterResolved": [],
+              "values": [
+                "red-a",
+                "red-b",
+                "red-c"
+              ],
+              "numbers": [
+                12345678,
+                1000000000000000.0
+              ]
+            },
+            "returns": {
+              "logged": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "first",
+      "op": "start",
+      "workflow": "first",
+      "input": {
+        "case": "first"
+      }
+    },
+    {
+      "id": "second",
+      "op": "start",
+      "workflow": "second",
+      "input": {
+        "case": "second"
+      }
+    },
+    {
+      "id": "first-done",
+      "op": "waitForCompletion",
+      "run": "first",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "second-done",
+      "op": "waitForCompletion",
+      "run": "second",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "third",
+      "op": "start",
+      "workflow": "third",
+      "input": {
+        "case": "third"
+      }
+    },
+    {
+      "id": "third-done",
+      "op": "waitForCompletion",
+      "run": "third",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "first-logs",
+      "op": "stepLogs",
+      "run": "first"
+    },
+    {
+      "id": "second-logs",
+      "op": "stepLogs",
+      "run": "second"
+    },
+    {
+      "id": "third-logs",
+      "op": "stepLogs",
+      "run": "third"
+    }
+  ]
+}

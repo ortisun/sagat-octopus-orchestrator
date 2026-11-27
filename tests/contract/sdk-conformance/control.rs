@@ -41,6 +41,8 @@ async fn control(State(platform): State<Arc<Platform>>, Json(body): Json<Value>)
         "elapseTimer" => platform.elapse_timer(&field("run"), &field("node")).await,
         // `node` names the subject whose membership the tenant takes away.
         "revokeMembership" => revoke_membership(&platform, &field("node")).await,
+        // Design 041: capture off in the namespace, for the workers registered after it (`step-logs-negotiation`).
+        "stepLogCaptureOff" => set_step_log_attempt_records(&platform, 0).await,
         other => return Json(json!({"ok": false, "error": format!("unknown action {other}")})),
     }
     Json(json!({"ok": true}))
@@ -65,6 +67,20 @@ async fn expire_until_reclaimed(platform: &Platform, run: &str, node: &str) {
             return;
         }
     }
+}
+
+/// Sets the namespace's `step_log_attempt_records` through the public quota route: 0 turns capture off in the
+/// namespace (design 041, Requirement 041-020).
+pub async fn set_step_log_attempt_records(platform: &Platform, records: u64) {
+    let namespace = platform.namespace_id().await;
+    let (status, quota) = platform
+        .rest(
+            reqwest::Method::PUT,
+            &format!("/namespaces/{namespace}/quotas/step_log_attempt_records"),
+            Some(&json!({"limit": records})),
+        )
+        .await;
+    assert_eq!(status, 200, "setting step_log_attempt_records: {quota}");
 }
 
 /// Removes the tenant's membership of `subject`: the identity provider still vouches for the token, but the
