@@ -249,6 +249,22 @@ impl NodeId {
     /// no author can write an id that collides with a derived node.
     const DERIVED: char = '~';
 
+    /// The reserved node of a code run's workflow-task step (design 044, Technical Plan 2). It begins with the derived
+    /// marker, so no author can declare it, but it is not derived: it has no forward node and no companion.
+    const WORKFLOW_TASK: &'static str = "~workflow";
+
+    /// The workflow-task step of a code run: `~workflow`.
+    #[must_use]
+    pub fn workflow_task() -> Self {
+        Self(Self::WORKFLOW_TASK.to_owned())
+    }
+
+    /// Whether this is the workflow-task step of a code run.
+    #[must_use]
+    pub fn is_workflow_task(&self) -> bool {
+        self.0 == Self::WORKFLOW_TASK
+    }
+
     /// The compensation of this forward node: `<id>~c`.
     #[must_use]
     pub fn compensation(&self) -> Self {
@@ -273,26 +289,34 @@ impl NodeId {
         self.0.ends_with("~r")
     }
 
-    /// The forward node this derived id belongs to; `None` for a declared id.
+    /// The forward node this derived id belongs to; `None` for a declared id and for the workflow-task step.
     #[must_use]
     pub fn forward(&self) -> Option<Self> {
+        if self.is_workflow_task() {
+            return None;
+        }
         self.0
             .rsplit_once(Self::DERIVED)
             .map(|(base, _)| Self(base.to_owned()))
     }
 
-    /// Whether this id belongs to a derived node (a compensation or a reconciliation).
+    /// Whether this id belongs to a derived node (a compensation or a reconciliation); the workflow-task step is not
+    /// one.
     #[must_use]
     pub fn is_derived(&self) -> bool {
-        self.0.contains(Self::DERIVED)
+        !self.is_workflow_task() && self.0.contains(Self::DERIVED)
     }
 
-    /// Reads an id back from a journal or a row: a declared id, or a declared id followed by `~c`
-    /// or `~r`. Everything else is rejected, so the derived form cannot be forged from outside.
+    /// Reads an id back from a journal or a row: a declared id, a declared id followed by `~c`
+    /// or `~r`, or the workflow-task step `~workflow`. Everything else is rejected, so the derived and reserved forms
+    /// cannot be forged from outside.
     ///
     /// # Errors
     /// [`WorkflowError::InvalidNodeId`] unless `value` is one of those forms.
     pub fn parse_stored(value: &str) -> Result<Self, WorkflowError> {
+        if value == Self::WORKFLOW_TASK {
+            return Ok(Self::workflow_task());
+        }
         match value.rsplit_once(Self::DERIVED) {
             None => Self::parse(value),
             Some((base, "c" | "r")) => {

@@ -117,8 +117,9 @@ section of that design; the model (code version, commands, code definition) is i
 A code run is an ordinary run (`runs` row, journal, steps) whose start version is a code version. It has one reserved
 **workflow-task step** (Technical Plan 2, Task 044-4 and Task 044-8):
 
-- its node identifier is the reserved `~workflow`, which `NodeId::parse_stored` accepts, for which `NodeId::is_derived`
-  is false and `NodeId::forward` returns nothing; its `steps.kind` is `WORKFLOW_TASK`; its node is
+- its node identifier is the reserved `~workflow` (`NodeId::workflow_task`), which `NodeId::parse_stored` accepts, for
+  which `NodeId::is_derived` is false and `NodeId::forward` returns nothing; no author can declare it, and it takes no
+  derived companion (`~workflow~c` is not a stored identifier); its `steps.kind` is `WORKFLOW_TASK`; its node is
   `NodeKind::WorkflowTask`, built from the step row and the pin, never an activity node; its activity field holds the
   reserved name `sagat.workflow:<type>:<hex digest>` of the current code version;
 - it is `READY` when a workflow task is due, `LEASED` while a worker holds it, `WAITING` with kind `DECIDER` when the
