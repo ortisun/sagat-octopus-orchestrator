@@ -273,6 +273,7 @@ Metrics (labels are closed sets; no tenant, subject, run, namespace or secret is
 | `secret_resolution_denied_total` | `ResolveSecrets` refused because a declared secret is no longer usable (deleted, or its publisher lost access) |
 | `grpc_connections_refused_total{reason}` | Connections turned away without taking a place from anybody else (`per_peer`) |
 | `grpc_connections_closed_total{reason}` | Connections the engine closed because the peer was silent: `silent` (new, sent nothing) or `idle` (established) |
+| `grpc_connections_open` | Connections open now, one series (feature 006, Task 006-049). It sits at `SAGAT_GRPC_MAX_CONNECTIONS` while new connections wait in the kernel's backlog with no refusal counted; a host of protocol 1.8 holds two connections, three while one drains |
 | `secret_output_detected_total` | Outputs found to contain a secret's value. A detection, counted when found: if the commit that fails the step is lost, the retry counts it again |
 | `grpc_shed_total{class}`, `grpc_in_flight`, `grpc_connections_total`, `grpc_requests_total{method="ResolveSecrets",code}` | Worker API admission and traffic (feature 002) |
 

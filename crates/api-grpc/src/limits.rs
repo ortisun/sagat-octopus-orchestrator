@@ -154,6 +154,97 @@ pub(crate) struct ConnectionLimits {
     pub first_byte: Duration,
     /// How long an established connection may stay silent before it is closed.
     pub idle: Duration,
+    /// Calls running at once on one connection (`concurrency_per_connection`): the places of [`ConnectionPlaces`].
+    pub per_connection: usize,
+    /// Of those places, how many only the class `Acknowledge` takes once the others are held (see [`ConnectionPlaces`]).
+    pub acknowledge_reserve: usize,
+}
+
+/// Of a connection's places, those the class `Acknowledge` keeps for itself while this build serves delivery acknowledgement
+/// (feature 006, Task 006-049; `stream-completion.md`, "The server's acknowledgement", step 1): a host's own acknowledgement
+/// connection holds at most four calls, and behind a proxy that pools connections upstream an acknowledgement still finds a
+/// place behind long transfers.
+pub(crate) const ACKNOWLEDGE_RESERVE: usize = 4;
+
+/// The places of one connection's calls, held in its [`CappedConnectInfo`] and dropped with it (no map keyed by the peer,
+/// which an unauthenticated peer could grow). This replaces tonic's `concurrency_limit_per_connection`, which sat outside the
+/// platform's admission layer: a call's arrival ([`Arrival`]) is now stamped before it waits for a place of its connection, so
+/// an acknowledgement queued behind long transfers keeps its deadline. A call waits for a place as it waited for tonic's; the
+/// last `reserve` places are taken by the class `Acknowledge` alone, which takes any place that is free. With no reserve (a
+/// build below 1.8, or `concurrency_per_connection` of 1) every class has every place, as before.
+#[derive(Debug)]
+pub(crate) struct ConnectionPlaces {
+    /// The places every class takes: the connection's limit less the reserve.
+    shared: Arc<Semaphore>,
+    /// The places only the class `Acknowledge` takes.
+    reserve: Arc<Semaphore>,
+    /// Which connection of the process this is, in the order they were accepted: never an address, read by a test hook only
+    /// (Task 006-058's assertion that the acknowledgements travel on a connection of their own).
+    ordinal: u64,
+}
+
+impl ConnectionPlaces {
+    /// `limit` places, at least one; of them `reserve` (at most `limit - 1`, so every class keeps a place) for `Acknowledge`.
+    pub(crate) fn new(limit: usize, reserve: usize, ordinal: u64) -> Self {
+        let limit = limit.clamp(1, Semaphore::MAX_PERMITS);
+        let reserve = reserve.min(limit - 1);
+        Self {
+            shared: Arc::new(Semaphore::new(limit - reserve)),
+            reserve: Arc::new(Semaphore::new(reserve)),
+            ordinal,
+        }
+    }
+
+    /// A place for a call of `class`, waited for while the connection's places are all held.
+    async fn take(&self, class: Class) -> Option<OwnedSemaphorePermit> {
+        let shared = Arc::clone(&self.shared);
+        if class != Class::Acknowledge {
+            return shared.acquire_owned().await.ok();
+        }
+        let reserve = Arc::clone(&self.reserve);
+        if let Ok(place) = Arc::clone(&shared).try_acquire_owned() {
+            return Some(place);
+        }
+        if let Ok(place) = Arc::clone(&reserve).try_acquire_owned() {
+            return Some(place);
+        }
+        // whichever place frees first; the other wait is dropped, which gives back anything it was assigned
+        let mut from_shared = std::pin::pin!(shared.acquire_owned());
+        let mut from_reserve = std::pin::pin!(reserve.acquire_owned());
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(place) = from_shared.as_mut().poll(cx) {
+                return Poll::Ready(place.ok());
+            }
+            from_reserve.as_mut().poll(cx).map(Result::ok)
+        })
+        .await
+    }
+}
+
+/// The open connections of the process, for the gauge `grpc_connections_open` (one series): raised when a connection is
+/// accepted, lowered when it closes.
+#[derive(Debug, Default)]
+struct OpenConnections(AtomicUsize);
+
+impl OpenConnections {
+    fn opened(self: &Arc<Self>) -> OpenConnection {
+        let open = self.0.fetch_add(1, Ordering::AcqRel) + 1;
+        #[allow(clippy::cast_precision_loss)]
+        metrics::gauge!("grpc_connections_open").set(open as f64);
+        OpenConnection(Arc::clone(self))
+    }
+}
+
+/// One open connection of [`OpenConnections`], counted until it is dropped.
+#[derive(Debug)]
+struct OpenConnection(Arc<OpenConnections>);
+
+impl Drop for OpenConnection {
+    fn drop(&mut self) {
+        let open = self.0.0.fetch_sub(1, Ordering::AcqRel).saturating_sub(1);
+        #[allow(clippy::cast_precision_loss)]
+        metrics::gauge!("grpc_connections_open").set(open as f64);
+    }
 }
 
 /// How many connections each peer holds, so one address cannot fill the places of everybody.
@@ -228,6 +319,9 @@ pub(crate) struct Incoming {
     acquiring: Option<Pin<Box<dyn Future<Output = Option<OwnedSemaphorePermit>> + Send>>>,
     permit: Option<OwnedSemaphorePermit>,
     backoff: Option<Pin<Box<Sleep>>>,
+    open: Arc<OpenConnections>,
+    /// The ordinal of the next connection accepted ([`ConnectionPlaces`]).
+    next_ordinal: u64,
 }
 
 impl Incoming {
@@ -240,6 +334,8 @@ impl Incoming {
             acquiring: None,
             permit: None,
             backoff: None,
+            open: Arc::new(OpenConnections::default()),
+            next_ordinal: 0,
         }
     }
 }
@@ -284,10 +380,17 @@ impl Stream for Incoming {
                     Some(permit) => {
                         let _ = socket.set_nodelay(true);
                         metrics::counter!("grpc_connections_total").increment(1);
+                        this.next_ordinal += 1;
                         Poll::Ready(Some(Ok(Capped {
                             socket,
                             _permit: permit,
                             _slot: slot,
+                            _open: this.open.opened(),
+                            places: Arc::new(ConnectionPlaces::new(
+                                this.limits.per_connection,
+                                this.limits.acknowledge_reserve,
+                                this.next_ordinal,
+                            )),
                             watchdog: Arc::new(ConnectionWatchdog::default()),
                             deadline: Box::pin(tokio::time::sleep(this.limits.first_byte)),
                             idle: this.limits.idle,
@@ -315,6 +418,8 @@ pub(crate) struct Capped {
     socket: TcpStream,
     _permit: OwnedSemaphorePermit,
     _slot: PeerSlot,
+    _open: OpenConnection,
+    places: Arc<ConnectionPlaces>,
     watchdog: Arc<ConnectionWatchdog>,
     deadline: Pin<Box<Sleep>>,
     idle: Duration,
@@ -328,6 +433,8 @@ pub(crate) struct Capped {
 #[derive(Clone, Debug)]
 pub(crate) struct CappedConnectInfo {
     watchdog: Arc<ConnectionWatchdog>,
+    /// The places of the connection's calls, dropped with the connection.
+    places: Arc<ConnectionPlaces>,
 }
 
 #[derive(Debug, Default)]
@@ -401,6 +508,7 @@ impl Connected for Capped {
     fn connect_info(&self) -> Self::ConnectInfo {
         CappedConnectInfo {
             watchdog: Arc::clone(&self.watchdog),
+            places: Arc::clone(&self.places),
         }
     }
 }
@@ -585,7 +693,13 @@ struct Shared {
     /// call is refused `UNAVAILABLE`. Set once, by the process that owns the registry membership; none is a process
     /// with no registry, which serves.
     serving: std::sync::OnceLock<Arc<sagat_application::instances::ServingGate>>,
+    /// The test hook told the method and the connection ordinal of every call ([`crate::WorkerApi::with_connection_probe`]).
+    connection_probe: std::sync::OnceLock<ConnectionProbe>,
 }
+
+/// A test hook told, for every call, its method path and the ordinal of its connection (Task 006-058's assertion that a host's
+/// acknowledgements travel on a connection of their own). Never a metric label, a log field or a span attribute.
+pub type ConnectionProbe = Arc<dyn Fn(&str, u64) + Send + Sync>;
 
 impl Shared {
     /// The refusal of every call while the gate of the instance registry is closed: `UNAVAILABLE`, naming the capability
@@ -682,6 +796,7 @@ impl Admission {
                     u64::try_from(unary_timeout.as_millis()).unwrap_or(u64::MAX),
                 ),
                 serving: std::sync::OnceLock::new(),
+                connection_probe: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -705,6 +820,11 @@ impl Admission {
         Some(crate::status::to_status(
             &ApiError::unavailable_after(1).with_reason(reason),
         ))
+    }
+
+    /// Tells `probe` the method and the connection ordinal of every call. The first probe set is the one that counts.
+    pub(crate) fn set_connection_probe(&self, probe: ConnectionProbe) {
+        let _ = self.shared.connection_probe.set(probe);
     }
 
     /// Makes the admission refuse every call while `gate` is closed. The first gate set is the one that counts.
@@ -761,9 +881,10 @@ pub struct Admit<S> {
 
 impl<S, B, R> Service<http::Request<B>> for Admit<S>
 where
-    S: Service<http::Request<B>, Response = http::Response<R>> + Send + 'static,
+    S: Service<http::Request<B>, Response = http::Response<R>> + Clone + Send + 'static,
     S::Future: Send + 'static,
     S::Error: Send + 'static,
+    B: Send + 'static,
     R: Default + Send + 'static,
 {
     type Response = http::Response<R>;
@@ -775,6 +896,7 @@ where
     }
 
     fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
+        // The arrival is stamped before the call waits for a place of its connection (Task 006-049).
         request
             .extensions_mut()
             .insert(Arrival(std::time::Instant::now()));
@@ -784,16 +906,31 @@ where
             metrics::counter!("grpc_shed_total", "class" => "not_serving").increment(1);
             return Box::pin(std::future::ready(Ok(to_status(&refusal).into_http())));
         }
-        let Some(ticket) = self.shared.admit(class) else {
-            metrics::counter!("grpc_shed_total", "class" => class.label()).increment(1);
-            return Box::pin(std::future::ready(Ok(
-                to_status(&shed_refusal(class)).into_http()
-            )));
-        };
-        let call = self.inner.call(request);
-        let limit = (class != Class::Transfer)
-            .then(|| Duration::from_millis(self.shared.unary_timeout_ms.load(Ordering::Acquire)));
+        let places = connection_places(&request);
+        if let (Some(probe), Some(places)) = (self.shared.connection_probe.get(), &places) {
+            probe(request.uri().path(), places.ordinal);
+        }
+        // The service made ready is the one that is called; a clone takes its place for the next call.
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let shared = Arc::clone(&self.shared);
         Box::pin(async move {
+            // Waits for a place as tonic's per-connection limit made it wait; the place is held until the response.
+            let _place = match &places {
+                Some(places) => match places.take(class).await {
+                    Some(place) => Some(place),
+                    // a semaphore is never closed; a refusal is safer than a call over the limit
+                    None => return Ok(to_status(&ApiError::rate_limited(SHED_RETRY)).into_http()),
+                },
+                None => None,
+            };
+            let Some(ticket) = shared.admit(class) else {
+                metrics::counter!("grpc_shed_total", "class" => class.label()).increment(1);
+                return Ok(to_status(&shed_refusal(class)).into_http());
+            };
+            let call = inner.call(request);
+            let limit = (class != Class::Transfer)
+                .then(|| Duration::from_millis(shared.unary_timeout_ms.load(Ordering::Acquire)));
             let response = match limit {
                 None => call.await,
                 Some(limit) => match tokio::time::timeout(limit, call).await {
@@ -811,9 +948,144 @@ where
     }
 }
 
+/// The places of the connection a request came on, plain or under TLS; none for a transport that is not the platform's
+/// listener (an in-process test transport), which tonic did not limit either.
+fn connection_places<B>(request: &http::Request<B>) -> Option<Arc<ConnectionPlaces>> {
+    let extensions = request.extensions();
+    extensions
+        .get::<CappedConnectInfo>()
+        .or_else(|| {
+            extensions
+                .get::<tonic::transport::server::TlsConnectInfo<CappedConnectInfo>>()
+                .map(tonic::transport::server::TlsConnectInfo::get_ref)
+        })
+        .map(|info| Arc::clone(&info.places))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Polls `future` once: its output if it is ready, none if it would wait (a wait polled once and dropped leaves its
+    /// semaphore's queue).
+    fn now<F: Future>(future: F) -> Option<F::Output> {
+        let mut future = std::pin::pin!(future);
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(output) => Some(output),
+            Poll::Pending => None,
+        }
+    }
+
+    /// Feature 006, Task 006-049 (`stream-completion.md`, "The server's acknowledgement", step 1): for every limit from 1 to
+    /// 64, with the reserve of 1.8 the other classes have `limit - min(4, limit - 1)` places of a connection and `Acknowledge`
+    /// every place; without it (a build below 1.8, the release-0.2 configuration) every class, `Acknowledge` included, has
+    /// every place.
+    #[test]
+    fn a_connection_keeps_its_reserve_for_acknowledgements_and_only_from_1_8() {
+        for limit in 1..=64_usize {
+            for reserve in [0, ACKNOWLEDGE_RESERVE] {
+                let places = ConnectionPlaces::new(limit, reserve, 1);
+                let others = limit - reserve.min(limit - 1);
+                let held: Vec<_> = (0..others)
+                    .map(|_| {
+                        now(places.take(Class::Transfer))
+                            .flatten()
+                            .expect("a place")
+                    })
+                    .collect();
+                for class in [Class::Discovery, Class::Lease, Class::Transfer, Class::Logs] {
+                    assert!(
+                        now(places.take(class)).is_none(),
+                        "{class:?} takes no place of the reserve ({limit}, {reserve})"
+                    );
+                }
+                let acknowledgements: Vec<_> = (others..limit)
+                    .map(|_| {
+                        now(places.take(Class::Acknowledge))
+                            .flatten()
+                            .expect("a place of the reserve")
+                    })
+                    .collect();
+                assert_eq!(held.len() + acknowledgements.len(), limit);
+                assert!(
+                    now(places.take(Class::Acknowledge)).is_none(),
+                    "never more than the limit ({limit}, {reserve})"
+                );
+                drop(held);
+                // with the reserve held, the freed places are every class's again, the acknowledgement's included
+                let again: Vec<_> = (0..others)
+                    .map(|_| {
+                        now(places.take(Class::Acknowledge))
+                            .flatten()
+                            .expect("a place")
+                    })
+                    .collect();
+                assert!(now(places.take(Class::Lease)).is_none());
+                drop((again, acknowledgements));
+            }
+        }
+        // the release-0.2 configuration at the compiled minor of this build: 64 places for every class
+        assert_eq!(
+            crate::server::acknowledge_reserve(sagat_application::worker::PROTOCOL_MINOR),
+            0
+        );
+        assert_eq!(
+            crate::server::acknowledge_reserve(
+                sagat_application::worker::DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR
+            ),
+            ACKNOWLEDGE_RESERVE
+        );
+        let places = ConnectionPlaces::new(64, 0, 1);
+        let held: Vec<_> = (0..64)
+            .map(|_| {
+                now(places.take(Class::Acknowledge))
+                    .flatten()
+                    .expect("a place")
+            })
+            .collect();
+        assert!(now(places.take(Class::Acknowledge)).is_none());
+        drop(held);
+    }
+
+    /// A call that waits for a place takes the first that frees for it: an acknowledgement any place, another class only one
+    /// that is not of the reserve.
+    #[test]
+    fn a_waiting_call_takes_the_first_place_that_frees_for_its_class() {
+        let places = ConnectionPlaces::new(8, ACKNOWLEDGE_RESERVE, 1);
+        let mut shared: Vec<_> = (0..4)
+            .map(|_| now(places.take(Class::Lease)).flatten().expect("a place"))
+            .collect();
+        let mut reserve: Vec<_> = (0..4)
+            .map(|_| {
+                now(places.take(Class::Acknowledge))
+                    .flatten()
+                    .expect("a place")
+            })
+            .collect();
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        // an acknowledgement waits for either, and takes a place of the reserve when one frees
+        let mut acknowledgement = Box::pin(places.take(Class::Acknowledge));
+        assert!(acknowledgement.as_mut().poll(&mut context).is_pending());
+        drop(reserve.pop());
+        assert!(matches!(
+            acknowledgement.as_mut().poll(&mut context),
+            Poll::Ready(Some(_))
+        ));
+        // a heartbeat waits for a place that is not of the reserve: a freed place of the reserve is not its
+        let mut heartbeat = Box::pin(places.take(Class::Lease));
+        assert!(heartbeat.as_mut().poll(&mut context).is_pending());
+        drop(reserve.pop());
+        assert!(heartbeat.as_mut().poll(&mut context).is_pending());
+        drop(shared.pop());
+        assert!(matches!(
+            heartbeat.as_mut().poll(&mut context),
+            Poll::Ready(Some(_))
+        ));
+    }
 
     #[test]
     fn only_the_calls_that_keep_leased_work_alive_are_reserved_capacity() {

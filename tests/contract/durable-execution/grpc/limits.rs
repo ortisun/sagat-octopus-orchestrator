@@ -16,7 +16,8 @@ use sagat_api_grpc::pb::{
     ResolveSecretsResponse, StepCommandResponse,
 };
 use sagat_api_grpc::{
-    AdmissionProvider, ERROR_METADATA, GrpcConfig, RETRY_AFTER_METADATA, serve, worker_service,
+    AdmissionProvider, ERROR_METADATA, GrpcConfig, RETRY_AFTER_METADATA, WorkerApi, serve,
+    worker_service,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
@@ -27,6 +28,8 @@ use tonic::{Code, Request, Response, Status};
 struct Stub {
     gate: Arc<Semaphore>,
     entered: Arc<AtomicUsize>,
+    /// The acknowledgements among them.
+    acknowledgements: Arc<AtomicUsize>,
 }
 
 impl AdmissionProvider for Stub {}
@@ -107,7 +110,11 @@ impl WorkerService for Stub {
         &self,
         _: Request<sagat_api_grpc::pb::AcknowledgeTasksRequest>,
     ) -> Result<Response<sagat_api_grpc::pb::AcknowledgeTasksResponse>, Status> {
-        Err(Status::unimplemented("AcknowledgeTasks"))
+        self.acknowledgements.fetch_add(1, Ordering::SeqCst);
+        self.park().await;
+        Ok(Response::new(
+            sagat_api_grpc::pb::AcknowledgeTasksResponse::default(),
+        ))
     }
     async fn resolve_database(
         &self,
@@ -137,21 +144,32 @@ struct Harness {
     url: String,
     gate: Arc<Semaphore>,
     entered: Arc<AtomicUsize>,
+    acknowledgements: Arc<AtomicUsize>,
     _stop: oneshot::Sender<()>,
 }
 
 async fn serve_stub(config: GrpcConfig) -> Harness {
+    serve_stub_with(config, |api| api).await
+}
+
+/// [`serve_stub`] with the test seams of `WorkerApi` set by `seams`.
+async fn serve_stub_with(
+    config: GrpcConfig,
+    seams: impl FnOnce(WorkerApi<Stub>) -> WorkerApi<Stub> + Send + 'static,
+) -> Harness {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}", listener.local_addr().expect("addr"));
     let gate = Arc::new(Semaphore::new(0));
     let entered = Arc::new(AtomicUsize::new(0));
+    let acknowledgements = Arc::new(AtomicUsize::new(0));
     let stub = Stub {
         gate: Arc::clone(&gate),
         entered: Arc::clone(&entered),
+        acknowledgements: Arc::clone(&acknowledgements),
     };
     let (stop, stopped) = oneshot::channel::<()>();
     tokio::spawn(async move {
-        let _ = serve(listener, worker_service(stub), config, async {
+        let _ = serve(listener, seams(worker_service(stub)), config, async {
             let _ = stopped.await;
         })
         .await;
@@ -160,6 +178,7 @@ async fn serve_stub(config: GrpcConfig) -> Harness {
         url,
         gate,
         entered,
+        acknowledgements,
         _stop: stop,
     }
 }
@@ -327,4 +346,141 @@ async fn a_connection_beyond_the_cap_waits_for_a_place_instead_of_being_served()
     b.poll_tasks(PollTasksRequest::default())
         .await
         .expect("the connection that stayed is unaffected");
+}
+
+fn acknowledgement() -> sagat_api_grpc::pb::AcknowledgeTasksRequest {
+    sagat_api_grpc::pb::AcknowledgeTasksRequest::default()
+}
+
+/// Feature 006, Task 006-049 (`stream-completion.md`, "The server's acknowledgement", step 1): with the compiled minor raised
+/// to 1.8, four of a connection's 64 places are the acknowledgements': 64 transfers in flight on one connection take 60, and
+/// four acknowledgements on that connection are served beside them while the four other transfers wait for a place.
+#[tokio::test]
+async fn from_1_8_acknowledgements_find_a_place_behind_64_transfers_on_their_connection() {
+    let h = serve_stub_with(GrpcConfig::default(), |api| {
+        api.with_compiled_minor_for_tests(
+            sagat_application::worker::DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR,
+        )
+    })
+    .await;
+    let connection = client(&h.url).await;
+    let mut calls = tokio::task::JoinSet::new();
+    for _ in 0..64 {
+        let mut c = connection.clone();
+        calls.spawn(async move {
+            c.read_blob(sagat_api_grpc::pb::ReadBlobRequest::default())
+                .await
+                .map(|_| ())
+        });
+    }
+    entered(&h, 60).await;
+    for _ in 0..4 {
+        let mut c = connection.clone();
+        calls.spawn(async move { c.acknowledge_tasks(acknowledgement()).await.map(|_| ()) });
+    }
+    // the four acknowledgements enter on the places of the reserve while the transfers hold the other 60 (without the reserve
+    // the 64 transfers would hold every place and no acknowledgement would enter); the four transfers beyond 60 still wait
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while h.acknowledgements.load(Ordering::SeqCst) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("four acknowledgements served beside 60 transfers");
+    assert_eq!(
+        h.entered.load(Ordering::SeqCst),
+        64,
+        "60 transfers and 4 acknowledgements"
+    );
+    h.gate.add_permits(1000);
+    entered(&h, 68).await;
+    while let Some(call) = calls.join_next().await {
+        call.expect("the call's task").expect("served");
+    }
+}
+
+/// With the minor at 7, a start with the release-0.2 configuration (`concurrency_per_connection` 64) gives every class,
+/// `Acknowledge` included, every place of a connection: 64 acknowledgements are in flight on one connection at once.
+#[tokio::test]
+async fn below_1_8_every_class_has_every_place_of_a_connection() {
+    let h = serve_stub(GrpcConfig::default()).await;
+    let connection = client(&h.url).await;
+    let mut calls = tokio::task::JoinSet::new();
+    for _ in 0..64 {
+        let mut c = connection.clone();
+        calls.spawn(async move { c.acknowledge_tasks(acknowledgement()).await.map(|_| ()) });
+    }
+    entered(&h, 64).await;
+    h.gate.add_permits(1000);
+    while let Some(call) = calls.join_next().await {
+        call.expect("the call's task").expect("served");
+    }
+}
+
+/// A connection with more calls than its places and its streams (130 heartbeats parked on one connection) delays nobody
+/// else's: an acknowledgement on another connection, as a host of 1.8 sends it, reaches its handler, and the conformance
+/// platform's hook sees the two connections apart, by an ordinal and never an address (Task 006-058).
+#[tokio::test]
+async fn a_full_connection_never_delays_an_acknowledgement_on_another() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<(String, u64)>::new()));
+    let probe_seen = Arc::clone(&seen);
+    let h = serve_stub_with(GrpcConfig::default(), move |api| {
+        api.with_compiled_minor_for_tests(
+            sagat_application::worker::DELIVERY_ACKNOWLEDGEMENT_PROTOCOL_MINOR,
+        )
+        .with_connection_probe(Arc::new(move |method: &str, connection: u64| {
+            probe_seen.lock().expect("the probe's record").push((
+                method.rsplit('/').next().unwrap_or_default().to_owned(),
+                connection,
+            ));
+        }))
+    })
+    .await;
+    let busy = client(&h.url).await;
+    let mut calls = tokio::task::JoinSet::new();
+    for _ in 0..130 {
+        let mut c = busy.clone();
+        calls.spawn(async move { c.heartbeat(HeartbeatRequest::default()).await.map(|_| ()) });
+    }
+    // 60 places of the busy connection are the heartbeats'; the rest of the 130 wait for a place or a stream
+    entered(&h, 60).await;
+    let mut acknowledgements = client(&h.url).await;
+    let answered = tokio::spawn(async move {
+        acknowledgements
+            .acknowledge_tasks(acknowledgement())
+            .await
+            .map(|_| ())
+    });
+    // it reaches its handler, past every limit, within the acknowledgement's bound (3 s from its arrival)
+    tokio::time::timeout(Duration::from_secs(3), entered(&h, 61))
+        .await
+        .expect("served within the acknowledgement's bound");
+    h.gate.add_permits(1000);
+    answered.await.expect("the call's task").expect("served");
+    while let Some(call) = calls.join_next().await {
+        call.expect("the call's task").expect("served");
+    }
+    let seen = seen.lock().expect("the probe's record").clone();
+    let busy_connection: std::collections::BTreeSet<u64> = seen
+        .iter()
+        .filter(|(method, _)| method == "Heartbeat")
+        .map(|&(_, connection)| connection)
+        .collect();
+    let acknowledgement_connection: std::collections::BTreeSet<u64> = seen
+        .iter()
+        .filter(|(method, _)| method == "AcknowledgeTasks")
+        .map(|&(_, connection)| connection)
+        .collect();
+    assert_eq!(busy_connection.len(), 1, "{seen:?}");
+    assert_eq!(acknowledgement_connection.len(), 1, "{seen:?}");
+    assert!(
+        busy_connection.is_disjoint(&acknowledgement_connection),
+        "{seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|(method, _)| method == "Heartbeat")
+            .count(),
+        130
+    );
 }

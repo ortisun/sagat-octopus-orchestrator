@@ -42,7 +42,8 @@ impl std::fmt::Debug for pb::ResolvedSecret {
 }
 
 pub use blobs::{BLOB_CHUNK_BYTES, BlobTransfer};
-pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, serve, worker_service};
+pub use limits::ConnectionProbe;
+pub use server::{AdmissionProvider, GrpcConfig, TlsConfig, WorkerApi, serve, worker_service};
 pub use service::WorkerGrpc;
 pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
 pub use step_logs::{DEFAULT_STEP_LOG_TENANT_CALLS, StepLogAppender, StepLogBudgets};
