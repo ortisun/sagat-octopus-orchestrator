@@ -816,7 +816,8 @@ def mark_assignment_errors(src):
 # Feature 006, decisions D006-008, D006-092 and D006-093: the delivery probe and the commit probe hold a claim (the commit probe
 # inside its open run transaction, with the run's locks) until a test lets it go. They are for the tests only: no production
 # source may call them; the tests package and a crate's own test modules may.
-TEST_PROBE_CALL = re.compile(r"\.\s*(with_delivery_probe|with_commit_probe)\s*\(")
+# Task 006-049 adds the acknowledgement's hook that reads `synchronous_commit` back from its transaction.
+TEST_PROBE_CALL = re.compile(r"\.\s*(with_delivery_probe|with_commit_probe|synchronous_commit_for_tests)\s*\(")
 
 
 def test_probe_errors(root):
@@ -825,8 +826,9 @@ def test_probe_errors(root):
     for rel, text, masked, _ in production_sources(root):
         for m in TEST_PROBE_CALL.finditer(masked):
             errors.append(
-                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside the tests: the probe holds "
-                f"claims until a test releases them, and production never sets one (D006-093)"
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}` is called outside the tests: a test probe holds "
+                f"claims until a test releases them or reads a transaction's settings back, and production never calls one "
+                f"(D006-093, Task 006-049)"
             )
     return errors
 
