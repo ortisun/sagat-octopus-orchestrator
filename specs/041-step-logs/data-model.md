@@ -658,10 +658,44 @@ RETURNS TABLE (outcome text, kept integer, dropped_by_worker bigint,
                                          -- by the database; null exactly when path = none
                top_up boolean)           -- room is not null and room < sagat_quota_step_log_top_up_mark() (65,536):
                                          -- the store runs the top-up after the commit (decision D041-124)
-LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, public, pg_temp AS $$ … $$;
+LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$ … $$;
 REVOKE ALL ON FUNCTION sagat_step_log_carry(…) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION sagat_step_log_carry(…) TO sagat_app;
 ```
+
+As built by the migration `20270219000000_step_log_carry` (task T041-36, decision D041-155), the function is one of
+six, each `SECURITY INVOKER`, revoked from `PUBLIC`, executable by `sagat_app` only, and pinned to `search_path =
+pg_catalog, pg_temp` with every table and function of the schema named with `public.`:
+
+- `sagat_step_log_policy_fence_keys(tenant, namespace)` and `sagat_step_log_stream_lock_key(tenant, run, step,
+  attempt, generation)`: the keys of item 1. The ingest's T3 builds the same keys in Rust (`step_log_policy_fence_keys`,
+  `stream_lock_key`, decision D041-146 (3)); a test requires the two builders equal for the same inputs, the edges of
+  each part included.
+- `sagat_step_log_policies(tenant, namespace)`: the three resources of item 2, resolved as `effective_policy` resolves
+  them, with the platform's defaults and maxima of `QuotaResource`; the property test compares the values it plans with
+  against the domain's `resolve` on the same stored rows.
+- `sagat_step_log_carry_plan(…)`: item 5, the plan of `plan_batch` for a carry, in variables, with no statement for a
+  full carry (a mark-only carry counts its distinct sequences in one statement, since they may come in any order).
+- `sagat_step_log_carry_write(…)`: items 3, 4, 6 and 7, called as it is on the fast path and inside the block on the
+  slow path, and again by the block's handler with the block's mark-only reason.
+- `sagat_step_log_carry(…)`: item 0, items 1 and 2, the reservation, the write and the block.
+
+What the build settles that the text below leaves open:
+
+- Item 0 also refuses, with fixed texts, a full carry whose arrays differ in length, whose sequences are not strictly
+  increasing in 1 to 2^62 − 1, whose `p_highest` is below its last record, or one of whose sizes is not the octets of
+  its message, exception and fields (so that the stream's byte counters and the trigger's charge never disagree). A
+  mark-only carry's sequences may come in any order with duplicates, and only they are read.
+- The reservation is asked for every sent record's size plus 128 a row, plus 128 for a possible marker, as the text
+  says: a bound on what any plan of the carry can charge. A carry that can charge nothing is a mark-only carry or one
+  with no record; it takes neither the reservation nor the block. The new stream's plan is not used to decide it, since
+  the existing stream's plan can charge where the new stream's would not (a tenant allowance that the whole carry
+  exceeds and a remainder of it fits).
+- `path` is `refill` only when the block's write charged something; a block whose plan kept nothing (all duplicates)
+  returns `none` and a null `room`. On the fast path `room` is the reservation's room less the plan's charge, and CD's
+  inserted rows are checked equal to the plan's rows (an `internal_error` otherwise, which the store maps to
+  `StoreError::StepLogCarry`).
+- A new stream's `public_id` is `gen_random_uuid()`, and its `first_at` is the carry's time, as T9 sets it for a batch.
 
 Its body, each statement with a snapshot of its own (the function is `VOLATILE`, the transaction READ COMMITTED):
 
