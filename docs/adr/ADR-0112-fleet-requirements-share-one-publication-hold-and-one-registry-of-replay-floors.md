@@ -49,7 +49,8 @@ otherwise leave the operator unable to activate or remove any requirement, becau
 
 1. **The gate.** One transaction-scoped advisory lock on the fixed key `hashtextextended('sagat:platform_requirement_epoch:gate',
    0)` comes before the epoch in the registry's lock order. Every function that takes the epoch `FOR UPDATE` on the operator's
-   behalf (`platform_requirement_activate`, `platform_requirement_remove`, `platform_requirement_lock`) MUST first take the gate
+   behalf (`platform_requirement_activate`, `platform_requirement_remove`, `platform_requirement_lock`), and the automatic handover
+   (`schedule_trigger_handover_auto`, ADR-0091), which takes the epoch and then calls the activation, MUST first take the gate
    exclusively (`pg_advisory_xact_lock`); every function that waits for the epoch `FOR SHARE` (`platform_requirement_hold`,
    `instance_register`) MUST first take it shared (`pg_advisory_xact_lock_shared`). The lock manager queues a shared request behind
    a waiting exclusive one, so a hold or a registration that comes after the operator's command waits for it, and the command waits
@@ -87,11 +88,13 @@ otherwise leave the operator unable to activate or remove any requirement, becau
    capability-list test and its rule in `scripts/check-architecture.py` cover it, so a design that adds a capability restates four
    lists.
 
+The automatic handover must take the gate first, not only for fairness: it holds the epoch when it calls the activation, which now
+asks for the gate, so without the gate first it would wait for the gate while holding the epoch, and a registration or a hold that
+holds the gate shared and waits for the epoch would close a deadlock (found by the correctness review of 2026-11-27).
+
 What the gate does not cover, recorded as Gap 045-006 in `specs/045-activity-timeouts/research.md`: the beat of a process
 (`instance_heartbeat_reporting_change`) reads the epoch `FOR SHARE SKIP LOCKED` without the gate, because it never waits, so beats
-can still overlap an operator's wait; and the automatic handover's function takes the epoch `FOR UPDATE` without the gate, so it can
-wait for holds as the operator did before this amendment. Neither breaks a guarantee of this record: the first only lengthens a wait
-that the beat rate bounds, the second is a one-time job that retries.
+can still overlap an operator's wait. That breaks no guarantee of this record: it only lengthens a wait that the beat rate bounds.
 
 A role that may call `pg_advisory_xact_lock` (every role, by default) can take the gate itself. That gives the runtime role no new
 power: it can already hold the epoch for the length of a transaction through the hold or a registration, and it can already take the

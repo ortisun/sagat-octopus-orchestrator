@@ -17,8 +17,11 @@
 --    The three operator functions and the registration are rewritten in place with their bodies of `20270113000000` and the gate
 --    as their first lock; `CREATE OR REPLACE` keeps their owner and grants, and restates their configuration.
 --
--- Not covered (Gap 045-006): the beat (`instance_heartbeat_reporting_change`) reads the epoch FOR SHARE SKIP LOCKED and never waits,
--- and the automatic handover takes the epoch FOR UPDATE without the gate; neither breaks a guarantee of ADR-0112.
+-- The automatic handover (ADR-0091), which takes the epoch FOR UPDATE and then calls the activation, takes the gate exclusively
+-- first, so that no function waits for the gate while it holds the epoch.
+--
+-- Not covered (Gap 045-006): the beat (`instance_heartbeat_reporting_change`) reads the epoch FOR SHARE SKIP LOCKED without the gate,
+-- because it never waits; beats can still overlap an operator's wait, bounded by the beat rate.
 
 CREATE TABLE platform_requirement_floors (
     capability text         PRIMARY KEY,
@@ -63,7 +66,7 @@ DECLARE
     v_owner  oid;
 BEGIN
     SELECT p.pronargs, p.prorettype, p.proowner INTO v_args, v_result, v_owner FROM pg_proc p WHERE p.oid = NEW.holds;
-    IF v_args <> 0 OR v_result <> 'pg_catalog.bool'::regtype
+    IF NOT FOUND OR v_args <> 0 OR v_result <> 'pg_catalog.bool'::regtype
        OR v_owner <> (SELECT p.proowner FROM pg_proc p WHERE p.oid = 'public.platform_requirement_floor()'::regprocedure) THEN
         RAISE EXCEPTION 'a floor names a function with no argument, a boolean result and the owner of platform_requirement_floor()'
             USING ERRCODE = 'invalid_parameter_value';
@@ -171,6 +174,90 @@ BEGIN
     VALUES ('REMOVED', p_capability, v_kinds, p_actor, session_user, v_epoch, clock_timestamp());
     PERFORM set_config('sagat.registry_change', '', true);
     RETURN QUERY SELECT 'REMOVED'::text, v_epoch;
+END;
+$$;
+
+-- The automatic handover (ADR-0091) takes the epoch FOR UPDATE and then calls platform_requirement_activate, which now takes the
+-- gate: without the gate first it would wait for the gate while holding the epoch, which deadlocks with a registration or a hold
+-- that holds the gate shared and waits for the epoch. So it takes the gate exclusively first. Body otherwise that of
+-- `20270117000000`.
+CREATE OR REPLACE FUNCTION schedule_trigger_handover_auto(p_run uuid)
+RETURNS TABLE (out_outcome text, out_reason text, out_epoch bigint, out_live integer, out_tenants integer)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_epoch   bigint;
+    v_state   text;
+    v_now     timestamptz;
+    v_actor   text;
+    v_tenants integer;
+    a         public.schedule_trigger_handover_attempts%ROWTYPE;
+    c         record;
+    r         record;
+BEGIN
+    IF session_user::text <> 'sagat_handover' THEN
+        RAISE EXCEPTION 'the automatic handover is made only by the role sagat_handover, logged in as itself'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF p_run IS NULL THEN
+        RAISE EXCEPTION 'the automatic handover names its run' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    v_actor := 'system:handover-job:' || p_run::text;
+    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('sagat:platform_requirement_epoch:gate', 0));
+    SELECT e.epoch INTO STRICT v_epoch FROM public.platform_requirement_epoch e FOR UPDATE;
+    SELECT h.state INTO STRICT v_state FROM public.schedule_trigger_handover h;
+    IF v_state = 'HANDED_OVER' THEN
+        RETURN QUERY SELECT 'ALREADY_HANDED_OVER'::text, NULL::text,
+                            (SELECT h.changed_epoch FROM public.schedule_trigger_handover h), 0, 0;
+        RETURN;
+    END IF;
+    IF v_state <> 'LEGACY' THEN
+        RETURN QUERY SELECT 'UNKNOWN_STATE'::text, NULL::text, v_epoch, 0, 0;
+        RETURN;
+    END IF;
+    SELECT * INTO a FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run;
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'FIRST_HORIZON'::text, v_epoch, 0, 0;
+        RETURN;
+    END IF;
+    v_now := clock_timestamp();
+    IF v_now >= a.deadline THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'DEADLINE'::text, v_epoch, 0, 0;
+        RETURN;
+    END IF;
+    IF v_now < a.first_round_at + a.horizon THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'FIRST_HORIZON'::text, v_epoch, 0, 0;
+        RETURN;
+    END IF;
+    -- too few stable rounds, or a stable count from long ago: the fleet has not been seen still, now
+    IF a.stable_count < a.stable_wanted OR a.last_stable_at IS NULL
+       OR a.last_stable_at <= v_now - interval '12 seconds' THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'FLEET_CHANGING'::text, v_epoch, 0, 0;
+        RETURN;
+    END IF;
+    PERFORM public.schedule_trigger_handover_lock();
+    PERFORM 1 FROM public.schedule_trigger_handover h FOR UPDATE;
+    SELECT * INTO STRICT c
+      FROM public.schedule_trigger_handover_conditions(a.horizon, public.schedule_trigger_handover_min_live(a.min_live));
+    IF c.out_reason IS NOT NULL THEN
+        RETURN QUERY SELECT 'REFUSED'::text, c.out_reason, v_epoch, c.out_live, 0;
+        RETURN;
+    END IF;
+    IF a.stable_set IS DISTINCT FROM c.out_set THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'FLEET_CHANGING'::text, v_epoch, c.out_live, 0;
+        RETURN;
+    END IF;
+    SELECT * INTO STRICT r FROM public.platform_requirement_activate('schedules-v1', ARRAY['EXECUTION_ENGINE'], v_actor);
+    IF r.out_outcome = 'INSTANCES_LACK_CAPABILITY' THEN
+        RETURN QUERY SELECT 'REFUSED'::text, 'ENGINE_LACKS_CAPABILITY'::text, v_epoch, c.out_live, 0;
+        RETURN;
+    END IF;
+    IF r.out_outcome = 'KINDS_DIFFER' THEN
+        RETURN QUERY SELECT 'KINDS_DIFFER'::text, NULL::text, v_epoch, c.out_live, 0;
+        RETURN;
+    END IF;
+    v_tenants := public.schedule_trigger_handover_record(v_actor, 'AUTOMATIC', a.horizon);
+    RETURN QUERY SELECT 'HANDED_OVER'::text, NULL::text, (SELECT h.changed_epoch FROM public.schedule_trigger_handover h),
+                        c.out_live, coalesce(v_tenants, 0);
 END;
 $$;
 

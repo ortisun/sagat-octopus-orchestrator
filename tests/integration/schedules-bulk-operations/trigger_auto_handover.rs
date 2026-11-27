@@ -1086,7 +1086,9 @@ async fn an_engine_registering_without_the_capability_during_the_check_both_orde
     );
     assert_eq!(fleet.handover_row().await.0, "LEGACY");
 
-    // the wrapper first: held on the triggers' table with the epoch taken, the registration waits for it and is then refused
+    // the wrapper first: held on the triggers' table with the registry's gate and the epoch taken (ADR-0112's amendment: the gate
+    // first, so the wrapper never waits for the gate while it holds the epoch), the registration waits for the gate and is then
+    // refused
     let db = migrated_db().await;
     let fleet = Fleet::on(&db).await;
     fleet.ready(1).await;

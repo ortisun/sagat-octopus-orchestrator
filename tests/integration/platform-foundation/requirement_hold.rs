@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use sagat_application::error::StoreError;
 use sagat_application::instances::{Activated, Activation, Capability, InstanceKind, Removed};
 use sagat_domain::identity::Subject;
-use sagat_infra_postgres::{OperatorBounds, PgInstanceStore, REQUIREMENT_BUSY, hold_requirement};
+use sagat_infra_postgres::{
+    HOLD_LOCK_TIMEOUT, OperatorBounds, PgInstanceStore, REQUIREMENT_BUSY, hold_requirement,
+};
 use sqlx::PgPool;
 use tokio::sync::oneshot;
 
@@ -261,8 +263,8 @@ async fn the_hold_is_the_text_of_the_architecture_decision() {
     assert_eq!(words(&source), words(&block[start..end]));
 }
 
-/// ADR-0112's amendment, decisions 1 and 2: the gate comes first, exclusive in the three functions that take the epoch for the
-/// operator and shared in the two that wait for it to share it.
+/// ADR-0112's amendment, decisions 1 and 2: the gate comes first, exclusive in the four functions that take the epoch `FOR UPDATE`
+/// (the operator's three and the automatic handover, which then calls the activation) and shared in the two that wait to share it.
 #[tokio::test]
 async fn the_gate_comes_before_the_epoch_in_every_function_that_waits_for_it() {
     let db = migrated_db().await;
@@ -279,6 +281,10 @@ async fn the_gate_comes_before_the_epoch_in_every_function_that_waits_for_it() {
         (
             "platform_requirement_hold(text)",
             "pg_advisory_xact_lock_shared(",
+        ),
+        (
+            "schedule_trigger_handover_auto(uuid)",
+            "pg_advisory_xact_lock(",
         ),
         (
             "instance_register(uuid, bytea, text, text, text, text[])",
@@ -430,7 +436,12 @@ async fn a_hold_that_waits_for_a_removal_finds_no_requirement() {
             .await
             .expect("pid");
         let _ = pid_sender.send(own);
-        hold_requirement(&mut tx, HELD).await.expect("the hold")
+        // the function itself, with no lock bound: the order is what is tested, not the bound (it has its own test)
+        sqlx::query_scalar::<_, bool>("SELECT platform_requirement_hold($1)")
+            .bind(HELD.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the hold")
     });
     let pid = pid.await.expect("the hold's backend");
     until(
@@ -447,6 +458,36 @@ async fn a_hold_that_waits_for_a_removal_finds_no_requirement() {
         !hold.await.expect("the hold ended"),
         "no requirement: the publication is refused"
     );
+}
+
+/// Design 054, Technical Plan 15: a hold that cannot get the registry within its bound is `UNAVAILABLE` with the reason
+/// `REQUIREMENT_BUSY`, and gives up within one bound per lock it waits for.
+#[tokio::test]
+async fn a_hold_that_waits_past_its_bound_is_refused_requirement_busy() {
+    let db = migrated_db().await;
+    floor_read_from_a_table(&db.pool).await;
+    record_for_both(&db.pool, HELD).await;
+    let mut operator = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT platform_requirement_lock()")
+        .execute(&mut *operator)
+        .await
+        .expect("the operator holds the registry");
+    let runtime = db.runtime_pool().await;
+    let mut publication = runtime.begin().await.expect("a transaction");
+    let began = Instant::now();
+    let refused = hold_requirement(&mut publication, HELD)
+        .await
+        .expect_err("refused within its bound");
+    let waited = began.elapsed();
+    match &refused {
+        StoreError::Unavailable { detail } => {
+            assert!(detail.starts_with(REQUIREMENT_BUSY), "{detail}");
+        }
+        other => panic!("expected UNAVAILABLE REQUIREMENT_BUSY, got {other:?}"),
+    }
+    // one bound for the gate, which the operator holds; ten bounds would mean the hold has none
+    assert!(waited < HOLD_LOCK_TIMEOUT * 10, "{waited:?}");
+    operator.rollback().await.expect("rolled back");
 }
 
 /// Task 054-18: a registered floor refuses the removal while it holds and allows it once it clears.
@@ -683,6 +724,10 @@ struct Relay {
     holds: usize,
     /// Holds requested after the command was seen waiting and granted before it committed (they read the old epoch).
     granted_ahead: usize,
+    /// Whether the command was seen waiting for a lock: a command that never waits proves nothing.
+    command_waited: bool,
+    /// Holds requested while the command was seen waiting and had not returned.
+    requested_while_waiting: usize,
     relay_lasted: Duration,
     command: Result<(), String>,
     command_took: Duration,
@@ -712,7 +757,7 @@ where
         (outcome, began.elapsed())
     });
     // the command waits for the publication that holds the epoch
-    until(
+    let command_waited = until(
         "the command waits for a lock",
         Duration::from_secs(5),
         || {
@@ -728,15 +773,20 @@ where
                 .fetch_one(&monitor)
                 .await
                 .expect("pg_stat_activity");
-                (waiting || finished).then_some(())
+                (waiting || finished).then_some(waiting)
             }
         },
     )
     .await;
     let mut granted_ahead = 0;
+    let mut requested_while_waiting = 0;
     loop {
+        let pending = !command.is_finished();
         let mut next = request_hold(&publications, true).await;
         holds += 1;
+        if command_waited && pending {
+            requested_while_waiting += 1;
+        }
         // the next publication is granted, or seen waiting, before the current one commits
         until(
             "the next hold is granted or waits",
@@ -769,6 +819,8 @@ where
     Relay {
         holds,
         granted_ahead,
+        command_waited,
+        requested_while_waiting,
         relay_lasted,
         command: outcome,
         command_took,
@@ -776,12 +828,19 @@ where
 }
 
 fn assert_the_operator_is_not_starved(relay: &Relay) {
+    // the relay runs until the command returns and for at least four times its lock bound (the loop's exit); what is asserted
+    // is that the command did wait for the relay, and that holds kept being requested while it waited
     assert!(
-        relay.relay_lasted >= Duration::from_millis(8_000),
-        "the relay held the epoch for at least four times the command's lock bound: {:?}",
-        relay.relay_lasted
+        relay.command_waited,
+        "the command was seen waiting for a lock (relay of {} holds over {:?})",
+        relay.holds, relay.relay_lasted
     );
-    assert!(relay.holds > 4, "the relay ran: {} holds", relay.holds);
+    assert!(
+        relay.requested_while_waiting > 0,
+        "holds were requested while the command waited: {} of {}",
+        relay.requested_while_waiting,
+        relay.holds
+    );
     assert_eq!(
         relay.granted_ahead, 0,
         "no hold requested after the command waited is granted before it commits ({} of {} were; the command: {:?} after {:?})",

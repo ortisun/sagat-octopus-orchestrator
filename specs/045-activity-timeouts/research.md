@@ -199,6 +199,22 @@ place. Every owner question below was decided under the owner's delegation (Owne
   contract that no task of this design or of design 054 names. Delegate (Owner decision 2026-11-24-4): left to a task of its own;
   until then two triggers guard `platform_requirements` removals, each for its own capabilities, and neither replaces the other.
 
+- **Decision 045-034 — The correctness review of the prerequisite** (2026-11-27, `correctness-reviewer` on the slice of Task 045-21).
+  Blocker 1 (the automatic handover took the epoch and then asked for the gate through the activation, a deadlock with a
+  registration or a hold): fixed, the handover takes the gate first (migration `20270218000000`, the gate-order test lists it, and
+  `integration_schedules_bulk_operations::trigger_auto_handover::an_engine_registering_without_the_capability_during_the_check_both_orders`
+  runs the held order). Major 1 (the relay tests passed if the command never waited; the 8,000 ms assertion could not fail): fixed,
+  the relay asserts the command was seen waiting and that holds were requested while it waited; the 8,000 ms stays the loop's exit.
+  Major 2 (no test of `REQUIREMENT_BUSY`; the bound is per lock, not per call): fixed, a test of the refusal within its bound and the
+  helper's documentation. Nits: the helper takes the publication's transaction (fixed); the floor check admitted an oid with no
+  function (fixed, `IF NOT FOUND`); the down migration's bodies are compared by a probe that hashed the five functions' source,
+  configuration and grants before the migration and after its rollback (equal), delegate (Owner decision 2026-11-24-4), no test of its
+  own, as for the other registry migrations; `CAPABILITY_NOT_ACTIVE` is the publication's refusal, built with Task 045-5 and Task
+  054-5, delegate; the relay rotates four connections of which at most two hold at once, which is the relay Task 045-21 describes
+  (session k commits once session k + 1 is granted or waits), delegate; the 2,000 ms bound includes the harness's polling, kept,
+  because it is the criterion Owner decision 2026-11-26-564 states; the ordering test of a hold after a removal calls the function with
+  no bound (fixed). The lock-order harness (`tests/support/lock_order.rs`) has no slot for the gate: Gap 045-008.
+
 ## Notes for other features (2026-11-26)
 
 - **For feature 022 (relayed by the coordinating session, which owns 022):** in FR-022-036, after "a concurrency key with
@@ -224,19 +240,24 @@ place. Every owner question below was decided under the owner's delegation (Owne
 - **Gap 045-002 — The start deadline as an urgency hint.** Feature 019's priority order could serve sooner a step whose start deadline
   is close; not in 0.3.0, recorded for 019.
 - **Gap 045-004 — Whether the minimum heartbeat timeout should be 18,000 ms.** Closed 2026-11-24 by Decision 045-024: it is.
-- **Gap 045-006 — Two epoch lockers stay outside the gate** (2026-11-27, ADR-0112 amendment). The beat of a process
+- **Gap 045-006 — The beat stays outside the gate** (2026-11-27, ADR-0112 amendment; revised the same day after the correctness
+  review, Blocker 1: the automatic handover is no longer outside it, see Decision 045-034). The beat of a process
   (`instance_heartbeat_reporting_change`) takes the epoch `FOR SHARE SKIP LOCKED` without the gate, because it must never wait; beats
   can therefore still overlap an operator's wait for the epoch, bounded by the beat rate (one beat per process every few seconds,
-  at most 1,000 registered processes). The automatic handover's function (`20270117000000_trigger_handover_automatic`) takes the epoch
-  `FOR UPDATE` without the gate, so it can wait for holds as the operator did before the amendment; it is a one-time job that retries.
-  A follow-up can give the beat `pg_try_advisory_xact_lock_shared` (which never waits and fails while the operator waits or holds)
-  and the handover the exclusive gate.
+  at most 1,000 registered processes). A follow-up can give the beat `pg_try_advisory_xact_lock_shared`, which never waits and fails
+  while the operator waits or holds.
 - **Gap 045-007 — The design texts of Task 045-21 are not yet revised** (2026-11-27). Task 045-21 also asks for a re-approved revision
   of Technical Plan 13 and Tasks 045-5 and 045-6 (and design 054's Technical Plan 15 and Task 054-18 follow, its Task 054-20):
   the hold's body and the gate of ADR-0112's amendment, the floor as a row of `platform_requirement_floors` with a function on
   `workflow_versions.activity_timeouts_level`, and the one refusal `CAPABILITY_NOT_ACTIVE`. A change to an approved design makes it a
   draft until its re-review, so it is a documents pull request of its own, before Task 045-5; the code of the prerequisite follows
   ADR-0112 as amended, which both designs cite.
+- **Gap 045-008 — A publication's hold against the operator's step** (2026-11-27, correctness review, Nit 3). The hold is a
+  publication's last statement, after it wrote its rows (`workflow_triggers` among them); an operator's step that locks such a table
+  under the gate and the epoch (the handover's `LOCK TABLE workflow_triggers`) waits for the publication, which waits for the gate: a
+  cycle that the hold's 1 s bound or the deadlock detector cuts, refusing one side. Task 045-5 decides it before any publication calls
+  the hold (the hold before the version's writes, or the step outside the publication's tables), and the lock-order harness gains a
+  slot for the gate.
 - **Gap 045-003 — Timeouts on the managed runner nodes** (database, lake). Their runners have their own limits; a schedule-to-start for
   a runner fleet that is down is useful and is left for a later design.
 

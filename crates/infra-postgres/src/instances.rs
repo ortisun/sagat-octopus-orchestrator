@@ -466,7 +466,7 @@ pub async fn requirement_recorded(
     .map_err(store_error)
 }
 
-/// The longest a publication waits for the publication hold of a fleet requirement (ADR-0112 decision 1): a removal or an
+/// The longest a publication waits for each lock of the publication hold of a fleet requirement (ADR-0112 decision 1): a removal or an
 /// activation of a requirement holds the gate and the epoch for at most its own bounds ([`OperatorBounds`]), and a publication
 /// that waits longer is refused [`REQUIREMENT_BUSY`] rather than holding the author's request.
 pub const HOLD_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -480,17 +480,20 @@ pub const REQUIREMENT_BUSY: &str = "REQUIREMENT_BUSY";
 /// commit, and answers whether `capability` is recorded for both control planes and engines. `false` is the publication's
 /// refusal `CAPABILITY_NOT_ACTIVE` with the capability named, which is the caller's to give.
 ///
-/// The wait is bounded by [`HOLD_LOCK_TIMEOUT`], set just before the hold and set back to the transaction's own value after it,
-/// so no earlier statement of the publication is limited by it.
+/// Each lock wait of the hold (the gate, then the epoch) is bounded by [`HOLD_LOCK_TIMEOUT`], set just before the hold and set
+/// back to the transaction's own value after it, so no earlier statement of the publication is limited by it. It takes the
+/// publication's transaction, not a connection: on a connection with no transaction open, the bound and the locks would end
+/// with the statement and the answer would protect nothing.
 ///
 /// # Errors
 /// [`StoreError::Unavailable`] with [`REQUIREMENT_BUSY`] when the wait reached its bound (an operator's command holds the
 /// registry; a retry cures it); [`StoreError::Internal`] when no floor is registered for `capability`, which is a defect of
 /// the build (the hold answers only for a capability that has a floor); otherwise the store's.
 pub async fn hold_requirement(
-    conn: &mut sqlx::PgConnection,
+    publication: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     capability: Capability,
 ) -> Result<bool, StoreError> {
+    let conn: &mut sqlx::PgConnection = publication;
     let previous: String = sqlx::query_scalar("SELECT current_setting('lock_timeout')")
         .fetch_one(&mut *conn)
         .await
