@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:sagat:draft:024:workflow-data",
   "title": "Feature 024 draft fragment of workflow.schema.json (additive v1, ADR-0032)",
-  "description": "Draft $defs merged by T024-008 into specs/001-platform-foundation/contracts/workflow.schema.json. The node union gains dataTransform, dataQuery and dataPublish; the closed database node gains the optional property assets. Data nodes, like database nodes, are allowed only in the root graph of a definition without forEach, while, repeatUntil, continueAsNew or chainPolicy, and outside saga bodies. Publication additionally checks the enabled capability, the asset catalog, producer bindings, contract compatibility and root-only placement. References to #/$defs/nodeId, #/$defs/expression and #/$defs/databaseParameter name the canonical definitions.",
+  "description": "Draft $defs merged by T024-008 into specs/001-platform-foundation/contracts/workflow.schema.json. The node union gains dataTransform, dataQuery and dataPublish; the closed database node and the closed icebergWrite node (feature 035) gain the optional property assets (databaseAssets). Data nodes, like database nodes, are allowed only in the root graph of a graph-model definition without forEach, while, repeatUntil, continueAsNew or chainPolicy, outside saga bodies, and declare no destinations. Publication additionally checks the instance-registry capability data-pipelines-v1 (refused VALIDATION_FAILED reason DATA_PIPELINES_NOT_ENABLED until it is recorded), the asset catalog, producer bindings, contract compatibility and root-only placement, and that a node names each output asset and each input alias at most once (VALIDATION_FAILED reason DATA_NODE_SCOPE; JSON Schema uniqueItems cannot express a unique property, so publication checks it). References to #/$defs/nodeId, #/$defs/expression and #/$defs/databaseParameter name the canonical definitions. Revised 2026-11-26 against develop at e5bda041, and 2026-11-27 after the correctness review (Decision 024-016).",
   "$defs": {
     "assetRef": {
       "type": "object",
@@ -42,11 +42,11 @@
         },
         "from": {
           "$ref": "#/$defs/nodeId",
-          "description": "With asset: read the snapshot staged by this earlier dataTransform node of the same run instead of the published one; must be a predecessor on every path; resolves only an AUDITED or PUBLISHED snapshot (a quarantined one fails DATA_INPUT_QUARANTINED)."
+          "description": "With asset: read the snapshot this earlier dataTransform node of the same run committed in its successful completion (in a run created by an 018 reset, the snapshot its restored data.snapshot_committed names) instead of the published one; must be a predecessor on every path; resolves only an AUDITED or PUBLISHED snapshot (a quarantined one fails DATA_INPUT_QUARANTINED; an ABANDONED or RETIRED one, unreachable while the run pins it, fails DATA_CONFIGURATION_INVALID)."
         },
         "step": {
           "$ref": "#/$defs/nodeId",
-          "description": "Ingestion: read the committed output of this earlier step of the same run, either a 017 database result (staged as a typed table) or a step-output blob of type application/vnd.apache.parquet (verified like a part). Must be a predecessor on every path; excludes asset and from."
+          "description": "Ingestion: read the committed output of this earlier step of the same run, either a 017 database result (staged as a typed table) or a step-output blob of type application/vnd.apache.parquet (verified like a part). Must be a predecessor on every path; excludes asset and from. In a dataQuery a step source MUST NOT be a 017 database step (publication refuses it, VALIDATION_FAILED reason DATA_NODE_SCOPE, so a database result keeps the 017 database:result:read audience); any other step source counts as pii unless the source step's output is a feature 016 carrier whose pinned schema declares a level for every field (FR-024-016, FR-024-029)."
         }
       },
       "oneOf": [
@@ -123,7 +123,7 @@
     "dataLimits": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Author may lower, never raise, the effective ceilings of the plan.",
+      "description": "Author may lower, never raise, the effective ceilings of the plan. The data runner sends the data-mode sandbox runner only the smallest configured budget class (small, large) that covers memoryBytes, cpus, spillBytes and snapshotBytes (Architecture decision 0079 rule 5: a request names a class, never a limit); the values themselves are enforced in software below the class budget (DuckDB memory_limit, staged and streamed bytes). Publication refuses limits no configured class covers.",
       "properties": {
         "inputBytes": {
           "type": "integer",
@@ -206,7 +206,7 @@
             "name",
             "version"
           ],
-          "description": "polars only: a published feature-005 script version built for the python-data runtime; pinned at publication.",
+          "description": "polars only: a published script version of language python-data (reserved by feature 023) whose artifact is design 046's bundle version 5 with the version's own lock (ecosystem pypi), pinned at publication. Polars, PyArrow and any library come from its signed read-only layer; there is no platform catalog (Owner decision 2026-11-26-162).",
           "properties": {
             "name": {
               "type": "string",
@@ -234,6 +234,7 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 8,
+          "description": "Each output names a different asset (publication refuses a repeated asset name, VALIDATION_FAILED reason DATA_NODE_SCOPE).",
           "items": {
             "$ref": "#/$defs/dataOutput"
           }
@@ -248,7 +249,8 @@
           "type": "integer",
           "minimum": 1000,
           "maximum": 3600000,
-          "default": 600000
+          "default": 900000,
+          "description": "Lease deadline of the whole attempt: staging, transform, upload, read-back, audit and report. The transform's wall time (default 10 minutes) is bounded by what is left after limits.auditTimeoutMs and a fixed staging allowance; publication refuses a value that leaves the transform less than 60 seconds."
         },
         "next": {
           "type": "string"
@@ -299,7 +301,7 @@
         "inputs",
         "statement"
       ],
-      "description": "Data node: one DuckDB SELECT over pinned inputs, run in the data sandbox as sagat.data.query, writing nothing. Its output is the 017 typed-cell result shape, inline and at most 256 KiB, and a 016 classification carrier whose platform-derived schema carries the highest level among the pinned input columns. Root-only like dataTransform. Not a database node and not served by the 017 result view.",
+      "description": "Data node: one DuckDB SELECT over pinned inputs, run in the data sandbox as sagat.data.query, writing nothing. Its output is the 017 typed-cell result shape, inline and at most 256 KiB, and a 016 classification carrier whose platform-derived schema carries the highest level among the pinned inputs: an asset input at the highest level of its pinned columns, a step source at pii unless its source output is a 016 carrier declaring a level for every field. A step source that is a 017 database step is refused at publication (DATA_NODE_SCOPE). Root-only like dataTransform. Not a database node and not served by the 017 result view.",
       "properties": {
         "id": {
           "$ref": "#/$defs/nodeId"
@@ -359,7 +361,7 @@
         "from",
         "asset"
       ],
-      "description": "Engine node, no worker: compare-and-set of the asset pointer to the snapshot the from node staged, in the reducer transaction. Already current is success; a quarantined or missing snapshot fails DATA_AUDIT_FAILED / DATA_CONFIGURATION_INVALID.",
+      "description": "Engine node, no worker: compare-and-set of the asset pointer to the snapshot the from node committed in its successful completion (in a run created by an 018 reset, the snapshot its restored data.snapshot_committed names), in the reducer transaction. The producer binding is checked against the from node. Already current is success; a quarantined or missing snapshot fails DATA_AUDIT_FAILED / DATA_CONFIGURATION_INVALID; an ABANDONED snapshot is stale and follows onStale (DATA_PUBLISH_STALE or skip). Its output document is a closed protected record of at most 4 KiB.",
       "properties": {
         "id": {
           "$ref": "#/$defs/nodeId"
@@ -391,7 +393,7 @@
     "databaseAssets": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Optional property assets of the database node: declared lineage to external assets. A declared write is accepted at publication only if this node is the external asset's producer and uses its connection; a successful step then records one observation per written asset in its completion transaction. Never inferred from SQL.",
+      "description": "Optional property assets of the database node and of the icebergWrite node (feature 035): declared lineage to external assets. A declared write is accepted at publication only if this node is the external asset's producer and uses its connection (a SQL connection for database, an iceberg connection for icebergWrite); a successful step then records one observation per written asset in its completion transaction; an unknown or failed outcome records none. Never inferred from SQL.",
       "properties": {
         "reads": {
           "type": "array",

@@ -6,8 +6,10 @@ info:
     Draft fragment merged by T024-008 into specs/001-platform-foundation/contracts/events.asyncapi.yaml
     under the growth rule of docs/event-schema-evolution.md (minor version bump; new message; enum
     values appended; nothing removed or made required). The baseline events.baseline.json is
-    regenerated only after reading its diff. Payloads are metadata only: no snapshot content, no SQL,
-    no locator, no credential.
+    regenerated only after reading its diff. Payloads are metadata only: no snapshot content, no column
+    value, no SQL, no locator, no credential, so a webhook delivery of this message sends nothing that
+    the uniform pii-egress rule (Owner question 1081, Decision 1617) governs; asset names and counts are
+    internal metadata. Revised 2026-11-26 against develop at e5bda041.
 channels:
   dataAssetPublished:
     address: webhook-subscriptions
@@ -38,7 +40,9 @@ components:
           X-Octopus-Schema-Version: {type: string, const: '1'}
       payload:
         type: object
-        additionalProperties: true
+        # Closed (FR-024-027): the platform writes exactly these members, and the inbox CHECK bounds
+        # the stored document to 1 KiB. A later member is added by a schema revision, never by a writer.
+        additionalProperties: false
         required: [type, tenantId, namespaceId, assetName, snapshotId, pointerVersion, origin, publishedAt]
         properties:
           type: {type: string, const: data.asset.published}
@@ -54,7 +58,7 @@ components:
           rowCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
           byteCount: {type: string, pattern: '^(0|[1-9][0-9]{0,18})$'}
           publishedAt: {type: string, format: date-time}
-          traceId: {type: string}
+          traceId: {type: string, pattern: '^[0-9a-f]{32}$'}
     OpsAlertKindAdditions:
       name: ops.alert.fired / ops.alert.resolved (kind enum growth)
       title: Two alert kinds appended to the existing alert payload enum
