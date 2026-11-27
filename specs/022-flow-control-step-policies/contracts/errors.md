@@ -41,14 +41,15 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | A publication approval or an approval decision by a subject whose only role is `RunRecovery` (added 2026-11-25, decision D022-244) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_APPROVE` | no |
 | A redrive of a dispatch by a `RunRecovery` subject (added 2026-11-25, decision D022-266) | 403 | `FORBIDDEN` | `RECOVERY_ROLE_MAY_NOT_REDRIVE` | no |
 | Any route called by a `RunRecovery` subject outside the namespaces it is bound to (added 2026-11-25, decision D022-266) | 404 | `NOT_FOUND` | — (opaque) | no |
-| *Revised 2026-11-26 (decisions D022-272, D022-275; reworded D022-293):* the row above is answered by the principal's scope check, after the role check of the operation's permissions (a `403` for a permission the role does not hold) and ~~before every other refusal~~ before every refusal that depends on the addressed resource (reworded 2026-11-27, D022-306: a check of the body's shape that does not depend on the namespace may come first), `RECOVERY_ROLE_MAY_NOT_REDRIVE` included; audited `run_recovery.namespace_denied` and counted, with the same body and the same work on the response path as for an identifier that does not exist (D022-289, D022-294); a subject with no binding row is bound to no namespace | 404 | `NOT_FOUND` | — (opaque) | no |
+| *Revised 2026-11-26 (decisions D022-272, D022-275; reworded D022-293):* the row above is answered by the principal's scope check, after the role check of the operation's permissions (a `403` for a permission the role does not hold) and ~~before every other refusal~~ before every refusal that depends on the addressed resource (reworded 2026-11-27, D022-306: a check of the body's shape that does not depend on the namespace may come first), `RECOVERY_ROLE_MAY_NOT_REDRIVE` included; audited `run_recovery.namespace_denied` and counted, with the same body and the same work on the response path as for an identifier that does not exist (D022-289, D022-294; since 2026-11-27, D022-316, the record is written off the response path only when the resource exists in the tenant outside the scope, never for a miss); a subject with no binding row is bound to no namespace | 404 | `NOT_FOUND` | — (opaque) | no |
 | `bindRunRecovery` while a concurrent change of the subject's role has committed (added 2026-11-26, decision D022-286; the bind reads the role under the membership's lock, and ~~a role change removes the subject's bindings~~ since 2026-11-27 a role change is refused while the subject has a binding and a bind for a subject of another role violates `run_recovery_namespaces_membership_fk`, D022-298) | 422 | `VALIDATION_FAILED` | `NOT_A_RECOVERY_SUBJECT` | no |
 | A write (start, reset, rerun, a command on a run) by a `RunRecovery` subject whose binding was revoked after the request was authenticated (added 2026-11-26, decision D022-277; the slot-4a read finds no row) | 404 | `NOT_FOUND` | — (opaque) | no |
 | A payload read by a `RunRecovery` subject whose binding was revoked before the disclosure transaction (added 2026-11-27, decision D022-302; the transaction's read of the binding finds no row; nothing disclosed) | 404 | `NOT_FOUND` | — (opaque) | no |
-| A route of a namespace-scoped permission that a `RunRecovery` principal reaches without a namespace (added 2026-11-26, decision D022-272: a defect the battery catches, never a contract; fail closed) | 403 | `FORBIDDEN` | — | no |
+| A route of a namespace-scoped permission that a `RunRecovery` principal reaches without a namespace (added 2026-11-26, decision D022-272: a defect the battery catches, never a contract; fail closed; since 2026-11-27 the conversion of `IdentityError::NamespaceScopeRequired` is an arm of an exhaustive match, never the `422` of a wildcard, decision D022-315) | 403 | `FORBIDDEN` | — | no |
 | `bindRunRecovery` for a subject that is not a member of the tenant with the role `run-recovery` (added 2026-11-26, decision D022-274) | 422 | `VALIDATION_FAILED` | `NOT_A_RECOVERY_SUBJECT` | no |
 | `bindRunRecovery` before `failure-handler-v1` is activated (added 2026-11-26, decisions D022-274, D022-276) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
 | `unbindRunRecovery` with no binding; any of the three binding operations on a namespace of another tenant (added 2026-11-26, decision D022-274) | 404 | `NOT_FOUND` | — (opaque) | no |
+| `bindRunRecovery` whose namespace is deleted while the bind runs (added 2026-11-27 after the fourth re-reads, decision D022-323: the insert violates `run_recovery_namespaces_namespace_fk`; the bind maps SQLSTATE `23503` by constraint name, the membership key to `NOT_A_RECOVERY_SUBJECT`, any other name to an internal error) | 404 | `NOT_FOUND` | — (opaque) | no |
 | A binding operation without `membership:manage` (added 2026-11-26, decision D022-274) | 403 | `FORBIDDEN` | — | no |
 | A reset or rerun under a handler tree (its source a handler-tree run, or its principal `RunRecovery`) of a definition that continues as new (added 2026-11-26, decision D022-279); since 2026-11-27 also a start whose principal holds `RunRecovery` (decision D022-310) | 422 | `VALIDATION_FAILED` | `CONTINUE_AS_NEW_REFUSED` | no |
 | A stop request (cancellation) of a run whose handler phase is draining (added 2026-11-25, decision D022-261; as a second stop today) | 409 | `CONFLICT` | `STATE_CONFLICT` | no |
@@ -68,11 +69,15 @@ nothing. Switching the capability off refuses nothing: every `RunRecovery` subje
 `404` row above), and its rows are kept.
 
 *Added 2026-11-27 (decisions D022-298, D022-299): provisioning, outside the tenant API.* A change of the role of a
-member that still has a `RunRecovery` binding violates `run_recovery_namespaces_membership_fk` (SQLSTATE `23503`); the
-provisioning command reports `RUN_RECOVERY_BINDINGS_EXIST`, naming the namespaces still bound, and writes nothing. The
-administrator unbinds first (`unbindRunRecovery`, available while the capability is off), then changes the role. A
-membership deleted out of band takes its bindings by the cascade, each removal audited `run_recovery.unbound` by
-`system:provisioning`.
+member that still has a `RunRecovery` binding violates `run_recovery_namespaces_membership_fk` (SQLSTATE `23503`); ~~the
+provisioning command reports `RUN_RECOVERY_BINDINGS_EXIST`, naming the namespaces still bound, and writes nothing~~
+*(superseded after the fourth re-reads, decision D022-322: no command of the platform updates `memberships`, so the
+operator sees PostgreSQL's error, SQLSTATE `23503` naming `run_recovery_namespaces_membership_fk`, and nothing is
+written)*. The administrator unbinds first (`unbindRunRecovery`, available while the capability is off), then changes
+the role. A membership deleted out of band takes its bindings by the cascade, each removal audited `run_recovery.unbound`
+by `system:provisioning`; removing a member therefore needs no unbind first (decision D022-321). *Added after the fourth
+re-reads (decision D022-320):* a binding deleted directly out of band is audited the same way (reason "removed outside
+the unbind route"); the unbind route marks its own delete and audits it once.
 
 *Added 2026-11-26 (decision D022-288): pending resets (018's reasons, reused).* A pending reset whose requester is a
 `RunRecovery` subject fails `AUTHORITY_REVOKED` when, at its completion, the entry's namespace is outside the

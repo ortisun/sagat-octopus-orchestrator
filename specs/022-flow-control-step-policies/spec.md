@@ -660,6 +660,11 @@ Added after the review of 2026-11-13:
   holds `RunRecovery` is a handler-tree run as well: it is never dispatched to the namespace handler, so a handler that
   recovers by a fresh start cannot loop, and a start of a definition that continues as new is refused `422`
   (`CONTINUE_AS_NEW_REFUSED`).
+  *Amended 2026-11-27 after the fourth re-reads, delegate (OD-2026-11-24-4; decisions D022-327, D022-328):* this
+  narrows the dispatch budget's role: runs a handler causes through an event trigger or a Signal-with-Start are ordinary
+  runs, dispatched when they fail and bounded by the namespace dispatch budget alone; a run started with the
+  `RunRecovery` credential (a notifier's ticket workflow, for example) is not dispatched when it fails, and a definition
+  that continues as new cannot be started by the role.
 
 #### Concurrency limits by key (US02)
 

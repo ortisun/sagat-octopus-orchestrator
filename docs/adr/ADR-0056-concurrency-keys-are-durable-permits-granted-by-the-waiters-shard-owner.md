@@ -14,6 +14,10 @@ architecture checks `gate_row_write_errors`, `key_row_insert_errors`, `run_creat
 `queued_runs_count_errors` of `scripts/check-architecture.py`, and `runtime_privileges` (every statement as
 `sagat_app`). Still missing (2026-11-20): the claim-against-attempt-end barrier, the child-of-the-same-key and
 lower-limit-waiter cases at run level, and the benchmark of one key with 1, 16 and 256 contenders (T022-062, T022-089).
+*Added 2026-11-27 (feature 022 decision D022-330), for decision 2(a):* the `slot_order.rs` case of a binding replacement
+against a lease-expiry pass that releases a cacheable successor (task T022-254); the rule of
+`scripts/check-architecture.py` on step and session locks before the lookup round, with its negative fixtures (task
+T022-255); the tests that keep the arguments of its allow list (task T022-271).
 
 ## Context
 
@@ -117,9 +121,13 @@ ceiling above the proposed defaults is published.
    scoped-event finish locks a `WAITING` step, `crates/infra-postgres/src/execution/scoped_events.rs:164`, and a binding
    replacement updates only `LEASED` or `RUNNING` rows, `crates/infra-postgres/src/bindings.rs:245-246`; its acceptance
    is recorded after the short re-read of these fixes); it is stated here and checked by `scripts/check-architecture.py`
-   (every `steps ... FOR UPDATE` and every `worker_sessions` lock on a deciding path refused unless its enclosing
-   function is on the rule's allow list with its argument, task T022-255) and a `slot_order.rs` case (a binding
-   replacement against a lease-expiry pass that releases a cacheable successor, task T022-254).
+   (~~every `steps ... FOR UPDATE` and every `worker_sessions` lock on a deciding path refused unless its enclosing
+   function is on the rule's allow list with its argument~~ every `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR
+   KEY SHARE` and `UPDATE` of a `steps` or `worker_sessions` row in the adapter refused unless its enclosing function is
+   on the rule's allow list with its argument, a deciding path being a transaction that runs `Engine::run`, whose callers
+   the rule names; restated 2026-11-27 after the fourth re-reads, feature 022 decisions D022-324 to D022-326, task
+   T022-255) and a `slot_order.rs` case (a binding replacement against a lease-expiry pass that releases a cacheable
+   successor, task T022-254).
 
    *Accepted 2026-11-25, delegate OD-2026-11-24-4, after three review rounds recorded in
    specs/022-flow-control-step-policies/reviews/2026-11-25/ (decision D022-271):* the feature 022 amendments of this

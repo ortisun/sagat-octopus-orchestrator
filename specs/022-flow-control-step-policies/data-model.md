@@ -873,13 +873,13 @@ part). Where this section and any above disagree, this section wins.
 |---|---|
 | `tenant_id`, `subject`, `namespace_id` | as revised 2026-11-26: PK `(tenant_id, subject, namespace_id)`, index `(tenant_id, namespace_id)`, FK `(tenant_id, namespace_id)` → `namespaces` `ON DELETE CASCADE`, the subject CHECK |
 | `role` (new) | `text NOT NULL DEFAULT 'run-recovery'`, `CHECK (role = 'run-recovery')`; written by nobody but the default |
-| `run_recovery_namespaces_membership_fk` (new) | `(tenant_id, subject, role)` → `memberships (tenant_id, subject, role)` `ON UPDATE RESTRICT ON DELETE CASCADE`; replaces the key `(tenant_id, subject)`. A role change of a subject with a binding is refused (SQLSTATE `23503`, reported by provisioning as `RUN_RECOVERY_BINDINGS_EXIST`); a bind for a subject of another role violates it (`422 NOT_A_RECOVERY_SUBJECT`); a membership deletion cascades (D022-298) |
+| `run_recovery_namespaces_membership_fk` (new) | `(tenant_id, subject, role)` → `memberships (tenant_id, subject, role)` `ON UPDATE RESTRICT ON DELETE CASCADE`; replaces the key `(tenant_id, subject)`. A role change of a subject with a binding is refused (SQLSTATE `23503`, ~~reported by provisioning as `RUN_RECOVERY_BINDINGS_EXIST`~~ naming this key, the error the operator sees, D022-322); a bind for a subject of another role violates it (`422 NOT_A_RECOVERY_SUBJECT`); a membership deletion cascades (D022-298) |
 | `memberships_subject_role_key` (new, on `memberships`) | `UNIQUE (tenant_id, subject, role)`, the target of the key; redundant with the PK for uniqueness, needed for the reference; one more index written on a membership insert, which provisioning alone does |
 | Grants | SELECT, INSERT, DELETE to `sagat_app`, unchanged |
 | Lock function (new) | `public.sagat_lock_run_recovery_binding(p_tenant uuid, p_subject text, p_namespace uuid) RETURNS TABLE(namespace_id uuid)`, `LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp`, `... FOR SHARE OF b`; `REVOKE ALL ... FROM PUBLIC`; `GRANT EXECUTE` to `sagat_app` (D022-297) |
 | Readers | the membership statement (the bound set, with each namespace's id and slug, on every request; empty while `platform_requirements` does not hold `failure-handler-v1`); through the lock function: an admission or a command of a bound actor in slot 4a, after the memberships where the path takes them (D022-277, D022-314), `recheck_requester` of a pending reset (D022-288, D022-301), the payload disclosure transaction after `sagat_lock_memberships` (D022-302) |
-| Writers | `bindRunRecovery` (INSERT) and `unbindRunRecovery` (DELETE), each with its audit row; a referential cascade from `memberships` or `namespaces` (DELETE), audited by the trigger below |
-| Audit trigger (new) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; its function writes one `run_recovery.unbound` row (actor `system:provisioning`, reason "removed by a referential cascade") into `public.audit_records` only when the binding's membership or namespace no longer exists, that is for a delete issued by a referential action (not `pg_trigger_depth()`, which reads 1 for a cascade too); the route's delete is audited by the route (D022-299) |
+| Writers | `bindRunRecovery` (INSERT) and `unbindRunRecovery` (DELETE), each with its audit row; a referential cascade from `memberships` or `namespaces` (DELETE), audited by the trigger below *(and, since the fourth re-reads, a direct delete out of band, audited by the same trigger, D022-320)* |
+| Audit trigger (new) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; its function writes one `run_recovery.unbound` row (actor `system:provisioning`, reason "removed by a referential cascade") into `public.audit_records` only when the binding's membership or namespace no longer exists, that is for a delete issued by a referential action (not `pg_trigger_depth()`, which reads 1 for a cascade too); the route's delete is audited by the route (D022-299) *(amended 2026-11-27 after the fourth re-reads, D022-320: the trigger audits every delete unless the route's marker is on and both parents exist; see the last section)* |
 | Role-change trigger | none: D022-286's trigger is not built (D022-298) |
 
 The functions of the migration (D022-300): the activation trigger's and the audit trigger's, executable by no role;
@@ -897,3 +897,30 @@ for it, and invariant 17 keeps it from being dispatched.
 
 For a namespace-bound principal the statements that look up a run, a workflow or a request by id carry `AND
 namespace_id = ANY($bound)`, so a row outside the scope is not returned; a tenant principal's statements are unchanged.
+*(2026-11-27 after the fourth re-reads, D022-316: an empty result hands the identifier to the bounded denial task; see
+the last section.)*
+
+## Revision of 2026-11-27 after the fourth re-reads (decisions D022-315 to D022-332)
+
+The fourth re-reads ([reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md),
+fourth part). Where this section and any above disagree, this section wins.
+
+### `run_recovery_namespaces`, revised again (decisions D022-320, D022-322, D022-323, D022-329)
+
+| Column or rule | Notes |
+|---|---|
+| `run_recovery_namespaces_namespace_fk` (named) | the key `(tenant_id, namespace_id)` → `namespaces (tenant_id, id)` `ON DELETE CASCADE` of 2026-11-26, now named so the bind can tell its violation from the membership key's: both raise SQLSTATE `23503`; the bind maps this one to the opaque `404` and `run_recovery_namespaces_membership_fk` to `422 NOT_A_RECOVERY_SUBJECT`, any other name to an internal error (D022-323) |
+| `run_recovery_namespaces_membership_fk` | unchanged; an out-of-band role change of a bound subject fails with SQLSTATE `23503` naming it, and no code of the platform translates it (D022-322) |
+| The unbind marker | `unbindRunRecovery` runs `SELECT set_config('sagat.unbind_audited', 'on', true)` (local to its transaction) before its delete, as `sagat.registry_change` is set (`crates/infra-postgres/migrations/20270113000000_instance_registry.up.sql:342`) (D022-320) |
+| Audit trigger (revised) | `AFTER DELETE ... FOR EACH ROW`, `ENABLE ALWAYS`; writes one `run_recovery.unbound` row (actor `system:provisioning`) for every delete unless `coalesce(current_setting('sagat.unbind_audited', true), '') = 'on'` and both the binding's membership `(tenant_id, subject, role)` and its namespace exist; reason "removed by a referential cascade" when a parent is gone, "removed outside the unbind route" otherwise. Its action, resource type and actor are the `as_str()` of the domain's `AuditAction` and `ResourceType` variants and `Subject::provisioning()`, checked by T022-266 (D022-320, D022-329) |
+| Writers | `bindRunRecovery` (INSERT); `unbindRunRecovery` (DELETE, marked, audited by the route); a referential cascade from `memberships` or `namespaces`, and a direct delete out of band (both audited by the trigger) |
+
+### The denial record of a bound principal (decision D022-316)
+
+For a namespace-bound principal, a scoped lookup of a run, a workflow, a request or an approval request that returns no
+row, and a namespace refused by the bound set (by id or slug), hand the identifier, its resource type and the
+operation's permission to the bounded denial task, then answer `NotFound`. The task, off the response path, reads
+whether the resource exists in the principal's tenant without the scope predicate, and only then writes
+`run_recovery.namespace_denied` (resource type `namespace`, the identifier of the namespace the resource is in, read by
+that query, and the permission, as D022-275 says) and increments `run_recovery_namespace_denials_total`. No row is
+written for a miss.

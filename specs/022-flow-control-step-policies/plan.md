@@ -1082,8 +1082,10 @@ binding ends it within one re-check once `RunService::get` checks the scope (D02
 
 **The binding's table and routes (D022-273, D022-274, D022-276).** `run_recovery_namespaces` follows `worker_bindings`
 *(not so, corrected 2026-11-27, D022-297: `worker_bindings` grants UPDATE; the row lock goes through a function)*
-(grants SELECT, INSERT and DELETE; composite foreign keys to `namespaces` and to `memberships`, `ON DELETE CASCADE`; the
-subject CHECK; the quota triggers). `listRunRecoveryBindings`, `bindRunRecovery` and `unbindRunRecovery` need
+(grants SELECT, INSERT and DELETE; composite foreign keys to `namespaces` and to `memberships`, `ON DELETE CASCADE`
+*(the key to `memberships (tenant_id, subject)` replaced 2026-11-27 by `run_recovery_namespaces_membership_fk` on
+`(tenant_id, subject, role)`, `ON UPDATE RESTRICT`, D022-298; mark added by D022-331)*; the subject CHECK; the quota
+triggers). `listRunRecoveryBindings`, `bindRunRecovery` and `unbindRunRecovery` need
 `membership:manage`. A trigger on `memberships` refuses the role `run-recovery` until `failure-handler-v1` is active.
 
 **The overdue pass (D022-278).** The pass (`deadlines`, `crates/scheduler/src/passes.rs`, `stop_run(.., TimedOut, ..)`
@@ -1105,16 +1107,36 @@ The rows above that changed say so. Three facts were checked by hand on `postgre
 | Part | Rule |
 |---|---|
 | The binding row lock (D022-297) | `public.sagat_lock_run_recovery_binding(p_tenant, p_subject, p_namespace)`, `SECURITY DEFINER`, pinned search path, `FOR SHARE OF` the row, executable by `sagat_app` alone, as `sagat_lock_memberships`; called in slot 4a, in `recheck_requester` and in the payload disclosure transaction; `sagat_app` keeps SELECT, INSERT and DELETE only |
-| A role change (D022-298, supersedes D022-286) | refused while the subject has a binding, by `run_recovery_namespaces_membership_fk (tenant_id, subject, role)` → `memberships (tenant_id, subject, role)` `ON UPDATE RESTRICT ON DELETE CASCADE`; the administrator unbinds first (audited); provisioning reports `RUN_RECOVERY_BINDINGS_EXIST`; the runbook step in `docs/runbooks/flow-control.md` (T022-267) |
-| A cascaded removal (D022-299) | an `AFTER DELETE` trigger on `run_recovery_namespaces` audits each row a referential cascade removes (`run_recovery.unbound`, actor `system:provisioning`); the route audits its own |
-| The scope refusal (D022-301) | `IdentityError::OutsideNamespaceScope` converts to `AppError::NotFound`, the denial record queued; no new variant, so the event stream ends on it within its 30-second re-check; `complete_reset` checks the scope first and answers `StateConflict(AUTHORITY_REVOKED)`; `PendingAdmission` carries `namespace_id` |
+| A role change (D022-298, supersedes D022-286) | refused while the subject has a binding, by `run_recovery_namespaces_membership_fk (tenant_id, subject, role)` → `memberships (tenant_id, subject, role)` `ON UPDATE RESTRICT ON DELETE CASCADE`; the administrator unbinds first (audited); ~~provisioning reports `RUN_RECOVERY_BINDINGS_EXIST`~~ *(dropped 2026-11-27, D022-322: the operator sees SQLSTATE `23503` naming the key)*; the runbook step in `docs/runbooks/flow-control.md` (T022-267) |
+| A cascaded removal (D022-299) | an `AFTER DELETE` trigger on `run_recovery_namespaces` audits each row a referential cascade removes (`run_recovery.unbound`, actor `system:provisioning`); the route audits its own *(2026-11-27, D022-320: the trigger audits every delete the route did not mark, a direct delete out of band included)* |
+| The scope refusal (D022-301) | `IdentityError::OutsideNamespaceScope` converts to `AppError::NotFound`, ~~the denial record queued~~ *(2026-11-27, D022-315, D022-316: by an exhaustive conversion with no wildcard arm; the resolvers hand the identifier to the denial task)*; no new variant, so the event stream ends on it within its 30-second re-check; `complete_reset` checks the scope first and answers `StateConflict(AUTHORITY_REVOKED)`; `PendingAdmission` carries `namespace_id` |
 | Payload disclosure (D022-302) | for a namespace-bound role, the binding row of the run's namespace through the lock function, after `sagat_lock_memberships`; the opaque `404` when it is gone |
-| The fitness rule (D022-303) | also `.permissions()` on a `Role` (one entry, `auth_context`; the two other sites rewritten as `.grants(`) and `Principal::new(` with a non-literal role; every allow list keyed by `impl` and function |
+| The fitness rule (D022-303) | also ~~`.permissions()` on a `Role`~~ `.granted_permissions(`, the renamed method *(2026-11-27, D022-319)* (one entry, `auth_context`; the two other sites rewritten as `.grants(`) and `Principal::new(` with a non-literal role; every allow list keyed by `impl` and function |
 | The lookup of a bound principal (D022-305) | `AND namespace_id = ANY($bound)` in the run, workflow and request lookups: a hit outside the scope returns no row, as a miss |
 | The order of refusals (D022-306) | after the role check and before every refusal that depends on the addressed resource |
 | Slice 2 (D022-307) | T022-263 builds the scope type, the scope class, the refusal in `Principal::authorize` and their domain tests; T022-256 keeps the bound set, the resolvers and the audit; the OpenAPI role enum lands with the migration in T022-256's pull request |
-| The step-lock rule (D022-308) | stated in ADR-0056 decision 2(a) and ADR-0135 decision 2 in D022-282's words; T022-255 checks it by an allow list of enclosing functions, one entry (`prepare_delivery`, a `WAITING` step) |
-| `RunRecovery` starts (D022-310) | handler-tree runs, never dispatched; a definition that continues as new refused `422` |
+| The step-lock rule (D022-308) | stated in ADR-0056 decision 2(a) and ADR-0135 decision 2 in D022-282's words; T022-255 checks it by an allow list of enclosing functions, ~~one entry (`prepare_delivery`, a `WAITING` step)~~ every current hit argued or excluded by name *(2026-11-27, D022-324 to D022-326)* |
+| `RunRecovery` starts (D022-310) | handler-tree runs, never dispatched; a definition that continues as new refused `422` *(2026-11-27, D022-327: this narrows D022-243; runs caused through an event trigger or a Signal-with-Start stay bounded by the dispatch budget alone)* |
+
+### Revision of 2026-11-27 after the fourth re-reads
+
+The security and architecture reviewers re-read `12459df2d` and `ace26dc77`; decisions D022-315 to D022-332 in
+[research.md](./research.md) ("Decisions of the fourth re-reads of 2026-11-27"), and where each finding lives in the
+fourth part of [reviews/2026-11-26/design-fixes-responses.md](reviews/2026-11-26/design-fixes-responses.md). The rows
+above that changed say so. Code facts checked at `ace26dc77`.
+
+| Part | Rule |
+|---|---|
+| The conversion of an identity error (D022-315) | `impl From<IdentityError> for AppError` is an exhaustive `match` with no wildcard arm: `NamespaceScopeRequired { permission }` to `Forbidden { permission }`, `OutsideNamespaceScope` to `NotFound`, `PermissionDenied` to `Forbidden`, `TenantMismatch` to `NotFound`, and `InvalidSlug`, `InvalidSubject`, `UnknownRole`, `UnknownEnvironment`, `MalformedId` to `Invalid`, as the wildcard gives them today; a unit test per variant (T022-268) |
+| The denial record (D022-316) | the conversion stays pure; for a bound principal, every scoped lookup that returns no row and every refusal of a namespace by the bound set hands the identifier to the bounded denial task, which runs the unscoped existence query off the response path and writes `run_recovery.namespace_denied` (and the metric) only when the resource exists in the tenant outside the scope (T022-269) |
+| A schedule's authority (D022-317) | in `ScheduleFiring::fire` and `ScheduleFiring::backfill_step` a namespace-bound role is treated as revoked before any cancel or start (`revoke_authority`; for a backfill, its revocation branch `stop_backfill`); D022-301's claim corrected: `ScheduleFiring::pay_obligation` read `NotFound` as "the run is gone" (T022-270) |
+| The allow-list names (D022-318, D022-319) | `ServiceEvaluator::evaluate` (two arguments: the binding of D022-302 for `run:read`, and `schedule:read`, which the role does not hold) and `declared_operations::authorize` (a free function); `Role::permissions` renamed `Role::granted_permissions` in T022-263, the rule refusing that name outside `crates/domain` with one entry, `identity::auth_context` |
+| Removals of a binding (D022-320, D022-321) | the unbind route sets `set_config('sagat.unbind_audited', 'on', true)` before its delete; the trigger audits every delete unless that setting is on and both parents exist; removing a member needs no unbind first |
+| A role change of a bound subject (D022-322) | no provisioning code: an out-of-band change fails with SQLSTATE `23503` naming `run_recovery_namespaces_membership_fk`, nothing written; the runbook says what it means |
+| The bind's foreign keys (D022-323) | `23503` mapped by constraint name: `run_recovery_namespaces_membership_fk` gives `422 NOT_A_RECOVERY_SUBJECT`, `run_recovery_namespaces_namespace_fk` the opaque `404`, any other an internal error |
+| The step-lock rule (D022-324 to D022-326) | a deciding path is a transaction that runs `Engine::run` or `Engine::run_addressed`, whose callers are named; every `FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR KEY SHARE` or `UPDATE` of `steps` or `worker_sessions` in `crates/infra-postgres/src` is on the allow list with an argument (`after-rounds`, `not-leased`, `no-round`); a call of `Engine::run` outside the named functions is refused; the 44 current statements listed in D022-326 |
+| Recovery starts and the budget (D022-327, D022-328) | D022-310 narrows D022-243: a `RunRecovery` start no longer loops; runs caused through an event trigger or a Signal-with-Start stay bounded by the budget; ADR-0136 records the two costs (a recovery start's failure is not dispatched; a definition that continues as new cannot be started by the role); T022-239 driven by an event trigger |
+| Records (D022-329 to D022-332) | T022-266 checks the trigger's row against `AuditAction`, `ResourceType` and `Subject::provisioning()`; ADR-0056 and ADR-0135 name T022-254 and T022-255 in "Enforced by"; ADR-0050's Evidence and its 2026-11-26 paragraph, T022-240's line, the sentence on the old key above and D022-313's citation corrected; ADR-0136 names the rejected schema choices of decision 4 |
 
 ### Hot-path budget lines to record
 
@@ -1183,9 +1205,13 @@ of the change), and `run_recovery.namespace_denied` (resource type `namespace`, 
 | A start is replayed after its subject's binding was revoked (added 2026-11-26, D022-277) | The opaque `404`; nothing created | Integration test (T022-259) |
 | `failure-handler-v1` switched off while `RunRecovery` subjects are bound (added 2026-11-26, D022-276) | Every such subject bound to no namespace; the rows kept and in force again on re-activation | Integration test (T022-253) |
 | ~~A `RunRecovery` member's role is changed and changed back (added 2026-11-26, D022-286)~~ | ~~Its bindings removed by the first change; bound to no namespace until an administrator binds again~~ | ~~Integration test (T022-261)~~ *(superseded 2026-11-27, D022-298; see the rows below)* |
-| A role change of a `RunRecovery` member that still has a binding (added 2026-11-27, D022-298) | Refused by `run_recovery_namespaces_membership_fk` (`RUN_RECOVERY_BINDINGS_EXIST` to provisioning); nothing changed; after the administrator unbinds (audited), admitted | Race at three isolation levels; the unbind-then-change path (T022-261) |
+| A role change of a `RunRecovery` member that still has a binding (added 2026-11-27, D022-298) | Refused by `run_recovery_namespaces_membership_fk` (~~`RUN_RECOVERY_BINDINGS_EXIST` to provisioning~~ SQLSTATE `23503` naming the key, D022-322); nothing changed; after the administrator unbinds (audited), admitted | Race at three isolation levels, the SQLSTATE and the constraint name asserted; the unbind-then-change path (T022-261) |
 | A bind concurrent with a role change of its subject, at any isolation level (added 2026-11-27, D022-298) | One of them refused: the bind `422 NOT_A_RECOVERY_SUBJECT`, or the role change by the foreign key; never a binding for a member of another role | A held lock, at READ COMMITTED, REPEATABLE READ and SERIALIZABLE (T022-261) |
 | A membership or a namespace deleted out of band while bound (added 2026-11-27, D022-299) | The bindings removed by the cascade, one `run_recovery.unbound` row each (actor `system:provisioning`) | Integration test (T022-266); a deletion against a concurrent bind at three isolation levels (T022-261) |
+| A binding deleted directly out of band (added 2026-11-27 after the fourth re-reads, D022-320) | One `run_recovery.unbound` row by the trigger, reason "removed outside the unbind route"; the route's own delete audited once, by the route | Direct-delete case (T022-266) |
+| A namespace deleted while a bind of it runs (added 2026-11-27 after the fourth re-reads, D022-323) | The bind's insert violates `run_recovery_namespaces_namespace_fk`: the opaque `404`, nothing written | Held-lock case (T022-265) |
+| A schedule whose creator's role became `run-recovery` fires, with an owed `CANCEL_OTHER` cancel (added 2026-11-27 after the fourth re-reads, D022-317) | Paused `AUTHORITY_REVOKED` before any cancel or start; the obligation never recorded paid; a backfill of such a requester cancelled | T022-256 cases (T022-270) |
+| A scope refusal reaches the HTTP layer (added 2026-11-27 after the fourth re-reads, D022-315) | `NamespaceScopeRequired` answers `403`, `OutsideNamespaceScope` the opaque `404`; never a `422` | A unit test per `IdentityError` variant (T022-268); the battery's status assertion (T022-257) |
 | A `RunRecovery` payload read whose binding is revoked before its disclosure transaction (added 2026-11-27, D022-302) | The opaque `404`; nothing disclosed | Held-lock case, both orders (T022-259) |
 | A `RunRecovery` start that fails, or that continues as new (added 2026-11-27, D022-310) | A handler-tree run: no dispatch row; a definition that continues as new refused `422 CONTINUE_AS_NEW_REFUSED` | T022-244 case |
 | A `RunRecovery` reset waits as a pending reset; the binding is revoked before the source ends (added 2026-11-26, D022-288) | The entry fails `AUTHORITY_REVOKED`; without the revocation it completes | Integration test (T022-262) |
@@ -1193,7 +1219,7 @@ of the change), and `run_recovery.namespace_denied` (resource type `namespace`, 
 | Publication of a workflow with a database node against a test admission of its draft | No cycle (the draft row is not locked) | `slot_order.rs` case (D022-222) |
 | The dispatcher crashes inside an admission | The attempt is already counted; `DEAD` after 12 | Fault test (D022-223) |
 | Two failing runs of one lineage commit at once | Both reach their terminal status; one live dispatch row and one suppressed row | Fault test with a held commit (D022-242) |
-| A handler starts fresh runs that fail | Dispatches beyond the namespace budget deferred and alerted, never dropped | Integration test (D022-243) |
+| ~~A handler starts fresh runs that fail~~ A handler causes fresh runs that fail through an event trigger or a Signal-with-Start (reworded 2026-11-27, D022-328: a start through the `RunRecovery` credential is a handler-tree run, never dispatched, D022-310) | Dispatches beyond the namespace budget deferred and alerted, never dropped | Integration test driven by an event trigger (D022-243, T022-239) |
 | A stop source during the handler phase | `failure_handler.draining {cause}`, one cause: a further stop request is refused `409` (D022-261; "the first cause wins" corrected 2026-11-26, D022-285); never the run's stop | Domain cases (D022-246) |
 | The run deadline passes during the phase | Nothing: only the handler's timer bounds the phase | Overdue pass test (D022-247) |
 | A continue-as-new successor of a test-tree or handler-tree run, or of a definition with a new policy | Refused | Codec and `refuse_gated_successor` tests (D022-249) |
@@ -1237,6 +1263,9 @@ documents; foundations; the finish-path routing; US04 in two slices; US01 in fou
 four; the surfaces (decision D022-221).
 
 ### Size
+
+*Revised 2026-11-27 after the fourth re-reads:* 72 new tasks (T022-200 to T022-271; the fourth re-reads added T022-268
+to T022-271), riding in the slices they serve; the estimate of pull requests stands.
 
 *Revised 2026-11-27:* 68 new tasks (T022-200 to T022-267; the third re-reads added T022-263 to T022-267), riding in the
 slices they serve; the estimate of pull requests stands.

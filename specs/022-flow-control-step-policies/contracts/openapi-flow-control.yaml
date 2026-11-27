@@ -369,7 +369,7 @@ paths:
       summary: Bind a RunRecovery subject to a namespace
       tags: [Governance]
       x-proposed: '022'
-      description: Added 2026-11-26 (decisions D022-274, D022-276). Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with the role `run-recovery` (422 NOT_A_RECOVERY_SUBJECT otherwise); refused 422 FLOW_CONTROL_ACTIVATION_PENDING before `failure-handler-v1` is activated. The binding and its `run_recovery.bound` audit record commit together; the subject's next request is authorized in this namespace. Since 2026-11-27 (decision D022-298) the binding references the subject's membership with its role, so the member's role cannot be changed while it is bound.
+      description: Added 2026-11-26 (decisions D022-274, D022-276). Needs `membership:manage`. Idempotent. The subject must be a member of the tenant with the role `run-recovery` (422 NOT_A_RECOVERY_SUBJECT otherwise); refused 422 FLOW_CONTROL_ACTIVATION_PENDING before `failure-handler-v1` is activated. The binding and its `run_recovery.bound` audit record commit together; the subject's next request is authorized in this namespace. Since 2026-11-27 (decision D022-298) the binding references the subject's membership with its role, so the member's role cannot be changed while it is bound. A namespace deleted while the bind runs answers the opaque 404 (decision D022-323).
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
         - {name: subject, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 255}}

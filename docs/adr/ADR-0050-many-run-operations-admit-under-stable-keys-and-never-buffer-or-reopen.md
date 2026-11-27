@@ -139,10 +139,13 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    *Written 2026-11-26 after the re-reads of `1276d5b7`, under the acceptance of D022-271 (feature 022 decisions D022-277,
    D022-280, D022-281):* the slot table above carries the slot-5 pre-read and producer lock, the slot-7 re-check and the
    slot-4a draft-executions key; an admission or a command on an existing run whose actor's role is namespace-bound
-   (`RunRecovery`) reads the actor's `run_recovery_namespaces` row `FOR SHARE` in slot 4a after the memberships, and the
+   (`RunRecovery`) reads the actor's `run_recovery_namespaces` row `FOR SHARE` in slot 4a after the memberships *(how it
+   is read is superseded by the paragraph of 2026-11-27 below: through a lock function, after the memberships where the
+   path takes them; marked 2026-11-27, feature 022 decision D022-331)*, and the
    revocation that deletes it takes only its audit and usage rows after it, so it joins no cycle (a `slot_order.rs` case,
    task T022-259). *Added 2026-11-26 (decision D022-288):* the completion of a pending reset of such an actor reads the
-   same row in its re-check of the requester, right after `sagat_lock_memberships`, in slot 4a.
+   same row in its re-check of the requester, right after `sagat_lock_memberships`, in slot 4a *(through the lock
+   function since 2026-11-27, decision D022-297)*.
    *Written 2026-11-27 after the third re-reads (feature 022 decisions D022-297, D022-298, D022-314); its acceptance, and
    that of the paragraph above, is recorded after the short re-read of these fixes (OD-2026-11-25-2 step 4):* the
    binding row is taken through `public.sagat_lock_run_recovery_binding` (`SECURITY DEFINER`, `FOR SHARE OF` the row,
@@ -214,7 +217,10 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
 
 ## Evidence
 
-None yet. ~~This is a proposal.~~ (Accepted 2026-10-29; corrected 2026-11-27, feature 022 decision D022-312.) Design: `specs/018-schedules-bulk-operations/plan.md` (transaction table,
+~~None yet.~~ *(Corrected 2026-11-27, feature 022 decision D022-331: the ADR is accepted, and part of its evidence
+exists: the slot-order references of `tests/fault/schedules-bulk-operations/slot_order.rs`, task T018-012, and the
+lease row's leaf rule of `scripts/check-architecture.py`.)* ~~This is a proposal.~~ (Accepted 2026-10-29; corrected 2026-11-27, feature 022 decision D022-312.) Design: `specs/018-schedules-bulk-operations/plan.md` (transaction table,
 lock order, failure matrix), `research.md` D1001, D1004, D1005, D1013, D1014, D1016, D1023, D1024, D1032, D1035, D1036, D1037, D1605, D1606.
-Required before acceptance: the tests named in **Enforced by**, run against real PostgreSQL with the
-runtime role, and a benchmark of firing lag and reset transaction time on a declared environment.
+~~Required before acceptance:~~ Still owed by the accepted ADR (reworded 2026-11-27, decision D022-331): the tests named
+in **Enforced by**, run against real PostgreSQL with the runtime role and recorded here, and a benchmark of firing lag
+and reset transaction time on a declared environment.

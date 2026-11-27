@@ -170,3 +170,56 @@ Note on the architecture reviewer's scope check, which it could not run: on this
 `git branch -a` and `git worktree list` show the 022 branches `feature/022-step-policies` (this one),
 `feature/022-throughput-control` and `feature/022-sdk-builders` in sibling worktrees, and neither of the other two (nor
 `origin/develop`) has `RunRecovery` or `run_recovery` code under `crates/`, so no duplicate of this scope was found.
+
+## Fourth re-reads (2026-11-27)
+
+Where each item of [design-fixes-4-rereview-security-reviewer.md](design-fixes-4-rereview-security-reviewer.md) and
+[design-fixes-4-rereview-architecture-reviewer.md](design-fixes-4-rereview-architecture-reviewer.md) (both of
+`12459df2d` and `ace26dc77`) now lives. Decisions in `research.md`, "Decisions of the fourth re-reads of 2026-11-27",
+each delegate (OD-2026-11-24-4) and following the coordinating session's rulings of this round; every finding is fixed
+in the design, none accepted or deferred. "Plan" is `plan.md`, subsection "Revision of 2026-11-27 after the fourth
+re-reads" unless a row says otherwise; "data model" is `data-model.md`, section "Revision of 2026-11-27 after the fourth
+re-reads"; "tasks" is `tasks.md`, subsection "Revision of 2026-11-27 after the fourth re-reads". Code facts checked at
+`ace26dc77`.
+
+Acceptance of the revisions of 2026-11-26 and 2026-11-27 to the accepted ADRs follows the short re-read of this round
+(architecture nit K and the verdict's condition); it is not recorded here.
+
+### Security
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Earlier items: thirteen fixed, nit 3 partly fixed (the scoped lookup removed the trigger of the denial record) | no change for the thirteen; nit 3's rest is new minor 2 | as new minor 2 |
+| New minor 1: the mapping of both scope errors to HTTP answers is not pinned, and a wildcard arm catches them | D022-315 (an exhaustive conversion with no wildcard arm, every existing variant mapped to what the wildcard gives it today, a unit test per variant; T022-257 asserts the opaque `404` status for an unbound namespace) | tasks T022-268 (new), T022-263, T022-256 and T022-257 as they read now; plan, the table and the failure matrix; `contracts/errors.md` (the `403` row); research D022-301 (marked); ADR-0136 decision 4 (revision of the fourth re-reads) |
+| New minor 2: the denial record is queued by the conversion, which the scoped lookup never reaches | D022-316 (the conversion stays pure; every empty scoped lookup and every bound-set refusal hands the identifier to the bounded denial task, which writes the record only for a resource that exists in the tenant outside the scope) | tasks T022-269 (new), T022-256 as it reads now (one audit row for a hit, none for a miss); data model ("The denial record of a bound principal"); plan, the table; `contracts/errors.md` (the revised `404` row); research D022-275, D022-294, D022-301, D022-302, D022-305 (marked) |
+| New minor 3: `ScheduleFiring::pay_obligation` reads the scope refusal as "done" | D022-317 (a namespace-bound authority revoked before any cancel or start: `revoke_authority` in `fire`, the backfill's revocation branch `stop_backfill` in `backfill_step`; the argument of the entries `ScheduleFiring::fire` and `ScheduleFiring::backfill_step`; D022-301's claim corrected to name `pay_obligation`) | tasks T022-270 (new), T022-256 and T022-258 as they read now; plan, the table and the failure matrix; research D022-301 and D022-303 (marked) |
+| Nit 4: two allow-list entries name functions that do not exist | D022-318 (`ServiceEvaluator::evaluate` with two arguments, the binding of D022-302 and `schedule:read`; `declared_operations::authorize`, a free function) | tasks T022-258 as it reads now; research D022-302 and D022-303 (marked); tasks, the T022-258 row of the third re-reads (marked) |
+| Nit 5: a text rule cannot tell when `.permissions()` is called on a `Role` | D022-319 (`Role::permissions` renamed `Role::granted_permissions` in T022-263; T022-258 refuses that name outside `crates/domain`, one entry `identity::auth_context`) | tasks T022-263 and T022-258 as they read now; plan, the table and the fitness-rule row of the third re-reads (marked); research D022-303 (marked) |
+| Nit 6: a direct delete out of band is not audited; the runbook slows the removal of a member | D022-320 (the unbind route sets `sagat.unbind_audited`; the trigger audits every other delete), D022-321 (removing a member needs no unbind first) | data model (the marker and the audit trigger, revised); tasks T022-266 (a direct-delete case) and T022-267 as they read now; `contracts/errors.md` (the provisioning paragraph of 2026-11-27); plan, the failure matrix; research D022-298 and D022-299 (marked) |
+| Nit 7: `RUN_RECOVERY_BINDINGS_EXIST` has no producer, and both foreign keys raise `23503` | D022-322 (the code dropped everywhere; an out-of-band role change sees SQLSTATE `23503` naming `run_recovery_namespaces_membership_fk`), D022-323 (the bind maps `23503` by constraint name: the membership key to `NOT_A_RECOVERY_SUBJECT`, `run_recovery_namespaces_namespace_fk` to the opaque `404`) | tasks T022-261, T022-265 and T022-267 as they read now; data model (the keys, revised); `contracts/errors.md` (the provisioning paragraph, a new `404` row); `contracts/openapi-flow-control.yaml` (`bindRunRecovery`); plan, the tables and the failure matrix; research D022-298 (marked) |
+| Suspicion (outside this feature): the reveal-grant role-change trigger races at REPEATABLE READ | none in feature 022: confirmed by design reading, and fixed on its own bugfix branch outside feature 022; nothing about reveal grants changes here | — |
+
+### Architecture
+
+| Finding | Decision | Where it lives |
+|---|---|---|
+| Verdict's condition: ADR-0136's Consequences line still says the dispatch budget bounds a handler that starts fresh runs | D022-328 | as new finding 1 |
+| A, C to J, earlier minor 5 and ruling 7: fixed | no change | — |
+| B, minor, its rest (earlier minor 8): the check of T022-255 is not specifiable (no scope, more hits, lock forms missing) | D022-324 (a deciding path is a transaction that runs `Engine::run` or `Engine::run_addressed`; their callers named; a second check refuses a new caller), D022-325 (`FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, `FOR KEY SHARE` and `UPDATE` of `steps` and `worker_sessions`), D022-326 (the 44 current statements, each argued `after-rounds`, `not-leased` or `no-round`, or excluded by name; `charge_path_output_bytes`, `start_collection_drain`, the claim's `worker_session_room` and `prepare_delivery` among them) | tasks T022-255, T022-207 as they read now, T022-271 (new); research D022-308 (marked); ADR-0056 decision 2(a); ADR-0135 decision 2; plan, the table and the step-lock row of the third re-reads (marked) |
+| K, nit: acceptance not recorded | none: acceptance follows the short re-read of this round | the paragraph above |
+| New 1, minor: D022-310 contradicts D022-243, and three records still describe the old behaviour | D022-327 (D022-310 narrows D022-243: the `RunRecovery` path no longer loops; triggers and Signal-with-Start stay bounded by the budget only), D022-328 (ADR-0136's Consequences as two Bad consequences; T022-239 driven by an event trigger; the plan's row corrected) | ADR-0136 decision 5 and Consequences; research D022-243 and D022-310 (marked); spec FR-022-016 line of the fourth re-reads; plan, the failure matrix (the row reworded) and the `RunRecovery` starts row of the third re-reads (marked); tasks T022-239 (evidence amended) |
+| New 2, minor: the conversion cannot queue the denial record, and its match has a wildcard arm | D022-315, D022-316 | as security new minors 1 and 2 |
+| New 3, minor: `RUN_RECOVERY_BINDINGS_EXIST` has no producer | D022-322 | as security nit 7 |
+| Nit 4: the database now writes audit vocabulary | D022-329 (T022-266 asserts the trigger's row against `AuditAction`, `ResourceType` and `Subject::provisioning()`) | tasks T022-266 as it reads now; data model (the audit trigger, revised) |
+| Nit 5: the `.permissions()` rule cannot see the receiver's type | D022-319 | as security nit 5 |
+| Nit 6: "Enforced by" lags in ADR-0056 and ADR-0135 | D022-330 (both name T022-254, T022-255 and T022-271) | ADR-0056 and ADR-0135 "Enforced by" |
+| Nit 7: leftovers (ADR-0050 Evidence and its 2026-11-26 paragraph, T022-240's line, the plan's old key, D022-313's citation) | D022-331 | ADR-0050 decision 7 and Evidence; tasks, the T022-240 row of the third rulings (marked); plan, "The binding's table and routes" (marked); research D022-313 (corrected) |
+| Nit 8: ADR-0136's Considered options omit decision 4's schema alternatives | D022-332 | ADR-0136 Considered options 10 to 12 |
+
+Note on the architecture reviewer's scope check, which it could not run: at `ace26dc77`, `git branch -a` and `git
+worktree list` show the 022 branches `feature/022-step-policies` (this one), `feature/022-throughput-control` and
+`feature/022-sdk-builders`, each in its own worktree; this round changes documents of this branch only.
+
+Numbers: decisions D022-315 to D022-332 and tasks T022-268 to T022-271 are used; D022-333 to D022-340 and T022-272 to
+T022-280 are left free.
+
