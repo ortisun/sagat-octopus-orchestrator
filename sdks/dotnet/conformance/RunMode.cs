@@ -808,8 +808,11 @@ internal sealed partial class RunMode : IAsyncDisposable
         var end = DateTimeOffset.UtcNow.AddMilliseconds((long?)step["timeoutMs"] ?? 20_000);
         for (; ; )
         {
-            var page = await client.EventsAsync(id, limit: 200, cancellationToken: cancellationToken).ConfigureAwait(false);
-            if (page.Items.Any(item => item.Type == eventType && (stepId is null || item.StepId == stepId)))
+            var found = await JournalHasAsync(
+                cursor => client.EventsAsync(id, cursor, 200, cancellationToken),
+                eventType,
+                stepId).ConfigureAwait(false);
+            if (found)
             {
                 return;
             }
@@ -820,6 +823,30 @@ internal sealed partial class RunMode : IAsyncDisposable
             }
 
             await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Whether the journal of a run has an event of <paramref name="eventType"/> (of the step <paramref name="stepId"/>, when it is given).
+    /// Every page is read, each with the cursor the page before it gave: an event past the first page of a long journal is found.
+    /// </summary>
+    internal static async Task<bool> JournalHasAsync(Func<string?, Task<JournalPage>> read, string eventType, string? stepId)
+    {
+        string? cursor = null;
+        for (; ; )
+        {
+            var page = await read(cursor).ConfigureAwait(false);
+            if (page.Items.Any(item => item.Type == eventType && (stepId is null || item.StepId == stepId)))
+            {
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(page.NextCursor))
+            {
+                return false;
+            }
+
+            cursor = page.NextCursor;
         }
     }
 

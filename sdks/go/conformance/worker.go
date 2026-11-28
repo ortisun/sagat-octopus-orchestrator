@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,39 @@ type workerLog struct {
 	inflight     int
 	peakInflight int
 	deliveries   []any
+	// seen counts what the host reported (its events, by type and code): a barrier of the scenario that times out
+	// says it, so that a failure in CI tells a task never received from one received and then lost.
+	seen map[string]int
+}
+
+// observe counts an event of the host.
+func (l *workerLog) observe(e worker.Event) {
+	key := string(e.Type)
+	if e.Code != "" {
+		key += ":" + e.Code
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.seen == nil {
+		l.seen = map[string]int{}
+	}
+	l.seen[key]++
+}
+
+// events is what observe counted, as "type:code=count" in the order of the keys.
+func (l *workerLog) events() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	keys := make([]string, 0, len(l.seen))
+	for key := range l.seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, key := range keys {
+		parts[i] = fmt.Sprintf("%s=%d", key, l.seen[key])
+	}
+	return strings.Join(parts, " ")
 }
 
 // entered measures the actual handler boundary; it is separate from normalized contract logs.
@@ -302,6 +336,7 @@ func hostOf(def object, config object, p *plan, log *workerLog) (*worker.Host, e
 		worker.WithMaxInflight(maxInflight),
 		worker.WithDialOptions(grpc.WithChainUnaryInterceptor(p.unary()), grpc.WithChainStreamInterceptor(p.stream())),
 		worker.WithRetry(sagat.RetryPolicy{InitialDelay: 20 * time.Millisecond, MaxDelay: 200 * time.Millisecond}),
+		worker.WithEventHandler(log.observe),
 	}
 	if mode := asString(def["transport"]); mode != "" {
 		opts = append(opts, worker.WithTransport(worker.Transport(mode)))

@@ -13,6 +13,7 @@ is written only on success.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import re
@@ -42,6 +43,7 @@ from sagat_octopus_orchestrator import (
     Body,
     ClientConfig,
     Flow,
+    JournalPage,
     Operator,
     QueryDefinition,
     Reset,
@@ -651,6 +653,24 @@ def batch_request_of(raw: Obj) -> BatchRequest:
         max_items=raw.get("maxItems"),
         items_per_second=raw.get("itemsPerSecond"),
     )
+
+
+async def journal_has(read: Callable[..., Awaitable[JournalPage]], event_type: str, step_id: str | None) -> bool:
+    """Whether the journal of a run has an event of ``event_type`` (of the step ``step_id``, when it is given).
+
+    ``read(cursor=...)`` reads a page. Every page is read, each with the cursor the page before it gave: an event past
+    the first page of a long journal is found.
+    """
+    cursor: str | None = None
+    while True:
+        page = await read(cursor=cursor)
+        if any(
+            event.event_type == event_type and (step_id is None or event.step_id == step_id) for event in page.items
+        ):
+            return True
+        if not page.next_cursor:
+            return False
+        cursor = page.next_cursor
 
 
 def error_json(error: BaseException) -> Obj:
@@ -1750,11 +1770,10 @@ async def run(scenario: Obj, config: Obj) -> Obj:
                     run_id = run_of(step)
                     end = asyncio.get_running_loop().time() + step.get("timeoutMs", 20_000) / 1000
                     while True:
-                        journal = await client.events(run_id, limit=200)
-                        if any(
-                            event.event_type == step["eventType"]
-                            and ("stepId" not in step or event.step_id == step["stepId"])
-                            for event in journal.items
+                        if await journal_has(
+                            functools.partial(client.events, run_id, limit=200),
+                            step["eventType"],
+                            step.get("stepId"),
                         ):
                             break
                         if asyncio.get_running_loop().time() > end:

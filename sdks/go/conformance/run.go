@@ -899,17 +899,22 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 		}
 		end := time.Now().Add(timeout)
 		for {
-			page, err := c.Events(ctx, id, client.EventsOptions{Limit: 200})
+			found, ofStep, err := journalHas(ctx, c, id, asString(step["eventType"]), step["stepId"])
 			if err != nil {
 				return nil, err
 			}
-			for _, e := range page.Items {
-				if e.Type == asString(step["eventType"]) && (step["stepId"] == nil || e.StepID == asString(step["stepId"])) {
-					return nil, nil
-				}
+			if found {
+				return nil, nil
 			}
 			if time.Now().After(end) {
-				return nil, broken("the journal of %s has no %s", id, asString(step["eventType"]))
+				// What the journal held for the step, and what each worker host reported: a step never leased, leased
+				// and never started, or leased again after a lease ran out are different defects.
+				var reported []string
+				for _, key := range sortedHostKeys(hosts) {
+					reported = append(reported, key+": "+hosts[key].log.events())
+				}
+				return nil, broken("the journal of %s has no %s; it holds %s; the worker hosts reported %s",
+					id, asString(step["eventType"]), strings.Join(ofStep, " "), strings.Join(reported, "; "))
 			}
 			time.Sleep(25 * time.Millisecond)
 		}
@@ -936,6 +941,36 @@ func playStep(ctx context.Context, step object, op string, c *client.Client, con
 			return result, err
 		}
 		return nil, broken("unknown step op %q", op)
+	}
+}
+
+// journalHas reads the whole journal of a run, page after page, and reports whether it has an event of the type (of
+// the step, when stepID is not nil). Reading only the first page would miss an event of a run whose journal is longer
+// than a page. ofStep is what the journal holds for the step (every event when stepID is nil), as type/attempt.
+func journalHas(ctx context.Context, c *client.Client, runID, eventType string, stepID any) (found bool, ofStep []string, err error) {
+	cursor := ""
+	for {
+		page, err := c.Events(ctx, runID, client.EventsOptions{Cursor: cursor, Limit: 200})
+		if err != nil {
+			return false, nil, err
+		}
+		for _, e := range page.Items {
+			if stepID != nil && e.StepID != asString(stepID) {
+				continue
+			}
+			if e.Type == eventType {
+				return true, nil, nil
+			}
+			attempt := "-"
+			if e.Attempt != nil {
+				attempt = fmt.Sprint(*e.Attempt)
+			}
+			ofStep = append(ofStep, e.Type+"/"+attempt)
+		}
+		if page.NextCursor == "" {
+			return false, ofStep, nil
+		}
+		cursor = page.NextCursor
 	}
 }
 
