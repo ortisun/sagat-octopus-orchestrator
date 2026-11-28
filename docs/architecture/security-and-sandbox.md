@@ -6,7 +6,7 @@ Studio/API browser → API auth gateway → privileged engine → queue/task des
 
 Release 0.3.0 adds four boundaries (constitution 5.0.0, principle IV and Delivery Constraints); none of them is built yet:
 
-- **Workflow code in tenant workers** (design 044). The function runs only in the tenant's SDK worker, never in a platform process. Each command it proposes is checked against the version's envelope, the current authorization and the quotas. A workflow task carries no secret. The history it receives is that run's own journal projection, sent only to an authorized session and under the classification rules.
+- **Workflow code in tenant workers** (design 044). The function runs only in the tenant's SDK worker, never in a platform process. Each command it proposes is checked against the version's envelope, the current authorization and the quotas. A workflow task carries no secret. The history it receives is that run's own journal projection, sent only to an authorized session and under the classification rules. What a workflow lease discloses and what a workflow-type binding grants are in [Workflow as code: what a workflow lease discloses](#workflow-as-code-what-a-workflow-lease-discloses-design-044).
 - **Internal apps and their component frames** (feature 027). A session carries only the intersection of the viewer's authority and the app's declared operations. Author code runs in an opaque-origin frame that holds no credential.
 - **The hub's indexes** (feature 028, design 047). The server fetches and verifies the release-signed index and operator-pinned indexes; every item is pinned by digest and imported as a draft. The server executes nothing from them.
 - **The region epoch** (feature 032). Leases, fences and writes are checked against the active region's epoch in the database. A failover that can lose a revocation keeps the revoked access refused until an operator reviews it.
@@ -91,6 +91,49 @@ it does not authorize disclosure of fields classified `secret` in classified pay
 without an event schema are not proof that every embedded credential can be detected or removed.
 See [owner decisions](../owner-decisions.md), [classification specification](../../specs/016-payload-classification/spec.md)
 and [event payload handling](../../crates/application/src/event_payloads.rs).
+
+### Workflow as code: what a workflow lease discloses (design 044)
+
+Approved in [design 044](../designs/044-workflow-as-code.md) and being built (the tables by the migration of Task 044-6,
+`run_initiators` among them, the server lane by Tasks 044-8, 044-13 and 044-24, the security tests by Task 044-24);
+"Technical Plan" followed by a number is a section of that design.
+
+- **No workflow code runs in a platform process.** The function runs only in the tenant's SDK worker: never in the
+  control plane, the scheduler, the engine or the API, replay checks and queries included (Non-functional requirement
+  044-007, constitution principle V). The determinism runtimes of the SDKs isolate for determinism, not for security:
+  a TypeScript `vm` context is not a security boundary (Gap 044-008), and the SDK's determinism guard is not a security
+  control.
+- **A workflow task holds no secret** and no capability to resolve one: `ResolveSecrets`, `ResolveDatabase` and every
+  other activity RPC refuse its lease token. An envelope's secrets are released only to the activities whose exact
+  entry lists them, at the activity's own lease, with the publisher's right checked again at every resolution.
+- **The seed is not for secrets.** Each code run has a 32-byte seed from which `ctx.random`, `ctx.randomInt` and
+  `ctx.uuid` are drawn. Its values are predictable to every holder of the seed (the workers bound to the type and the
+  holders of `history:export`); no REST read but the history export returns it. The SDKs say so, and the analyzers of
+  Go and C# flag a random value or identifier used where a token, key or secret is named (Technical Plan 1.8).
+- **The disclosure of a workflow lease.** A workflow lease receives the run's whole history **unredacted**, because the
+  function needs its data: a binding that lists a workflow type grants that read for every run of the type, whoever
+  started it. The one exception is a field classified `secret`, which reaches a workflow lease, and the read token of a
+  worker-query or replay-check item, only as the export's typed placeholder, never its value; a blob whose carrier
+  schema classifies any field `secret` is never delivered to them (its payload is `EXTERNAL_CONTENT_NOT_INSPECTED`,
+  `ReadBlob` refuses it and no command may name it). A history carries no command body and no actor subject. Each
+  lease's `ReadHistory` is audited once, value-free, as are the history reads of query and replay-check tasks, and the
+  binding screen and API state the disclosure (Technical Plan 7.4, last paragraph). The binding and the tenant
+  membership are checked again on every page.
+- **The history export is narrower.** `GET /runs/{runId}/history` needs `run:read` and `history:export`, which only the
+  admin role holds by default; every payload goes through the read path of feature 016 (classified by its carrier
+  schema, or as `pii` when nothing declares it, and redacted unless the reader holds the reveal rights), a field
+  classified `secret` is never exported, and every export is audited (Requirement 044-025).
+- **A workflow-type binding grants authorship.** The worker of a bound type writes the commands of every run of the
+  type, so setting a binding's `workflowTypes` needs `definition:publish` as well as `worker:bind`; workflow types are
+  exact names (an activity pattern, `*` or prefix, never covers one), only an ordinary binding of an identity with the
+  `worker` role may list them, and a binding records its binder (`bound_by`). The claim of a workflow task writes that
+  binder into the run's initiators (`run_initiators`, created by the migration of Task 044-6), so an approval policy
+  with `excludeInitiator` refuses the binder of the issuing session's binding, and approvers are shown the issuing
+  identity and its binder (Technical Plan 4.1 and 5.1).
+- **What `excludeInitiator` cannot see.** A person who holds a worker's credential without being its binder can make
+  that worker issue commands, and no record names that person, so `excludeInitiator` cannot exclude them from approving
+  what the worker issued. Keep a workflow worker's credential with its binder, or treat every holder of it as an
+  initiator when assigning approvers.
 
 ## Feature 005: what a script can and cannot do
 

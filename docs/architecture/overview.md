@@ -45,7 +45,7 @@ The diagram is **logical**: workers claim and report through the worker API, who
 
 ## Key invariants
 
-1. A published `WorkflowVersion` is immutable and a Run's pin names a single version at any moment (a procedural run changes it only by a verified move, constitution principle IV).
+1. A published `WorkflowVersion` is immutable and a Run is pinned to exactly one version at any moment. A code run (workflow as code, [design 044](../designs/044-workflow-as-code.md), being built) keeps its start version as its identity origin (`runs.workflow_version_id`, from which its step, journal-instance and compensation identities derive; it never changes) and runs the one version it is pinned to now (`code_run_pins.code_version_id`), which changes only by a verified move, requested per run by a person, journaled and audited (constitution 5.1.0, principle IV, Owner decision 2026-11-25-3).
 2. A step command (`step_id`, `attempt`) is accepted once per generation/fencing token.
 3. A RUNNING→WAITING transition persists the subscription/timer in the same transaction.
 4. The selected NATS/Redis transport carries hints/references, never the sole record of a task. Redelivery is normal; the worker API grants execution authority (ADR-0069).

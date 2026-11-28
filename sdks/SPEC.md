@@ -6,25 +6,27 @@ C#/.NET, Java and Rust — so that the six behave the same where it matters and 
 (`tests/contract/sdk-conformance/`) unless it says otherwise. Naming below is language neutral; each
 SDK uses its own conventions (`startRun` / `StartRun` / `start_run` / `StartAsync`).
 
-An SDK is three things in one package and **nothing else**:
+An SDK is these things in one package and **nothing else**:
 
 1. a **client** (REST): start, read, list, cancel and signal runs, decide approvals, publish events;
 2. a **worker host** (gRPC, `worker.proto`): register activities, take leases, heartbeat, complete or
    fail, with cancellation and the saga/reconciliation task kinds;
 3. **workflow builders**: typed, side-effect-free constructors of the workflow IR
    (`workflow.schema.json`) with the primitives `step`, `sleep`, `waitForEvent`, `invokeChild`,
-   `parallel`, `saga`, and the `compensateWith` / `reconcileWith` of a step.
+   `parallel`, `saga`, and the `compensateWith` / `reconcileWith` of a step;
+4. from release 0.3.0, a **determinism runtime** for workflow as code (design 044, being built; §12).
 
-An SDK is **not** a workflow runtime. It does not execute workflow code, replay anything, keep a
-journal, or decide a transition: the server owns every state and every retry decision (ADR-0001,
-ADR-0002). The builders only write a document the server validates and versions.
+A workflow reaches the server in one of three modes:
 
-*Note (2026-11-24, constitution 5.0.0, principle IV):* release 0.3.0 adds a procedural code-first
-model (workflow as code, design 044, not built): an SDK will also host workflow functions that are
-replayed against the server's journal. Design 044 amends this section with the code. Even then
-the server keeps the journal and commits every transition; the SDK proposes commands under a lease
-and a fencing token, and its memory is a cache that replay rebuilds. Until then this section
-describes the SDKs as built.
+- a **graph drawn in the Studio**;
+- a **graph built by an SDK builder** (item 3): a document the server validates and versions;
+- **workflow as code**: a function the SDK's determinism runtime runs in the tenant's worker (item 4), which proposes
+  commands under a lease and a fencing token, and whose memory is a cache that replay against the run's journal
+  rebuilds (§12).
+
+In all three the server decides every transition and every retry and keeps the journal (Architecture decisions 0001
+and 0002); an SDK never commits a state, and in the third mode the workflow function never runs an effect itself:
+effects are activities.
 
 ## 1. Configuration and credentials
 
@@ -890,6 +892,238 @@ answer, lapse for an unflagged lease; a flagged lease of 1.8 is provisional and 
 "Delivery acknowledgement (protocol 1.8)").
 Protocol version changes do not themselves change package SemVer.
 
+## 12. Workflow as code
+
+**Status.** Approved in [design 044](../docs/designs/044-workflow-as-code.md) (Architecture decisions 0103 to 0109,
+Proposed until their build-evidence conditions are met) and being built; nothing in this section is served or shipped
+before its task lands: the server lane by Tasks 044-2 to 044-13 of that design, each SDK's runtime by its own task
+(TypeScript 044-10, Python 044-15, Go 044-16, C# 044-17, Java 044-18, Rust 044-19), patches and the abandoned-activation
+cap by Task 044-20, the six-language conformance scenarios by Task 044-26. "Technical Plan" followed by a number is a
+section of that design. The server side is in
+[`docs/architecture/execution-semantics.md`](../docs/architecture/execution-semantics.md#workflow-as-code-design-044)
+and the wire in
+[`docs/architecture/worker-runtime-protocol.md`](../docs/architecture/worker-runtime-protocol.md#workflow-as-code-design-044).
+
+A workflow function runs in the tenant's worker under the SDK's **determinism runtime**. It never touches the outside
+world itself: each call below is a *command* the SDK records, and in each *workflow task* the SDK runs the function on
+the events of the activation window until it yields, then sends the commands (`CompleteWorkflowTask`) or a cause
+(`FailWorkflowTask`). On a worker that does not hold the run in its cache, the SDK replays the function from the start
+against the run's history and issues only the commands the history does not hold. Every command that does work is a node
+of the workflow IR in its code profile, so its limits and checks are the graph node's.
+
+### 12.1 The API
+
+The reference signatures, in TypeScript (Technical Plan 1.12). The other languages follow their own naming (§12.2) and
+take the same options.
+
+```typescript
+activity<T>(name: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number;
+  concurrencyKey?: string; rateLimitKey?: string }): Promise<T>          // fragment: activity profile
+script<T>(artifactDigest: string, input: unknown, options?: { retry?: ActivityRetryPolicy; timeoutMs?: number }): Promise<T>
+sleep(durationMs: number): Promise<void>                                  // timer
+waitForEvent<T>(eventType: string, correlationKey: string, options?: { timeoutMs?: number; lookbackMs?: number }): Promise<T | undefined>
+child<T>(workflowId: string, input: unknown, options?: { cancelPolicy?: 'propagate' | 'request_cancel' | 'detach'; businessId?: string }): Promise<T>
+approval(policyName: string, subject: unknown): Promise<'approved' | 'rejected' | 'expired'>
+saga<T>(options: { onCompensationFailure?: 'manual_review' | 'fail'; cancelPolicy?: 'compensate_completed'
+  | 'wait_in_flight_then_compensate' | 'abort_no_compensation' }, body: (scope: SagaScope) => Promise<T>): Promise<T>
+  // throws SagaCompensated | SagaPartial | SagaCompensationFailed after an abort
+onSignal(name: string, handler: (payload: unknown) => void | Promise<void>): void
+signal<T>(name: string): Promise<T>
+onUpdate(name: string, validator: (args: unknown) => void, handler: (args: unknown) => Promise<unknown>): void
+setState(state: unknown): void
+patched(id: string): boolean; deprecatePatch(id: string): void
+sideEffect<T>(compute: () => T): T                                        // a recorded marker, at most 64 KiB
+now(): Date; random(): number; randomInt(n: number): number; uuid(): string
+continueAsNew(input: unknown, options?: { version?: 'same' | 'active'; state?: unknown }): never
+cancellation: { requested: boolean; promise: Promise<void> }; acknowledgeCancellation(): never
+class WorkflowFailure extends Error { constructor(code: string, safeMessage: string) }
+continueAsNewSuggested(): boolean; historyLimitReached(): boolean
+Replayer.replay(history: AsyncIterable<string>, options: { bundlePath: string; workflowType: string }): Promise<ReplayVerdict>
+// worker side: WorkerConfig gains workflowBundlePath and workflowManifestPath; the host loads the bundle into its vm
+// context and registers the manifest's (workflow type, code digest) pairs
+```
+
+The calls are made on the workflow context the function receives (`ctx.activity(...)`, `ctx.saga(...)`,
+`ctx.onSignal(...)`). `ActivityRetryPolicy` is the IR's `retry` of an activity node (`maxAttempts`, `initialDelayMs`,
+`maxDelayMs`, `strategy`, `jitter`) in the code profile, distinct from the client's HTTP retry policy (§5). The
+TypeScript replayer takes the bundle, not host functions, because no host function enters the run's `vm` context.
+
+The client gains `definitions.publishCode(manifest, envelope, declarations?)` (§12.8), `runs.moveCodeVersion`,
+`runs.exportHistory`, `runs.update(..., {waitMs, acceptPending})` and `runs.workerQuery` (the last deferrable, Task
+044-29).
+
+### 12.2 The API in each language
+
+| Language | Package | Workflow API | Client additions |
+|---|---|---|---|
+| TypeScript | entry point `@sagat-octopus-orchestrator/sdk/workflows` (`./workflows` in the package's `exports`), which checks at load that Node is 22.8 or later; the bundler `@sagat-octopus-orchestrator/workflows-bundler` (`sdks/typescript-workflows-bundler/`, command `sagat-workflows`) | §12.1 | §12.1 |
+| Python | `sagat_octopus_orchestrator.workflows`, which refuses to import below Python 3.11 | The same names in snake case: `activity`, `script`, `sleep`, `wait_for_event`, `child`, `approval`, `saga`, `on_signal`, `signal`, `on_update`, `set_state`, `patched`, `deprecate_patch`, `side_effect`, `now`, `random`, `random_int`, `uuid`, `continue_as_new`, `cancellation`, `acknowledge_cancellation`, `WorkflowFailure`, `continue_as_new_suggested`, `history_limit_reached`; the waiting calls are awaitables of the SDK's deterministic event loop, under which `asyncio.sleep`, `asyncio.gather`, `asyncio.wait_for` and `asyncio.timeout` also work durably | `definitions.publish_code`, `runs.move_code_version`, `runs.export_history`, `runs.update(..., wait_ms=, accept_pending=)`, `runs.worker_query` |
+| Go | package `github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflows` (plural, because `sdks/go/workflow` is the builder of the workflow document; Decision 044-239) and the analyzer `cmd/sagatvet` | The same names, exported, each taking `workflows.Context` first: `workflows.Activity`, `Script`, `Sleep`, `WaitForEvent`, `Child`, `Approval`, `Saga`, `OnSignal`, `Signal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `UUID`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached`; with `workflows.Go`, `workflows.Channel`, `workflows.Selector` and `workflows.SortedKeys` for branches, channels and ordered map keys | The same names, exported (`Definitions.PublishCode`, ...) |
+| C# | packages `SagatOctopusOrchestrator.Workflows` and `SagatOctopusOrchestrator.Workflows.Analyzers` | The same names in Pascal case, with the `Async` suffix on every call that returns a task: `ActivityAsync`, `ScriptAsync`, `SleepAsync`, `WaitForEventAsync`, `ChildAsync`, `ApprovalAsync`, `SagaAsync`, `SignalAsync`; and `OnSignal`, `OnUpdate`, `SetState`, `Patched`, `DeprecatePatch`, `SideEffect`, `Now`, `Random`, `RandomInt`, `Uuid`, `ContinueAsNew`, `Cancellation`, `AcknowledgeCancellation`, `WorkflowFailure`, `ContinueAsNewSuggested`, `HistoryLimitReached` | The same names with `Async` suffixes (`Definitions.PublishCodeAsync`, ...) |
+| Java | artifact `sagat-workflows` (Java release 21; the core SDK stays on release 17) | The same names as TypeScript; the SDK also provides `Async.function`, `Promise` and `WorkflowQueue` for branches and queues | The same names, in the core SDK |
+| Rust | the SDK crate's feature `workflows` | The same names in snake case, `ctx` first (methods of the workflow context: `ctx.activity`, `ctx.wait_for_event`, `ctx.set_state`, `ctx.side_effect`, `ctx.random_int`, `ctx.continue_as_new`, ...), with `ctx.spawn` for branches, which are not `Send` | The same names in snake case (`publish_code`, ...) |
+
+A language's waiting calls return its own asynchronous shape (a promise, an awaitable, a future, a task); the shapes and
+the exact option types are fixed by that SDK's runtime task, under these names. Each SDK documents the same rules for
+what workflow code may not do (§12.4).
+
+### 12.3 Deterministic primitives
+
+The same in the six languages, so that one conformance golden holds all six and a history is readable by any SDK's
+replayer (Requirement 044-010, Technical Plan 1.8, scenario `code-deterministic-primitives`):
+
+- **Time.** `now()` is the time, in microseconds, recorded in the `workflow_task.started` that opens the activation (the
+  last start of its window): the later of the previous start's time and the database's clock in the lease transaction,
+  so it never goes backwards. It does not advance during the activation run. A clock type with milliseconds (TypeScript
+  `Date`) truncates.
+- **Seed.** Each run has a 32-byte seed, drawn at its creation and delivered in every workflow task. A successor of
+  continue-as-new and a child get new seeds; a reset keeps its source run's seed.
+- **Generator.** xoshiro256\*\* whose four 64-bit state words are the seed read as four little-endian unsigned integers;
+  an all-zero seed is replaced by the four words of SplitMix64 started at 0.
+- **`random()`** is `(next() >> 11) × 2^-53`.
+- **`randomInt(n)`**, for 0 < n ≤ 2^32, draws `x = next()` until `x ≥ (2^64 − n) mod n` and returns `x mod n`, so the
+  result has no bias.
+- **`uuid()`** takes 16 bytes from two `next()` values, little-endian, sets the version nibble to 4 and the variant bits
+  to `10`.
+- **Not for secrets.** The values are predictable to every holder of the seed (the workers bound to the workflow type,
+  the holders of `history:export`); every SDK says so, and the analyzers of Go and C# flag a value of these primitives
+  named like a token, key or secret.
+
+The golden vectors are in the corpus of Task 044-30 (`specs/044-workflow-as-code/contracts/goldens/`).
+
+### 12.4 The runtime per language and its precondition
+
+Each SDK runs workflow code under the determinism runtime of Technical Plan 1 for its language and **refuses to register
+workflow types when the runtime's precondition fails** (Requirement 044-011, Technical Plan 1.11):
+
+| Language | Runtime | Detection beyond the command comparison and the server's chain | Precondition |
+|---|---|---|---|
+| TypeScript | A `node:vm` context per run without a host global, the bundled code, drained microtasks | The bundler refuses imports of built-ins and activity modules | Node 22.8 or later (the package's `engines` stays Node 20); process time zone UTC |
+| Python | A deterministic `asyncio` loop, a private module namespace with the SDK's importer, an audit hook | The importer and the audit hook | Python 3.11 or later (the activity worker keeps 3.10); process time zone UTC; the operator's own fixed `PYTHONHASHSEED` (not `random`, not `0`), kept private: it is a 32-bit value, so a reader of a Python version's digest who knows its modules' sources could search it (Gap 044-016); the SDK caps decoded objects at 10,000 keys, which bounds the harm whatever the seed |
+| Go | An `iter.Pull` coroutine dispatcher | The `sagatvet` analyzer, the activation deadline | Go 1.25 |
+| C# | A single-threaded `TaskScheduler` per run, the invariant culture | A scheduler check on every SDK call, the analyzer package | .NET 8; `TimeZoneInfo.Local` of UTC |
+| Java | Virtual threads under one permit | A thread check on every SDK call | Java 21; default time zone UTC and default locale `Locale.ROOT` |
+| Rust | A single-threaded executor on workflow threads with no Tokio runtime | A caught panic for a Tokio call, the clippy configuration | Rust 1.98 |
+
+The determinism runtime isolates for determinism, not for security; workflow code is the tenant's own, in the tenant's
+worker.
+
+**The activation deadline** (Technical Plan 1.10). Every SDK stops an activation run that has not yielded within the
+smaller of 2 s and the version's workflow task timeout, of wall time (configurable from 100 ms to the workflow task
+timeout), and fails the workflow task with cause `ACTIVATION_DEADLINE` (scenario `code-activation-deadline`).
+TypeScript's `vm` script timeout stops the code. In Python, Go, C#, Java and Rust a stuck coroutine or thread cannot be
+killed: the dispatcher stops waiting, abandons it and the run's cache entry, and counts it. A worker that holds 4
+abandoned activation runs stops taking workflow tasks, withdraws its workflow types and reports itself unhealthy so
+that its process is restarted; in Rust the stuck pool thread is replaced first.
+
+**Failures.** An uncaught exception that is not the SDK's `WorkflowFailure` fails the workflow task (`FailWorkflowTask`
+with its type name, never its message), not the run. A `WorkflowFailure` ends the run `FAILED` with its code, which
+must match `^[A-Z][A-Z0-9_]{0,63}$` (another becomes `WORKFLOW_FAILED`); its message is stored only as a `pii` payload
+(Requirement 044-009, scenario `code-failures`).
+
+**Nondeterminism.** During replay the SDK compares each command with the record at the same command number (its kind
+and target), and reports a command where the history has none, a recorded command the function no longer makes, a
+`patched(id)` that disagrees with the markers and a deferred command not re-emitted last as a failure with cause
+`NONDETERMINISM`, the command number, the actual kind and target and the code digest, never a payload (Requirement
+044-006, scenario `code-nondeterminism`).
+
+### 12.5 Registration and the capability declaration
+
+A worker host that registers workflow types sends `WorkerCapabilities.workflow_types` (its `(workflow type, code
+digest)` pairs, at most 64) and **`offers_workflow_as_code`**, and offers the workflow-as-code minor (the next free minor
+of §9's register when the contract of Task 044-2 merges, Architecture decision 0109); a host with activities only keeps
+its minor. Minors are cumulative: a host on that minor implements the host procedures of 1.7, 1.8 and 1.9. An SDK whose
+runtime task has not landed declares `offers_workflow_as_code = false`, and the conformance suite reports it as **not
+offered**, never as passed; the release needs all six offered (Success criterion 044-001).
+
+### 12.6 Bounds the function meets
+
+The SDK enforces them at the call that would cross them, at the same point live and in replay, so the function takes the
+same branch both times (Requirement 044-012, Non-functional requirement 044-006):
+
+- **`CommandBatchLimitExceeded`.** The function's own calls make at most 256 commands with at most 48 KiB of command
+  metadata per activation, besides at most 147 commands the SDK issues itself (update decisions and results, the
+  consumption of signals, one set-state, scope closes and aborts, one re-emitted deferral). The SDK throws the typed
+  `CommandBatchLimitExceeded` into the function at the call that would cross its share; code can catch it, or move the
+  fan-out to a graph child (scenario `code-command-batch-limit`).
+- **`InlineValuesExceeded`.** A completion fits the worker service's decode limit of 320 KiB: at most 64 KiB of command
+  metadata and at most 192 KiB of inline values. The declared state (at most the version's `state.maxBytes`, at most
+  128 KiB), a continue-as-new input and its carried state are always inline, together at most 192 KiB; a gated
+  activity's input and an approval's subject are always inline too, the SDK reserving the declared state's maximum from
+  the activation's start. Every other value (a work command's input, an update result, a side-effect value, a terminal
+  output) is written by the SDK as a blob, largest first, when the message would not fit, at most 16 per completion.
+  The SDK throws the typed `InlineValuesExceeded` at the call that would cross one of these bounds, or after which the
+  activation's values could no longer be carried, and for a terminal output over the 4 MiB validation bound.
+- A side-effect value is at most 64 KiB; `setState` at most once per completion (the last call of an activation wins).
+
+### 12.7 Patches
+
+`patched(id)` returns true and records a `patch` marker the first time a run reaches it; on replay it returns true if
+the marker is at that point of the history and false if the history has another command there, which is where the old
+code went. `deprecatePatch(id)` records the marker and always takes the new path, for code from which the old path was
+removed after every run that could take it ended. A marker identifier matches `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`. A
+code change is always a new code version, so a patch takes effect on a running run only through a verified move, which
+proves per run that the patched code replays (Requirement 044-024, Technical Plan 7.2, scenario `code-patch-and-move`).
+
+### 12.8 The manifest and publication
+
+The SDK computes the code digest, the SHA-256 of the RFC 8785 canonical JSON of `{"language", "runtime", "sdkName",
+"sdkVersion", "workflowType", "content"}` (`runtime` names the runtime with its full version and, where it has one, its
+locale data), and writes it with the workflow type, the language and the runtime into a *manifest*; the worker computes
+the same digest at start and registers it (Technical Plan 3.2):
+
+| Language | What `content` hashes | How the manifest is produced |
+|---|---|---|
+| TypeScript | The bundle file the worker loads | `sagat-workflows bundle` writes the bundle and the manifest |
+| Python | The modules the SDK's importer resolved for the workflow type, the standard library by version, and the hash-seed fingerprint | `python -m sagat_octopus_orchestrator.workflows manifest <module>`, with the deployment's `PYTHONHASHSEED` |
+| Go | The executable file | `<worker binary> --sagat-manifest` |
+| C# | The workflow assembly and its dependency closure from `deps.json` | `dotnet <worker>.dll --sagat-manifest` |
+| Java | Every jar and class directory of the worker's class path | `java -jar <worker>.jar --sagat-manifest` |
+| Rust | The executable file | `<worker binary> --sagat-manifest` |
+
+For the compiled languages the digest hashes the whole executable, so a change of an activity in the same binary makes a
+new digest that open runs take only through a move. The recommended topology is one worker binary (assembly, jar) for
+workflow code and another for activities.
+
+`definitions.publishCode(manifest, envelope, declarations?)` assembles the code document from the manifest (produced by
+the build), the envelope (reviewed by the publisher) and the declarations, which hold the other parts of the document of
+Technical Plan 3.1: `signals`, `state` with its queries and code updates, `inputSchema`, `outputSchema`, `triggers`,
+`limits`, `chainPolicy`, and the `code` object's `workflowTaskTimeoutMs`, `cancellationGraceMs` and `workerQueries`
+(Decision 044-238). For the order workflow of the quickstarts, which waits for a `paid` signal:
+
+```typescript
+await api.definitions.publishCode(manifest, envelope, {
+  signals: [{ name: 'paid', buffered: true, maxPending: 10,
+    schema: { type: 'object', properties: {}, additionalProperties: false } }],
+});
+```
+
+The command line's `sagat workflow publish-code --manifest <file> --envelope <file>` takes `--declarations <file>` as
+well. The call saves the code document as the workflow's draft and publishes it through today's route
+(`POST /workflows/{workflowId}/publish`, `definition:publish`), which makes it the active version; it is refused
+`422 CAPABILITY_NOT_ACTIVE` until the operator has recorded the instance registry requirement `code-workflows-v1` (and
+`signal-inbox-v1` for a version that declares signals). Nothing runs code on the server.
+
+### 12.9 The replayer
+
+Each SDK ships a replayer that replays exported histories against the local code and reports the first mismatch, usable
+in a test of the language's own framework (Requirement 044-025):
+
+- The history comes from `GET /runs/{runId}/history` (`run:read` and `history:export`, held by the admin role only by
+  default), **export format version 1**: JSON lines of `HistoryEvent` under a first line `{"exportFormat": 1,
+  "gatedEntries": [...], "stateMaxBytes": n, ...}`, every payload redacted by the rules of feature 016 for the reader
+  and every blob a reference without its content.
+- The replayer **refuses a history of an unknown format version**.
+- A replay that reads a placeholder (a redacted field, a blob-carried value) stops with the verdict
+  **`INCONCLUSIVE_REDACTED`** at that command, never with a false mismatch.
+- A mismatch names the command number and the expected and actual kind and target.
+
+### 12.10 Errors
+
+`CommandBatchLimitExceeded` and `InlineValuesExceeded` are errors the SDK throws into the function, with no HTTP or gRPC
+status; `INCONCLUSIVE_REDACTED` is a replayer verdict. The codes of Technical Plan 13.3 (`CAPABILITY_NOT_ACTIVE`,
+`SIGNAL_NOT_DECLARED`, `UPDATE_PENDING`, `MOVE_TARGET_INVALID`, `QUERY_UNAVAILABLE`, ...) join the catalog
+`sdks/error-catalog.json` and its six copies with the contracts of Task 044-2.
 
 ## Approved Rust extension (release 0.3)
 
