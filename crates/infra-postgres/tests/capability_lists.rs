@@ -11,10 +11,12 @@ use std::path::Path;
 
 use sagat_application::instances::Capability;
 
-const CHECKS: [&str; 3] = [
+const CHECKS: [&str; 4] = [
     "serving_instances_capabilities_known",
     "platform_requirements_capability_known",
     "platform_requirement_history_capability_known",
+    // ADR-0112 and its amendment of 2026-11-27: the registry of replay floors is bounded by the same closed list
+    "platform_requirement_floors_capability_known",
 ];
 
 /// The migrations of this crate whose names end with `suffix`, in version order.

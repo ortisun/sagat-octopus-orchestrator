@@ -205,6 +205,11 @@ const ALLOWED: &[Allowed] = &[
         reason: "a predicate chosen by the caller among literals of the same file; the statement is a plain SELECT of run_events, which is audited as written",
     },
     Allowed {
+        file: CONTENT_USAGE,
+        need: "UNRESOLVED placeholder {}",
+        reason: "design 041 (step logs, 7bb5a134a): the quota fences of `admission_policies`, `SELECT pg_advisory_xact_lock_shared(hashtextextended($n, 0)), ...` and at most one exclusive `pg_advisory_xact_lock(hashtextextended($n, 0))`, each call a literal of the same function and every key bound; an advisory lock needs no privilege of a table. Found when design 045's Task 045-21 first ran this suite after that change",
+    },
+    Allowed {
         file: "crates/infra-postgres/src/operations.rs",
         need: "UNRESOLVED placeholder {groups}",
         reason: "the sub-select text comes from the AlertKind match arms right above, each a literal statement that is audited on its own; the wrapper only reads",

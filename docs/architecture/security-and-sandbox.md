@@ -62,6 +62,26 @@ The release-blocking criteria below are tested for what exists: cross-tenant rea
 and quota bypass are in the battery and fail the build; sandbox escape, unauthorized script execution,
 incorrect webhook signature and replay of financial requests join it with the features that create them.
 
+## The publication hold of the fleet requirements
+
+[ADR-0112](../adr/ADR-0112-fleet-requirements-share-one-publication-hold-and-one-registry-of-replay-floors.md) gives the runtime role
+one function of the operator's registry, `platform_requirement_hold(capability)`, so that a publication that needs a fleet
+requirement (designs 044, 045 and 054) keeps the operator from removing it until the publication commits. What that power is, and
+what it is not:
+
+- The runtime role can hold the registry's gate (`platform_requirement_gate` in `SHARE MODE`) and the requirement epoch `FOR SHARE`
+  for the length of one of its own transactions, through the hold or a registration, for any capability that has a floor (the
+  hold refuses the others). That delays an operator's activation or removal of any requirement by at most that transaction; the
+  command's own bound (2 s for a lock, 3 s for a statement) then refuses it and the operator retries. It cannot lock the gate
+  itself (it has no privilege on the table, and `LOCK TABLE` checks one), record, remove or change a requirement, or read or write
+  the registry of floors (`platform_requirement_floors`), which only a migration writes.
+- A stream of publications cannot starve the operator: the operator's commands lock the gate `IN EXCLUSIVE MODE`, and PostgreSQL's
+  lock manager makes a `SHARE` request wait behind a waiting `EXCLUSIVE` one (ADR-0112, amendment of 2026-11-27; tested by
+  `integration_platform_foundation::requirement_hold`).
+- A floor runs as the schema owner inside a removal, so the registry admits only a `SECURITY DEFINER` function with the fixed search
+  path, no argument, a boolean result, the trigger's owner and no overload, checks it again before each call, and refuses a hand
+  deletion or truncation of a floor. A floor that can no longer be called refuses the removal: it fails closed.
+
 ## Disclosure boundaries
 
 Credential delivery to a leased executor is distinct from payload disclosure to a reader.

@@ -1856,6 +1856,23 @@
       ]
     },
     {
+      "table": "platform_requirement_floors",
+      "column": "capability",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK platform_requirement_floors_capability_known permits only the closed capability values of the registry; the primary key, so at most one row per capability. Written only by migrations (ADR-0112); deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270218000000_requirement_hold.up.sql"
+      ]
+    },
+    {
       "table": "platform_requirement_history",
       "column": "action",
       "sql_type": "text",

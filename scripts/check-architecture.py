@@ -679,8 +679,9 @@ def test_support_errors(pkgs):
     return errors
 
 
-# Feature 006, decision D006-033: the three checks of the instance-capability registry list the capabilities by hand, and two
-# branches (feature 022 and feature 006) redefine them with only their own values each. A fresh database ends with the newest
+# Feature 006, decision D006-033: the checks of the instance-capability registry list the capabilities by hand, and two
+# branches (feature 022 and feature 006) redefine them with only their own values each; ADR-0112's amendment of 2026-11-27
+# adds the fourth, of the registry of replay floors (`platform_requirement_floors`). A fresh database ends with the newest
 # definition by version, so that one must list exactly what the code lists (`Capability::as_str` over `Capability::ALL`):
 # whichever branch merges second takes the union in its own migration, or this fails.
 CAPABILITY_SOURCE = "crates/application/src/instances.rs"
@@ -689,6 +690,7 @@ CAPABILITY_CHECKS = (
     "serving_instances_capabilities_known",
     "platform_requirements_capability_known",
     "platform_requirement_history_capability_known",
+    "platform_requirement_floors_capability_known",
 )
 
 
